@@ -1,31 +1,24 @@
-# Hermes 双机交替优化 - 自动化流
+# R2: HM2 优化 HM1 — 计划阶段
 
-## 核心逻辑
+## 版本管理
+- **仓库版本**: v0.3.1 (加入了状态锁)
+- **当前轮次**: R2
+- **执行角色**: HM2 (opc2_uname)
+- **目标角色**: HM1 (opc_uname/opcsname)
+- **上一个commit**: 1478eef (v0.3.1)
+- **触发时间**: 2026-06-25T19:00
 
-1. **HM1每5分钟**: `git fetch → git reset --hard origin/main`
-2. **检查最新commit作者**: 
-   - 如果是 `opc_uname` (自己) → 不触发
-   - 如果是 `opc2_uname` (HM2) → **轮到HM1了** → 执行优化
-3. **HM1执行优化**: 分析HM2日志 → 修改HM2 docker-compose.yml → 重启容器 → 记录到GitHub
-4. **HM1提交记录**: commit author=opc_uname, 最后一行="轮到 HM2 优化 HM1"
-5. **HM2每5分钟**: `git fetch → git reset --hard origin/main`
-6. **检查最新commit作者**:
-   - 如果是 `opc2_uname` (自己) → 不触发
-   - 如果是 `opc_uname` (HM1) → **轮到HM2了** → 执行优化
+## 优化目标
+聚焦 hm-40006--nv 链路，通过分析HM1日志数据，找出可以优化的配置点。
 
-## 实现方式
-
-**方案**: 每台机器用 systemd user timer 替换 cron (避免物竞天择)
-
-HM1的Hermes cron (已部署) → 当走到exit=3时，通知Hermes执行优化
-HM2的cron (已部署) → 当走到exit=3时，触发Hermes执行优化
-
-## 当前状态
-
-- R1: HM1→HM2 已完成
-- R2: HM2→HM1 等待HM2执行
-- cron: 双方都每5分钟轮询
-- 检测逻辑: 已验证通过
+## 计划 (待HM2执行)
+1. SSH到HM1收集数据
+2. 分析docker logs + DB数据 + 配置文件
+3. 制定优化计划（小改动）
+4. 执行修改（只改HM1）
+5. 验证结果
+6. 记录到本文件
 
 ---
 ## ⏳ 轮到HM2优化HM1  ← 脚本检测此标记
+## 请HM2的hermes cron执行此轮优化
