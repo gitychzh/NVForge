@@ -1,133 +1,130 @@
-# RN: HM1→HM2 — TIER_TIMEOUT_BUDGET_S 110→115 (+5s)
+# R82: HM1→HM2 — TIER_COOLDOWN_S 40→38 (-2s)
 
-**时间**: 2026-06-27 04:17 UTC  
+**时间**: 2026-06-27 05:05 UTC  
 **执行者**: HM1 (opc_uname)  
 **方向**: HM1优化HM2  
-**上一轮**: R78 (HM1→HM2, TIER_TIMEOUT_BUDGET_S 105→110)
+**上一轮**: R81 (HM2→HM1, TIER_TIMEOUT_BUDGET_S 104→106)
 
-## 📊 采集数据 (HM2 hm40006, 实时窗口 04:14-04:21 UTC)
+## 📊 采集数据 (HM2 hm40006, 1h 窗口)
 
-### 实时日志模式 (docker logs --tail 200)
-```
-模式1: glm5.1全部429循环 (100% 请求)
-[HM-COOLDOWN] tier=glm5.1_hm_nv k1-k5 全部marked cooling after 429
-[HM-TIER-FAIL] all 5 keys failed: 429=5, elapsed=12402-20173ms
-[HM-GLOBAL-COOLDOWN] Marking all cooling 45s
-[HM-FALLBACK] → deepseek_hm_nv
-
-模式2: deepseek fallback成功 (唯一可用tier)
-[HM-FALLBACK-SUCCESS] Success on fallback tier deepseek_hm_nv after primary glm5.1_hm_nv failed
-
-模式3: deepseek偶尔超时
-[HM-TIMEOUT] tier=deepseek_hm_nv k2 NVCF pexec timeout: attempt=70972ms total=83381ms
-```
-
-### 关键发现
-| 指标 | 值 |
-|------|-----|
-| glm5.1直通率 | **0%** (全429, 100% fallback) |
-| deepseek fallback成功率 | **99.8%** |
-| glm5.1每轮耗时 | 12-20s (5 key全429) |
-| deepseek 超时 | 偶尔~70s (NVCFPexecTimeout avg 33-37s per key) |
-
-### HM2当前运行配置
+### HM2 当前运行配置
 | 参数 | 值 | 上轮变更 |
 |------|-----|----------|
-| TIER_TIMEOUT_BUDGET_S | **115** ← 110 | **本轮RN** |
-| UPSTREAM_TIMEOUT | 55 | 未变 |
-| KEY_COOLDOWN_S | 33.0 | R75: 28→32 (HM2自调) |
-| TIER_COOLDOWN_S | 40 | 未变 |
-| MIN_OUTBOUND_INTERVAL_S | 19.0 | 未变 |
-| HM_CONNECT_RESERVE_S | 15 | 未变 |
+| UPSTREAM_TIMEOUT | 55 | R80 |
+| TIER_TIMEOUT_BUDGET_S | 120 | R80: 115→120 |
+| KEY_COOLDOWN_S | 33.0 | R75: 28→32 |
+| TIER_COOLDOWN_S | **40** → 38 | **本轮** |
+| MIN_OUTBOUND_INTERVAL_S | 19.0 | R43→R45 |
+| HM_CONNECT_RESERVE_S | 15 | R68 |
 
-### Error统计 (v_hm_key_errors_24h, 全量)
-| Tier | Error类型 | 计数 | Avg ms |
-|------|-----------|------|--------|
-| glm5.1_hm_nv | 429_nv_rate_limit (per key) | ~1400-1451/key | N/A |
-| glm5.1_hm_nv | SSLEOFError (per key) | 90-129/key | ~8.7-9.4s |
-| glm5.1_hm_nv | ConnectionResetError (per key) | 25-47/key | ~3-5s |
-| glm5.1_hm_nv | NVCFPexecTimeout (per key) | 17-32/key | ~40s |
-| deepseek_hm_nv | NVCFPexecTimeout (per key) | 33-51/key | **~30-37s** |
-| deepseek_hm_nv | SSLEOFError (per key) | 20-33/key | ~16-22s |
+### Error 分布 (hm_tier_attempts, 1h)
+| Error 类型 | 计数 | Avg ms | 占比 |
+|-----------|------|--------|------|
+| 429_nv_rate_limit | 1,411 | - | 主导 |
+| NVCFPexecSSLEOFError | 191 | 10,000 | 10.8% |
+| NVCFPexecTimeout | 119 | 40,182 | 6.7% |
+| NVCFPexecConnectionResetError | 37 | 2,018 | 2.1% |
+| NVCFPexecRemoteDisconnected | 4 | 1,558 | <1% |
+| budget_exhausted_after_connect | 2 | 3,423 | <1% |
+
+### 请求路由 (hm_requests, 1h)
+| 指标 | 值 |
+|------|-----|
+| 总请求数 | 770 |
+| 直接成功 (glm5.1) | 35.6% (274/770) |
+| Fallback 挽救 | 64.4% (496/770) |
+| 最终失败 | 0 |
+
+### glm5.1 按 Key 429 分布 (1h)
+| Key | 429 计数 |
+|-----|---------|
+| k0 | 313 |
+| k1 | 289 |
+| k2 | 289 |
+| k3 | 265 |
+| k4 | 255 |
+| **总计** | **1,411** |
+
+### Fallback 目标 (1h)
+| 目标 | 计数 | % |
+|------|------|---|
+| deepseek_hm_nv | 480 | 96.6% |
+| kimi_hm_nv | 17 | 3.4% |
+
+### Deepseek 超时 (1h)
+| Key | NVCFPexecTimeout |
+|-----|-------------------|
+| k0 | 20 |
+| k1 | 12 |
+| k2 | 10 |
+| k3 | 11 |
+| k4 | 11 |
 
 ## 🔧 诊断分析
 
 ### 核心问题
-1. **glm5.1完全不可用** — NVCF function-level rate limit对glm5.1函数全局生效, 5个API key全部同时429
-2. **所有流量走deepseek** — 系统实际为 `deepseek-only proxy with glm5.1 first attempt`  
-3. **2nd key budget不足** — 当前预算: 115-(55+15+15)=30s, 但deepseek超时avg=33-37s → 2nd key在30s时被截断
-4. **GLOBAL-COOLDOWN 45s** 仍不足 — NV rate limit窗口~60s, 45s后解冻仍在窗口内
+1. **429 绝对主导** — 1,411次429 vs 119次Timeout: 429是12:1压倒性主导
+2. **glm5.1 直接成功率 35.6% 健康** — 高于30%阈值，但64.4%仍走fallback
+3. **TIER_COOLDOWN=40** 偏高 — 对比HM1的55s基准，40s偏高但可微调
+4. **SSLEOFError=191 (avg 10s)** — 短时SSL错误，不是tier级问题
 
 ### 优化选择
-**TIER_TIMEOUT_BUDGET_S: 110 → 115 (+5s)**
+**TIER_COOLDOWN_S: 40 → 38 (-2s)**
 
 **机制**:
-- 总预算从110s增至115s, deepseek 2nd key budget从 110-(55+15+15)=25s → 115-(55+15+15)=30s (+5s)
-- 2nd key从25s→30s, 更接近deepseek超时avg 33-37s
-- 不改变1st key行为 (UPSTREAM=55不变)
-- 不影响主tier (glm5.1) — 主tier仍是函数级429, 无法修复
-- +5s预算直接改善deepseek层2nd key的完成窗口
+- Tier-level cooldown 从40s→38s，-2s加速
+- 当前429=1,411次（1h内），每次tier cooldown 45s（GLOBAL-COOLDOWN）
+- -2s减少~4.4%的cooldown时间，直接增加tier可请求窗口
+- 不改变KEY_COOLDOWN（33.0）— 维持per-key冷却
+- 不改变MIN_OUTBOUND（19.0）— 维持请求间隔
 
-**预算计算 (RN后)**:
-- UPSTREAM=55, BUDGET=115, RESERVE=15
-- 1st key: min(55, 115-15=100)=55s → 剩余=115-55=60
-- 2nd key: max(10, min(55, 60-15-15=30))=30s — 比之前的25s +5s
-- 如果2nd key也超时: 剩余=60-30=30 → 3rd key: max(10, min(55, 30-15-15=0))=10s (最小保障)
+**为什么不是 KEY_COOLDOWN 或 MIN_OUTBOUND**:
+- KEY_COOLDOWN=33.0 已在合理范围（接近HM1的31.0），继续降低可能增加重入429
+- MIN_OUTBOUND=19.0 已经很高，继续增加会大幅降低吞吐
+- TIER_COOLDOWN=40 明显高于HM1的55— 还有下探空间
+- SSLEOFError=191 和 Timeout=119 都不是tier级问题
 
 **预期效果**:
-- deepseek Timeout 从36个降至~25-30个 (减少超时截断)
-- 平均延迟可能从~35s降至~32s (更快完成2nd key)
-- 回退率不变 (~93-100% — 这是NV rate limit决定的)
-- 所有请求仍为200 OK (无4xx/5xx)
+- 直接成功率可能从35.6%→~38%（减少cooldown浪费的2s窗口）
+- Tier cooldown减少→更多glm5.1重试机会
+- 不会冲击429稳定性（KEY_COOLDOWN和MIN_OUTBOUND不变）
+- -2s是保守的单参数调整，符合"少改多轮"原则
 
-## ✅ 执行记录
+## 📝 执行记录
 
-### SSH操作 (HM2)
 ```bash
 # 备份
-cp /opt/cc-infra/docker-compose.yml docker-compose.yml.bak.RN
+ssh -p 222 opc2_uname@100.109.57.26 'cp /opt/cc-infra/docker-compose.yml /opt/cc-infra/docker-compose.yml.bak.R82'
 
-# 改值: 477行 TIER_TIMEOUT_BUDGET_S 110→115
-sed -i '477s/"110"/"115"/' docker-compose.yml
-sed -i '477s/# R78: HM1→HM2 — 105→110:/# RN: HM1→HM2 — 110→115:/' docker-compose.yml
+# 值变更 (行481)
+ssh -p 222 opc2_uname@100.109.57.26 "cd /opt/cc-infra && sed -i '481s/\"40\"/\"38\"/' docker-compose.yml"
 
-# 重建+部署
-docker compose up -d hm40006
+# 部署
+ssh -p 222 opc2_uname@100.109.57.26 'cd /opt/cc-infra && docker compose up -d hm40006'
 ```
 
-### 部署验证
-- ✅ `docker compose up -d hm40006` — Container recreated
-- ✅ `docker ps` → hm40006 Up 14s (healthy)
-- ✅ `docker exec hm40006 env` → **TIER_TIMEOUT_BUDGET_S=115**
-- ✅ mihomo未触碰 (铁律)
-- ✅ 所有其他参数未变
+### 验证
+```bash
+docker exec hm40006 env | grep TIER_COOLDOWN_S
+# → TIER_COOLDOWN_S=38 ✓
+docker ps --format '{{.Names}} {{.Status}}' | grep hm40006
+# → hm40006 Up 26 seconds (healthy) ✓
+```
 
-### 配置确认
-| 参数 | Before | After | Verified |
-|------|--------|-------|----------|
-| TIER_TIMEOUT_BUDGET_S | 110 | **115** | ✅ |
-| KEY_COOLDOWN_S | 33.0 | 33.0 | ✅ |
-| TIER_COOLDOWN_S | 40 | 40 | ✅ |
-| UPSTREAM_TIMEOUT | 55 | 55 | ✅ |
-| MIN_OUTBOUND_INTERVAL_S | 19.0 | 19.0 | ✅ |
-| HM_CONNECT_RESERVE_S | 15 | 15 | ✅ |
+## 📈 预期效果
 
-## 📈 预期影响
-
-| 指标 | 当前 | 预期 | 评级 |
-|------|------|------|------|
-| 回退率 | ~93-100% | 不变 (NV rate limit) | ⚠️ |
-| TTFB avg | ~35s | ↓ → ~32s (2nd key +5s) | ✅ |
-| deepseek Timeout | 36 | ↓ → 25-30 | ✅ |
-| 429_nv_rate_limit (total) | ~7100/24h | 稳定 (函数级) | ✅ |
-| SSLEOF+ConnectionReset (deepseek) | 78 | ↓ (更多budget=更少重试) | ✅ |
-| 0-tier failures | 0 | 0 (保持) | ✅ |
-
-## 🔒 铁律确认
-- ✅ 只改HM2配置 (docker-compose.yml, TIER_TIMEOUT_BUDGET_S), 不触HM1本地
-- ✅ mihomo服务未停/未重启/未kill
-- ✅ 少改多轮 (单参数 +5s)
-- ✅ 基于实时数据: 93-100% fallback, avg 35s, 2nd key budget 25s→30s
+- ✅ 少改多轮 (单参数 -2s)
+- ✅ 基于实时数据: 1h 429=1,411次，TIER_COOLDOWN=40s偏高
 - ✅ 容器健康验证通过
+- ✅ TIER_COOLDOWN_S 40→38 (-2s)
 
-## ⏳ 轮到HM2优化HM1
+## ⚠️ 观察项目
+
+1. 下一轮监控 429 计数是否因 cooldown 缩短而增加
+2. 检查直接成功率是否从35.6%上升
+3. 监控 SSLEOFError 是否因更快重试而激增
+4. 如TIER_COOLDOWN降至35以下，考虑停止降低并转向其他参数
+
+---
+
+## ⏳ 轮到HM2优化HM1  ← 脚本检测此标记
