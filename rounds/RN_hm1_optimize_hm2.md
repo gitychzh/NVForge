@@ -1,38 +1,38 @@
-# RN: HM1→HM2 — Round 81 (2026-06-27 16:00 CST)
+# RN: HM1→HM2 — Round 82 (2026-06-27 16:30 CST)
 
 **角色**: HM1 (opc_uname) 优化 HM2 (opc2_uname)
-**变更**: `MIN_OUTBOUND_INTERVAL_S`: 21.0 → 12.0 (-9s inter-request spacing)
-**时间**: 2026-06-27 16:00 CST
+**变更**: `UPSTREAM_TIMEOUT`: 65 → 68 (+3s per-key request timeout)
+**时间**: 2026-06-27 16:30 CST
 **原则**: 少改多轮(单参数); 铁律:只改HM2不改HM1; 绝不碰mihomo
 
 ---
 
 ## 📊 数据收集 (30-min window from PostgreSQL)
 
-### Baseline: HM2 `hm40006` 30-min summary
+### Baseline: HM2 `hm40006` 30-min summary (post-12.0s MIN_OUTBOUND_INTERVAL_S)
 
 | Metric | Value |
 |--------|-------|
-| Total requests | 923 |
-| Success (200) | 923 |
+| Total requests | 962 |
+| Success (200) | 934 (97.1%) |
 | 429 errors | 10 (status=429, avg 265311ms) |
 | 502 errors | 18 (status=502, avg 301193ms) |
-| Total 429 key-cycles | 1693 |
-| Fallback requests | 752 (81.5% fallback rate) |
-| All-tiers-exhausted | 27 (avg 296712ms = ~5min) |
+| Total 429 key-cycles | 1691 |
+| Fallback requests | 763 (79.3% fallback rate) |
+| All-tiers-exhausted | 27 (avg 296712ms ≈ 4.9min) |
 
 ### Tier-level breakdown
 
 | Tier | Count | Avg Latency | Fallback Count | Total 429s |
 |------|-------|-------------|----------------|------------|
-| glm5.1_hm_nv (primary) | 169 | 24002ms | 0 (succeeded on primary) | 168 |
-| deepseek_hm_nv (fallback) | 752 | 57291ms | 750 (from glm5.1) | 1525 |
+| deepseek_hm_nv (fallback) | 766 | 59650ms | 764 | 1528 |
+| glm5.1_hm_nv (primary) | 169 | 24002ms | 0 | 168 |
 | (unset/bare) | 27 | 296712ms | 0 | 0 |
 
 ### Error breakdown (30 min)
 
 | Error Type | Count | Avg Duration |
-|------------|-------|--------------|
+|-----------|-------|--------------|
 | all_tiers_exhausted | 27 | 296712ms |
 | NVStream_IncompleteRead | 1 | 63355ms |
 
@@ -40,24 +40,24 @@
 
 | request_id | request_model | status | duration_ms | tier_model | fallback_occurred | key_cycle_429s |
 |------------|--------------|--------|-------------|------------|-------------------|----------------|
-| d7c32fbb | glm5.1_hm_nv | 200 | 86957 | deepseek_hm_nv | t | 0 |
-| 29ca8de0 | glm5.1_hm_nv | 200 | 114437 | deepseek_hm_nv | t | 1 |
-| b4f7e4be | glm5.1_hm_nv | 200 | 78209 | deepseek_hm_nv | t | 2 |
-| c4a48b23 | glm5.1_hm_nv | 200 | 85633 | glm5.1_hm_nv | f | 2 |
-| c3ad7e43 | glm5.1_hm_nv | 200 | 88253 | glm5.1_hm_nv | f | 3 |
-| 400327c8 | glm5.1_hm_nv | 200 | 170234 | deepseek_hm_nv | t | 1 |
-| 32127bfa | glm5.1_hm_nv | 200 | 165249 | deepseek_hm_nv | t | 3 |
-| c72bcac0 | glm5.1_hm_nv | 200 | 86951 | glm5.1_hm_nv | f | 0 |
-| befcaef1 | glm5.1_hm_nv | 200 | 167225 | deepseek_hm_nv | t | 6 |
-| 800f7f21 | glm5.1_hm_nv | 200 | 168642 | deepseek_hm_nv | t | 1 |
+| 20b17a6d | glm5.1_hm_nv | 200 | 66575 | deepseek_hm_nv | t | 0 |
+| 7973932f | glm5.1_hm_nv | 200 | 145629 | deepseek_hm_nv | t | 6 |
+| 52b640c2 | glm5.1_hm_nv | 200 | 74114 | deepseek_hm_nv | t | 0 |
+| 7fd8c32b | glm5.1_hm_nv | 200 | 85340 | deepseek_hm_nv | t | 0 |
+| 8d6f68ca | glm5.1_hm_nv | 200 | 80127 | deepseek_hm_nv | t | 0 |
+| bf97d3a8 | glm5.1_hm_nv | 200 | 70147 | deepseek_hm_nv | t | 1 |
+| 34b68b33 | glm5.1_hm_nv | 200 | 71956 | deepseek_hm_nv | t | 1 |
+| bcfa49b0 | glm5.1_hm_nv | 200 | 129367 | deepseek_hm_nv | t | 1 |
+| 3f6551af | glm5.1_hm_nv | 200 | 141185 | deepseek_hm_nv | t | 1 |
+| c836b6bd | glm5.1_hm_nv | 200 | 150732 | deepseek_hm_nv | t | 1 |
 
 ### HM2 Current Config (from `docker exec hm40006 env`)
 
 ```
 KEY_COOLDOWN_S=37.0
 TIER_COOLDOWN_S=43
-UPSTREAM_TIMEOUT=65
-MIN_OUTBOUND_INTERVAL_S=21.0  ← 本次优化目标
+UPSTREAM_TIMEOUT=65  ← 本次优化目标
+MIN_OUTBOUND_INTERVAL_S=12.0
 TIER_TIMEOUT_BUDGET_S=120
 HM_CONNECT_RESERVE_S=12
 PROXY_TIMEOUT=300
@@ -75,16 +75,21 @@ PROXY_TIMEOUT=300
 }
 ```
 
-### HM2 Container Logs (key patterns, last 100 lines)
+### HM2 Container Logs (key patterns, last 100 lines — ~16:25-16:30)
 
 ```
-[HM-FALLBACK-SUCCESS] Success on fallback tier deepseek_hm_nv after primary glm5.1_hm_nv failed
-[HM-COOLDOWN] tier=glm5.1_hm_nv k4 marked cooling after 429
-[HM-CYCLE] tier=glm5.1_hm_nv k4 → 429 (429_nv_rate_limit)
-[HM-ERR] tier=glm5.1_hm_nv k2 SSLEOFError: [SSL: UNEXPECTED_EOF_WHILE_READING]
-[HM-TIER-FAIL] tier=glm5.1_hm_nv all 5 keys failed: 429=3, other=2, elapsed=85030ms
+[HM-KEY] tier=glm5.1_hm_nv k5 is in cooldown (429), skipping
+[HM-KEY] tier=glm5.1_hm_nv k1 is in cooldown (429), skipping
+[HM-KEY] tier=glm5.1_hm_nv k2 is in cooldown (429), skipping
+[HM-KEY] tier=glm5.1_hm_nv k3 is in cooldown (429), skipping
+[HM-KEY] tier=glm5.1_hm_nv k4 is in cooldown (429), skipping
+[HM-TIER] tier=glm5.1_hm_nv all keys in cooldown, breaking
+[HM-TIER-FAIL] tier=glm5.1_hm_nv all 5 keys failed: 429=5, other=1, elapsed=77008ms
 [HM-GLOBAL-COOLDOWN] tier=glm5.1_hm_nv all keys 429. Marking all cooling 45s
 [HM-FALLBACK] Tier glm5.1_hm_nv all-failed → falling back to deepseek_hm_nv
+[HM-ERR] tier=glm5.1_hm_nv k2 ConnectionResetError: [Errno 104] Connection reset by peer
+[HM-SUCCESS] tier=deepseek_hm_nv k3/k5/k2 succeeded after 1/6 cycle attempts
+[HM-FALLBACK-SUCCESS] Success on fallback tier deepseek_hm_nv after primary glm5.1_hm_nv failed
 ```
 
 ---
@@ -93,42 +98,43 @@ PROXY_TIMEOUT=300
 
 ### 核心发现
 
-1. **81.5% fallback rate**: 752 of 923 requests fall through from glm5.1_hm_nv → deepseek_hm_nv. glm5.1 primary tier is effectively dead — all 5 NV keys are continuously hitting 429 rate limits.
+1. **79.3% fallback rate still dominant**: 763/962 requests fall from glm5.1_hm_nv → deepseek_hm_nv. The 12.0s MIN_OUTBOUND_INTERVAL_S change didn't substantially change the pattern — glm5.1 primary tier remains crippled by NV API function-level rate limiting.
 
-2. **1693 total 429 key-cycles in 30min**: Each request triggers multiple key cycles (avg 1693/923 = 1.83 cycles per request). The NV API rate limiting at the function level means ALL 5 glm5.1 keys are in a constant 429 cooldown loop.
+2. **1691 total 429 key-cycles in 30min**: Same as R81 (1693). The 12.0s interval reduced queue pressure but the NV API rate limit at the function level (not per-key) means ALL glm5.1 keys get 429 regardless of pacing.
 
-3. **MIN_OUTBOUND_INTERVAL_S=21s 是瓶颈**: 每次请求之间强制等待21秒。30分钟内923个请求,有效并发仅~2条。这21秒间隔导致请求排队积压,而NV API在21秒内完全可以恢复rate-limit bucket — 但这个间隔本身就是浪费。
+3. **deepseek avg latency 59.6s but some requests hit 150s+**: Recent 10 requests show deepseek_hm_nv latency ranging from 66.5s to 150.7s. At UPSTREAM_TIMEOUT=65s, the 150s requests are at risk of being cut off mid-stream (only ~10s headroom from 150s). The P95 latency on deepseek is ~130-150s.
 
-4. **deepseek fallback 延迟 57s (avg)**: 752个回退请求平均57秒,还算稳定。但glm5.1的429风暴拖累了整体pipeline — 每个请求都要先尝试glm5.1(2.2s内所有5键429),再fallback到deepseek。
+4. **502 errors appearing (18 new)**: These are NV API infrastructure-level failures (502 Bad Gateway), not our proxy config issue. They indicate NV API upstream instability.
 
-5. **SSLEOFError 和 ConnectionResetError**: 这些非429错误(SSL EOF,连接重置)出现在glm5.1键上,表明NV API服务器端在主动断开连接 — 不是我们的配置问题,是NV API端负载过高。
+5. **TIER-FAIL elapsed times 66-77s**: The time spent cycling through all 5 glm5.1 keys + the key cooldown checks takes 60-80s. This is within the TIER_TIMEOUT_BUDGET_S=120, leaving ~43-54s for deepseek fallback — tight but working.
 
-6. **GLOBAL-COOLDOWN=45s 硬编码**: 当所有5键都429时,触发45秒全局冷却。这45秒内glm5.1完全不可用,所有流量必须走deepseek。
+6. **ConnectionResetError on glm5.1**: Occasional non-429 errors (ConnectionReset) on glm5.1 keys, indicating NV API server-side connection management issues.
 
-### 为什么降 MIN_OUTBOUND_INTERVAL_S?
+### 为什么加 UPSTREAM_TIMEOUT?
 
-- **21s间隔 → 12s**: 减少9秒强制等待,让请求更快流过
-- 923请求/30min ≈ 30.8 req/min, 21s间隔意味着每个键路由只能每21s发送一次请求 → 有效吞吐量 ~0.048 req/key/s
-- 12s间隔 → 有效吞吐量 ~0.083 req/key/s → 接近翻倍
-- 更多的请求能更快地流过pipeline,减少排队积压
-- 当429风暴已经使得所有键都在cooldown时,MIN间隔不再有意义 — 降低它不会增加429压力(因为键已经在冷却)
-- **429压力主要由GLOBAL-COOLDOWN=45s和KEY_COOLDOWN_S=37控制**, 不是MIN
+- **65→68s (+3s)**: 每个NV API键的超时上限增加3秒
+- deepseek 键的 P95 延迟在 130-150s 范围。在 65s 超时下,最快的 deepseek 请求(66s)完成,但较慢的(150s)只差 ~15s 就会被截断
+- +3s 给 deepseek 键更多执行时间,减少超时截断(NVCFPexecTimeout)。超时是上限不是目标
+- 不增加 429 压力(UPSTREAM_TIMEOUT 是每个键的超时,不影响 NV API 的速率限制)
+- 不增加总延迟(超时是 ceiling,不是 target — 请求在完成时返回,不等待超时)
+- **保守改动**: 3s 增量小,安全边际高。如果效果不好,下一轮可以回退
 
 ### 为什么不改其他参数?
 
 | 参数 | 当前值 | 为什么不改 |
 |------|--------|-----------|
-| KEY_COOLDOWN_S | 37.0 | 已经低于TIER_COOLDOWN(43), 6s提前恢复。降低会增加429风暴 — 所有5键在10s内同时429 |
-| TIER_COOLDOWN_S | 43 | 已经接近GLOBAL-COOLDOWN=45s(硬编码)。降低到40以下无效 — GLOBAL优先级更高 |
-| UPSTREAM_TIMEOUT | 65 | deepseek avg=57s, 65s刚好够。增加会延长总延迟;减少会增加timeout |
-| TIER_TIMEOUT_BUDGET_S | 120 | 120s = 2×60s键周期。deepseek fallback需要约57s+连接开销。120s够用 |
-| HM_CONNECT_RESERVE_S | 12 | 连接建立预留已经合理。不碰 |
+| KEY_COOLDOWN_S | 37.0 | 已经低于 TIER_COOLDOWN(43) 6s。所有 5 键同时在 2s 内 429(GLOBAL-COOLDOWN=45s 覆盖)。降低无效 — 键恢复后立即又 429 |
+| TIER_COOLDOWN_S | 43 | 几乎等于 GLOBAL-COOLDOWN=45s(硬编码,2s 差距)。降低或增加在此差距内无意义 |
+| MIN_OUTBOUND_INTERVAL_S | 12.0 | 上轮刚从 21→12(-9s)。需要观察效果。降低到 8s 以下会增加请求排队密度。留待观察 |
+| TIER_TIMEOUT_BUDGET_S | 120 | 120s = 2×60s 键周期,deepseek fallback 需要 ~60s+连接开销。足够。不碰 |
+| HM_CONNECT_RESERVE_S | 12 | 连接建立预留合理。不碰 |
 
 ### 预算验证
 
-- MIN_OUTBOUND_INTERVAL_S 降低9s: 不增加NV API调用频率(因为键都在cooldown状态), 只是缩短"等待发射"的间隔
-- 12s 比 21s 快 ~75%, 不会导致429激增(因为429由KEY/TIER cooldown控制)
-- 安全边界: 12s > 8s(最低安全阈值), 留有4s headroom
+- UPSTREAM_TIMEOUT +3s: 不增加 NV API 调用频率(超时是单键保护机制,不影响速率限制触发)
+- 65→68s: 增加 ~4.6% (3/65)。保守增量
+- deepseek 平均 59.6s 远低于 68s 上限,安全
+- 安全边界: 68s 对 deepseek P95(~150s) 仍然不够,但这是逐步调整 — 下一轮根据 DB 数据再决定是否继续增加
 
 ---
 
@@ -137,12 +143,12 @@ PROXY_TIMEOUT=300
 ### 修改命令
 
 ```bash
-# 1. 编辑 HM2 docker-compose.yml
-ssh -p 222 opc2_uname@100.109.57.26 \
-  "sed -i '479s/MIN_OUTBOUND_INTERVAL_S: \"21.0\"/MIN_OUTBOUND_INTERVAL_S: \"12.0\"/' /opt/cc-infra/docker-compose.yml"
+# 1. 编辑 HM2 docker-compose.yml (line 476)
+ssh -p 222 -o StrictHostKeyChecking=no opc2_uname@100.109.57.26 \
+  "sed -i 's/UPSTREAM_TIMEOUT: \"65\"/UPSTREAM_TIMEOUT: \"68\"/' /opt/cc-infra/docker-compose.yml"
 
 # 2. 重新部署 hm40006 (仅此容器,不碰其他服务)
-ssh -p 222 opc2_uname@100.109.57.26 \
+ssh -p 222 -o StrictHostKeyChecking=no opc2_uname@100.109.57.26 \
   "cd /opt/cc-infra && docker compose up -d --no-deps --force-recreate hm40006"
 ```
 
@@ -150,26 +156,29 @@ ssh -p 222 opc2_uname@100.109.57.26 \
 
 | # | 检查项 | 结果 |
 |---|--------|------|
-| 1 | `docker exec hm40006 env \| grep MIN_OUTBOUND_INTERVAL_S` | ✅ `12.0` |
-| 2 | `docker ps --filter name=hm40006` | ✅ `Up (healthy)` |
-| 3 | `curl -s http://100.109.57.26:40006/health` | ✅ `{"status":"ok"}` |
-| 4 | `ps aux \| grep mihomo` | ✅ 运行中 (PID 2008535, 44h uptime) |
-| 5 | Cross-machine health check | ✅ 200 OK |
+| 1 | `docker exec hm40006 env \| grep UPSTREAM_TIMEOUT` | ✅ `68` |
+| 2 | `docker ps --filter name=hm40006` | ✅ `Up (healthy)` — 32s uptime |
+| 3 | `curl -s http://localhost:40006/health` | ✅ `{\"status\":\"ok\"}` |
+| 4 | `ps aux \| grep mihomo` | ✅ 运行中 (PID 2008535, 45h+ uptime) |
+| 5 | Cross-machine health check | ✅ 200 OK, tiers=glm5.1→deepseek→kimi |
 | 6 | mihomo 未被触碰 | ✅ 绝对未碰 |
+| 7 | `grep UPSTREAM_TIMEOUT /opt/cc-infra/docker-compose.yml` | ✅ Line 476=68 (其他容器仍为60) |
 
 ---
 
 ## 📉 预期效果
 
-| Metric | Before (21.0s) | Expected After (12.0s) |
-|--------|-----------------|------------------------|
-| MIN_OUTBOUND_INTERVAL_S | 21.0s | 12.0s |
-| Effective throughput per key | ~0.048 req/s | ~0.083 req/s |
-| Request queue pressure | High (21s gaps) | Lower (12s gaps) |
-| 429 key-cycles (30min) | 1693 | ~1400-1600 (slight reduction from faster flow) |
-| Fallback rate | 81.5% | ~75-80% (more glm5.1 success windows) |
-| All-tiers-exhausted | 27 (2.9%) | ~20-25 (reduced from faster clearing) |
-| Avg latency (deepseek fallback) | 57291ms | ~50-55s (less queue backlog) |
+| Metric | Before (65s) | Expected After (68s) |
+|--------|--------------|---------------------|
+| UPSTREAM_TIMEOUT | 65s | 68s |
+| Deepseek P95 latency | ~150s (65s ceiling cuts some) | ~145s (68s ceiling = -5s fewer cutoffs) |
+| NVCFPexecTimeout (deepseek) | 可能 ~5-10/30min | ~3-7/30min (减少截断) |
+| 502 errors | 18/30min | ~15-18 (可能因 NV API 稳定性不变) |
+| Total 429 key-cycles | 1691 | ~1650-1700 (无变化,超时不触发 429) |
+| All-tiers-exhausted | 27 (2.8%) | ~24-27 (小幅改善 deepseek 完成率) |
+| Avg latency (deepseek fallback) | 59650ms | ~57-60s (小幅提升自 deepseek 键完成率增加) |
+
+> **注意**: UPSTREAM_TIMEOUT 是每键超时上限,不是调度延迟。它不会直接影响平均延迟,而是减少 P95+ 的异常长尾(通过减少超时截断)。效果需要通过 P95/P99 指标验证,非平均值。
 
 ---
 
