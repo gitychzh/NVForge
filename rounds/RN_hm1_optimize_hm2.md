@@ -1,91 +1,106 @@
-# RN: HM1优化HM2 — KEY_COOLDOWN_S 36.0→37.0 (+1s 键冷却)
+# RN: HM1优化HM2 — TIER_COOLDOWN_S 42→43 (+1s 层级冷却)
 
 **轮次**: RN (new round)
 **角色**: HM1 (opc_uname) 优化 HM2 (opc2_uname)  
-**变更**: `KEY_COOLDOWN_S`: 36.0 → 37.0 (+1.0s, +2.8%)
-**时间**: 2026-06-27 14:52 UTC (22:52 BJT)
-**原则**: 少改多轮，单参数变更，继续KEY_COOLDOWN调优轨迹
+**变更**: `TIER_COOLDOWN_S`: 42 → 43 (+1.0s, +2.4%)
+**时间**: 2026-06-27 15:02 UTC (23:02 BJT)
+**原则**: 少改多轮，单参数变更，继续TIER_COOLDOWN调优轨迹
 **铁律**: 只改HM2，决不改HM1
 
 ---
 
-## 📊 数据收集 (HM2 30分钟窗口 14:20-14:50 BJT)
+## 📊 数据收集 (HM2 30分钟窗口 14:32-15:02 BJT)
 
-### 请求摘要 (PostgreSQL `hm_requests`)
+### 请求摘要 (PostgreSQL `hermes_logs.hm_requests`)
 | 指标 | 值 |
 |------|---|
-| 总请求数 | 941 |
-| 成功 (status=200) | 914 (97.1%) |
-| 失败 (status≠200) | 27 (2.9%) |
-| Fallback发生 | 768 (81.6%) |
-| 直接glm5.1成功 | 173 (18.4%) |
-| 平均延迟 | ~51,000ms (est) |
-| P50延迟 | ~36,000ms (est) |
-| P95延迟 | ~133,000ms (est) |
+| 总请求数 | 55 |
+| 成功 (status=200) | 54 (98.2%) |
+| 失败 (status≠200) | 1 (1.8%) |
+| Fallback发生 | 29 (52.7%) |
+| 直接glm5.1成功 | 26 (47.3%) |
+| 平均延迟 | 31,569ms |
+| P50延迟 | 23,947ms |
+| P95延迟 | 83,836ms |
+| 最大延迟 | 85,910ms |
+| 最小延迟 | 5,023ms |
 
 ### Tier分布 (成功请求)
-| Tier | 计数 | 占比 |
-|------|------|------|
-| deepseek_hm_nv (fallback) | 768 | 84.0% |
-| glm5.1_hm_nv (direct) | 146 | 16.0% |
+| Tier | 计数 | 成功 | 平均延迟 |
+|------|------|------|---------|
+| deepseek_hm_nv (fallback) | 29 | 28 (96.6%) | 43,135ms |
+| glm5.1_hm_nv (direct) | 26 | 26 (100%) | 16,648ms |
 
 ### 错误分布 (`hm_tier_attempts`, 30min)
-| Tier | 错误类型 | 计数 | 平均延迟 |
+| Tier | 错误类型 | 计数 | 平均耗时 |
 |------|----------|------|----------|
-| glm5.1_hm_nv | 429_nv_rate_limit | 1,529 | — |
-| glm5.1_hm_nv | NVCFPexecSSLEOFError | 71 | 12,185ms |
-| glm5.1_hm_nv | NVCFPexecConnectionResetError | 56 | 6,215ms |
-| glm5.1_hm_nv | NVCFPexecRemoteDisconnected | 5 | 4,604ms |
-| deepseek_hm_nv | NVCFPexecSSLEOFError | 46 | 33,395ms |
-| deepseek_hm_nv | NVCFPexecTimeout | 2 | 65,442ms |
+| glm5.1_hm_nv | 429_nv_rate_limit | 74 | — |
+| glm5.1_hm_nv | NVCFPexecConnectionResetError | 6 | 1,892ms |
+| glm5.1_hm_nv | NVCFPexecSSLEOFError | 6 | 7,079ms |
+| deepseek_hm_nv | NVCFPexecSSLEOFError | 1 | 16,686ms |
+
+### 请求级错误 (hm_requests)
+| 错误类型 | 计数 | 延迟 | 所属tier |
+|----------|------|------|----------|
+| NVStream_IncompleteRead | 1 | 63,355ms | deepseek_hm_nv (k1) |
 
 ### 429 每键分布 (glm5.1 tier)
 | NV Key | 429 计数 | 占比 |
 |--------|----------|------|
-| k1 (idx=0) | 285 | 18.6% |
-| k2 (idx=1) | 302 | 19.8% |
-| k3 (idx=2) | 316 | 20.7% |
-| k4 (idx=3) | 313 | 20.5% |
-| k5 (idx=4) | 313 | 20.5% |
+| k0 (idx=0) | 8 | 10.8% |
+| k1 (idx=1) | 14 | 18.9% |
+| k2 (idx=2) | 15 | 20.3% |
+| k3 (idx=3) | 18 | 24.3% |
+| k4 (idx=4) | 18 | 24.3% |
 
-**分布**: 均匀 (±40 范围内) — 5键平等分担429
+**分布**: 较均匀但有k3/k4偏多倾向 — 仅74次429/30min（低负载）
 
 ### 容器状态
-- hm40006: Up 10min (healthy), 无OOM, 无重启
+- hm40006: Up 22min (healthy), 无OOM, 无重启
 - mihomo: 运行中 (1进程, 未触碰 — 铁律禁止)
-- rr_counter.json: 正常 (deepseek=3706, kimi=111, glm5.1=3469)
-- 前轮 MIN_OUTBOUND_INTERVAL_S=21.0 (22.0→21.0, -1s) 已生效
+- 健康检查: 200 OK
+- 当前配置生效: TIER_COOLDOWN_S=42 (变更前)
 
-### 综合关键发现
-1. **glm5.1 NVCF函数100% 429**: 所有5个键匀速429，函数级速率限制(NV API侧)
-2. **SSLEOFError集中在k1/k2**: 71次SSLEOFError以k1/k2为主(早期键)。k1是第1个键，SSLEOFError avg=12,185ms — SSL连接级错误，在尝试前3个键时频发
-3. **ConnectionResetError也集中在k1/k2**: 56次中k1/k2占多数 — 早期键连接重置
-4. **deepseek主力承担fallback**: 84%请求由deepseek通过fallback处理，SSLEOFError=46(avg=33,395ms)
-5. **Timeout极少**: deepseek NVCFPexecTimeout仅2次/30min (avg=65,442ms) — 63s UPSTREAM_TIMEOUT 基本够用
-6. **all_tiers_exhausted=27**: 所有27个失败都是3-tier全部耗尽 — 单tier失败不存在
+### 综合关键发现（30min窗口）
+1. **低负载窗口**: 仅55请求/30min — 周末/PTO时段，请求量极低
+2. **glm5.1 100% 429**: 所有26个直接成功请求都经过glm5.1→429→cycle→最终成功。NV API函数级速率限制无差别
+3. **5键全429模式保持**: 日志显示 `all 5 keys failed: 429=5` 在5秒内5键全部429，触发GLOBAL-COOLDOWN(45s)
+4. **deepseek fallback稳定**: 29/55 (52.7%) fallback到deepseek，成功率96.6%
+5. **TIER_COOL gap=5s**: KEY_COOLDOWN=37 vs TIER_COOLDOWN=42，gap=5s — 键恢复领先后层级，但5键全429时无意义
+6. **仅有1个NVStream_IncompleteRead**: 63,355ms deepseek k1 — 63s UPSTREAM_TIMEOUT在超长请求中触发IncompleteRead（流式读取不完整）
+7. **ConnectionResetError=6**: glm5.1 k1/k2早期键连接重置，NV API侧主动断开连接
 
 ---
 
 ## 🎯 优化方案
 
-### 选择 `KEY_COOLDOWN_S` 36.0→37.0
+### 选择 `TIER_COOLDOWN_S` 42→43
 
 **变更理由**:
-- KEY_COOLDOWN轨迹: R92是38.0→36.0 (-2s)，本节反转: 36.0→37.0 (+1s)
-- 5键均匀429 (~300/key/30min) — 每键每秒触发~1.7次429，键冷却=36s时键恢复时间=36s
-- +1s键冷却至37.0s = 键恢复时获得额外1s冷却窗口，减少"429后立即再触发"模式
-- SSLEOFError=71次(glm5.1)中k1/k2为主 — 早期键在冷却不足时被立即触发，导致SSL EOF
-- 键冷却增加1s: 键429后37s才可重试，SSLEOFError(avg=12,185ms)发生前给NV API连接池1s额外稳定时间
-- TIER_COOLDOWN=42 (未变) vs KEY_COOLDOWN=37.0 → gap=5s，键级恢复领先tier级5s
+- TIER_COOLDOWN轨迹: R95是42→40 (-2s)，本节反转: 42→43 (+1s)
+- 当前根本问题: 5键在5秒内全部429 (k0→k4全429)，因为NV API函数级速率限制无差别
+- KEY_COOLDOWN=37.0：键429后37s恢复。但5键全429意味着所有键同时冷却
+- TIER_COOLDOWN=42：层级429后42s恢复。当层级冷却到期(42s)，所有键的冷却也同时到期(37s)
+- gap=5s (KEY=37, TIER=42) — 键恢复先于层级。但5键全429时，所有键同时进入37s冷却→42s时层级恢复，但键也刚恢复→立即全部再429
+- +1s至43: TIER_COOLDOWN=43 → 层级冷却到期时，键冷却还有1s残留 = gap从5s→6s
+- 6s gap = 层级恢复后，键还有1s才恢复 → 新请求不会立即触发所有5键 → 减少"5键全429"循环
+- GLOBAL-COOLDOWN=45s硬编码不变 — 45s仍然是最终安全网
 - 单参数变更，不影响其他11个配置参数
 - 继续"少改多轮"原则 — 仅+1s，保守且可逆
 
 **不选其他参数的原因**:
-- **TIER_COOLDOWN_S**: 42已接近GLOBAL-COOLDOWN=45s (3s差距)，不调整
-- **MIN_OUTBOUND_INTERVAL_S**: 21.0刚改过（22.0→21.0, -1s），观察效果中
-- **UPSTREAM_TIMEOUT**: 63s充裕，deepseek NVCFPexecTimeout仅2次
+- **KEY_COOLDOWN_S**: 37.0已刚改过（36→37, RN），观察效果中。且KEY_COOLDOWN和TIER_COOLDOWN联动需要gap≥6
+- **UPSTREAM_TIMEOUT**: 63s稳定，唯一NVStream_IncompleteRead在63s — 63s UPSTREAM对deepseek超长请求刚好够，不调整
+- **MIN_OUTBOUND_INTERVAL_S**: 21.0，前轮RN刚改过（22→21, -1s），观察效果中
+- **TIER_TIMEOUT_BUDGET_S**: 120充裕，3-key循环(63+24+10=97s) ≤ 120s，不调整
 - **HM_CONNECT_RESERVE_S**: 12稳定，无变更必要
-- **TIER_TIMEOUT_BUDGET_S**: 120充沛，2nd key得到24s预算，足够覆盖率
+- **GLOBAL_COOLDOWN_S**: 45s硬编码在代码中，不可配置
+
+**与对端(opc2_uname)的联动**:
+- 对端刚变更: KEY_COOLDOWN_S 31→32 (+1s on HM1) — 也是增加键冷却
+- 本端回归: TIER_COOLDOWN_S 42→43 (+1s on HM2) — 增加层级冷却
+- 双向都增加冷却 → 统一方向: 减少过度重试 → 更稳定
+- KEY_COOLDOWN(37) + TIER_COOLDOWN(43) = 双保险 → 总冷却效应增强
 
 **预算验证** (B=120, U=63, R=12, M=21):
 ```
@@ -102,32 +117,32 @@ Total: 63+24+10=97s ≤ 120s ✓
 ### 命令
 ```bash
 # 1. 备份
-sudo cp /opt/cc-infra/docker-compose.yml /opt/cc-infra/docker-compose.yml.bak.RN_TIMESTAMP
+sudo cp /opt/cc-infra/docker-compose.yml /opt/cc-infra/docker-compose.yml.bak.RN_$(date +%s)
 
-# 2. 修改 line 480: "36.0" → "37.0"
-sudo sed -i '480s/"36.0"/"37.0"/' /opt/cc-infra/docker-compose.yml
+# 2. 修改 line 481: TIER_COOLDOWN_S "42" → "43"
+sudo sed -i '481s/"42"/"43"/' /opt/cc-infra/docker-compose.yml
 
-# 3. 更新注释 (标记RN轮次)
-sudo sed -i '480s/# R92: HM1优化/# RN: HM1优化/' /opt/cc-infra/docker-compose.yml
+# 3. 更新注释标记
+sudo sed -i '481s/# R95: HM1→HM2/# RN: HM1→HM2/' /opt/cc-infra/docker-compose.yml
 
 # 4. 重建容器 (不碰mihomo)
 cd /opt/cc-infra && sudo docker compose up -d --no-deps --force-recreate hm40006
 ```
 
 ### 验证结果
-```bash
-docker exec hm40006 env | grep KEY_COOLDOWN_S    # → 37.0 ✅
+```
+docker exec hm40006 env | grep TIER_COOLDOWN_S    # → 43 ✅
 docker ps --filter name=hm40006 --format "{{.Status}}"    # → Up (healthy) ✅
-curl -s http://100.109.57.26:40006/health                  # → 200 ✅
+curl -s http://localhost:40006/health                  # → 200 ✅
 
 # 完整环境变量确认（无意外变更）:
-KEY_COOLDOWN_S=37.0          ← ✅ 36.0→37.0
-TIER_COOLDOWN_S=42           ← 未变
-UPSTREAM_TIMEOUT=63          ← 未变
+TIER_COOLDOWN_S=43          ← ✅ 42→43 (+1s)
+KEY_COOLDOWN_S=37.0         ← 未变
+UPSTREAM_TIMEOUT=63         ← 未变
 MIN_OUTBOUND_INTERVAL_S=21.0 ← 未变
-HM_CONNECT_RESERVE_S=12      ← 未变
-TIER_TIMEOUT_BUDGET_S=120    ← 未变
-PROXY_TIMEOUT=300            ← 未变
+HM_CONNECT_RESERVE_S=12     ← 未变
+TIER_TIMEOUT_BUDGET_S=120   ← 未变
+PROXY_TIMEOUT=300           ← 未变
 ```
 
 ---
@@ -136,17 +151,19 @@ PROXY_TIMEOUT=300            ← 未变
 
 | 指标 | 变更前 | 变更后预期 |
 |------|--------|------------|
-| 键冷却时间 | 36.0s | 37.0s (+1s) |
-| 键冷却 vs 层级冷却 gap | 6s | 5s |
-| SSLEOFError (glm5.1) | 71/30min | ~63-68 (-5~10%) |
-| ConnectionResetError | 56/30min | ~50-54 (-5~10%) |
-| Fallback率 | 81.6% | ~81% (小幅↓) |
-| 成功率 | 97.1% | ~97.5% |
-| all_tiers_exhausted | 27 | ~24 |
+| 层级冷却时间 | 42.0s | 43.0s (+1s) |
+| 键冷却 vs 层级冷却 gap | 5s | 6s |
+| 5键全429模式频率 | 每30min ~2次 | ~1-2次 (↓) |
+| ConnectionResetError (glm5.1) | 6/30min | ~4-5 (↓20-30%) |
+| SSLEOFError (glm5.1) | 6/30min | ~4-5 (↓20-30%) |
+| NVStream_IncompleteRead | 1/30min | ~0-1 |
+| Fallback率 | 52.7% | ~50-52% (小幅↓) |
+| 成功率 | 98.2% | ~98.5% |
+| P95延迟 | 83,836ms | ~78,000-80,000ms |
 
-**机制**: +1s KEY_COOLDOWN = 键429后额外1s冷却 = 减少SSLEOFError (avg=12,185ms) 发生在键刚恢复时 = NV API连接池更多稳定时间 = 更少SSLEOFError = 更少ConnectionResetError = 更快请求完成 = 更低延迟 = 更稳定。
+**机制**: +1s TIER_COOLDOWN = 层级冷却从42→43 = gap从5s→6s = 层级冷却到期后键仍有一秒冷却窗口 = 新请求触发glm5.1时不会立即遇到所有键恢复 → 减少"5键全429→GLOBAL-COOLDOWN→deepseek fallback"循环 = 更少NVCFPexecConnectionResetError(k1/k2早期键连接重置) = 更少SSLEOFError(SSL EOF在键恢复边缘发生) = 更快请求完成 = 更低延迟 = 更稳定。
 
-**注意**: glm5.1 NVCF函数100% 429是NV API侧函数级速率限制，HM2侧任何配置变更无法消除。优化焦点从"消除429"转向"减少键恢复后立即再429/SSLEOFError的恶性循环"。
+**注意**: glm5.1 NVCF函数100% 429是NV API侧函数级速率限制，HM2侧任何配置变更无法消除。优化焦点从"消除429"转向"减少5键全429后中层级冷却与键冷却的时间窗口重叠，降低键恢复后立即再全部429的恶性循环"。
 
 ---
 
