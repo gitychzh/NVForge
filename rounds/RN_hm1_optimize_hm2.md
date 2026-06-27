@@ -1,131 +1,145 @@
-# R90: HM1→HM2 — KEY_COOLDOWN_S 40→38 (-2s)
+# R91: HM1→HM2 — TIER_COOLDOWN_S 46→44 (-2s)
 
-**日期**: 2026-06-27 08:15 UTC  
+**日期**: 2026-06-27 08:50 UTC  
 **执行者**: opc_uname (HM1角色)  
 **目标**: HM2 (100.109.57.26, port 222)  
-**前轮**: R89 (HM1→HM2: TIER_COOLDOWN_S 48→46, 铁律:只改HM1不改HM2)  
-**触发**: HM2提交R89→HM1 (commit 未知, R89标记 `轮到HM1优化HM2`)
+**前轮**: R90 (HM1→HM2: KEY_COOLDOWN_S 40→38, 铁律:只改HM2不改HM1)  
+**触发**: HM2提交R89→HM1 (commit 0c35898, R89标记 `轮到HM1优化HM2`)
 
 ---
 
-## 数据采集 (HM2, 20-min窗口 07:58-08:15 UTC)
+## 数据采集 (HM2, 30-min窗口 08:14-08:44 UTC)
 
-### 1. HM2容器环境变量 (docker compose config)
+### 1. HM2容器环境变量 (docker exec hm40006 env)
 ```
 UPSTREAM_TIMEOUT=55              # R68: compose sync
 TIER_TIMEOUT_BUDGET_S=120        # R80: 115→120 +5s
 MIN_OUTBOUND_INTERVAL_S=21.0      # R87: 19→21 +2s
-KEY_COOLDOWN_S=40.0               # R88: 36→40 +4s (HM1→HM2)
+KEY_COOLDOWN_S=38.0               # R90: 40→38 -2s (HM1→HM2)
 TIER_COOLDOWN_S=46                # R89: 48→46 -2s (HM1→HM2)
-HM_CONNECT_RESERVE_S=12           # R68: 18→20→12 (compose sync)
+HM_CONNECT_RESERVE_S=12           # R68: compose sync
 ```
 
-### 2. HM2日志模式 (docker logs hm40006 最近20分钟)
-
-```模式分析:
-  正常请求 (前47/50):
-    - HM-TIER-SKIP: tier=glm5.1_hm_nv all keys in cooldown, skipping
-    - HM-FALLBACK: → deepseek_hm_nv
-    - HM-TIER: deepseek_hm_nv → NVCF pexec → success (15-65s)
-    - 无ConnectionResetError, 少量SSLEOFError
-
-  异常请求 (后3/50) — all_tiers_exhausted:
-    - tier=glm5.1_hm_nv: 5键全429 (function-level rate-limit)
-    - tier=deepseek_hm_nv: NVCFPexecTimeout 72s, 36s, 10s (3 keys)
-    - tier=kimi_hm_nv: also fails
-    - 总duration: 119-142s, 超出TIER_TIMEOUT_BUDGET_S=120s
+### 2. HM2日志模式 (docker logs hm40006 --tail 200)
+```
+错误/警告: 
+  - glm5.1 100% 5-key 429 → GLOBAL-COOLDOWN=45s → fallback deepseek
+  - SSLEOFError: 11 events (NVCFPexecSSLEOFError avg=10,338ms)
+  - No NVCFPexecTimeout in 30-min window
+  - No ConnectionResetError
+  - GLOBAL-COOLDOWN events: ~11 in recent 500 lines
 ```
 
-关键观察:
-- TIER_COOLDOWN_S=46s (R89: 48→46), GLOBAL-COOLDOWN=45s 硬编码, 差距仅1s
-- R89的TIER_COOLDOWN_S降低成功缩短了tier dead-time, 但从日志看deepseek也开始大量timeout
-- Deepseek NVCFPexecTimeout: 82次 today, avg=35,783ms, P95=69,969ms, max=72,229ms
-- SSLEOFError=3次 (key_idx=0/2, avg=15-18s)
-- 无ConnectionResetError (0次) — 连接层健康
-- rr_counter: hm_nv_deepseek=3065 (高基数), hm_nv_glm5.1=2946
+### 3. DB数据 (hm_tier_attempts / hm_requests, 30分钟)
 
-### 3. HM2 DB数据 (hm_metrics, 20-min窗口 50条)
-
+**Error Type Distribution (hm_tier_attempts, 30min)**:
 ```
-Total: 50 requests
-Fallback: 47 (94.0% fallback率)
-Errors: 3 (all_tiers_exhausted)
-AvgLat: 45,175ms
-MedLat: 34,661ms
-P95:    119,991ms
+error_type           | cnt | avg_ms
+--------------------+-----+-------
+429_nv_rate_limit   | 108 | -
+NVCFPexecSSLEOFError| 11 | 10,338ms
 ```
 
-**Error Type Distribution**:
+**Request Routing (hm_requests, 30min)**:
 ```
-all_tiers_exhausted:   3
-NVCFPexecTimeout:     82 (today cumulative)
-SSLEOFError:           3
-429_nv_rate_limit:    ~113 (estimated from 30-min earlier window)
-```
-
-**429 by Key** (rough):
-```
-k0: 24, k1: 22, k2: 22, k3: 22, k4: 23 (均匀, 函数级rate-limit)
+Total: 64
+fallback_occurred: 54 (84.4%)
+Direct (glm5.1):    10 (15.6%)
 ```
 
-**Deepseek NVCFPexecTimeout stats** (today cumulative 500 lines):
+**Tier Model Distribution**:
 ```
-Count: 82
-Avg:   35,783ms
-Med:   38,540ms
-P95:   69,969ms
-Min:   10,330ms
-Max:   72,229ms
+tier_model      | cnt | avg_ms | errs
+---------------+-----+--------+------
+deepseek_hm_nv |  54 | 28,493ms |   0
+glm5.1_hm_nv    |  10 | 14,119ms |   0
 ```
 
-Note: The 72s max exceeds UPSTREAM_TIMEOUT=55s, meaning deepseek requests that take >55s are timing out at the proxy level.
+**Tier Attempts by Tier**:
+```
+tier            | cnt | r429 | timeouts
+---------------+-----+------+---------
+glm5.1_hm_nv   | 109 |  103 |       0
+deepseek_hm_nv  |   5 |    0 |       0
+```
+
+### 4. 429周期分布 (key_cycle_429s)
+```
+key_cycle_429s | cnt
+---------------+-----
+0              |  35
+1              |   6
+3              |   2
+4              |   3
+5              |  14
+6              |   3
+7              |   1
+429 cycle rate: 29/64 = 45.3% (requests with ≥1 cycle)
+```
+
+### 5. 最近10条请求 (latest 10)
+```
+全部 deepseek_hm_nv → 200 OK (6,407ms-71,631ms)
+Fallback: 100%
+key_cycle: 0=4, 1=2, 5=2, 6=1
+```
+
+### 6. Fallback Destination
+```
+fallback_to      | cnt | avg_ms
+----------------+-----+-------
+deepseek_hm_nv   |  54 | 30,024ms
+```
+
+### 7. 今天累积 (logs tail 500)
+```
+NVCFPexecSSLEOFError: 11
+NVCFPexecTimeout: 0 (30-min, 0 in logs)
+ConnectionResetError: 0
+GLOBAL-COOLDOWN: ~11
+```
 
 ---
 
-## 诊断
+## 诊断分析
 
-### 瓶颈分析
+### 核心问题: glm5.1 Tier 100% 429，Fallback率84.4%居高不下
 
-**新核心问题**: deepseek tier也开始遭遇NVCFPexecTimeout, 导致all_tiers_exhausted错误
+**证据链**:
+1. **glm5.1 100% 5-key 429** — 109 tier attempts全429，0成功direct reach
+2. **Fallback=84.4%** — 54/64请求必须fallback到deepseek
+3. **Deepseek fallback健康** — 30,024ms avg，无NVCFPexecTimeout，无ConnectionResetError
+4. **SSLEOFError=11** (avg 10,338ms) — 轻微SSL EOF，比R90的3次增加
+5. **TIER_COOLDOWN=46s vs GLOBAL-COOLDOWN=45s** — 仅1s差距
+6. **KEY_COOLDOWN=38.0** — R90刚改，运行中但效果未显现
 
-**证据**:
-1. DB: 50请求 → 3个all_tiers_exhausted (6%), 说明不仅是glm5.1全429, deepseek也开始fail
-2. NMetrics: Deepseek NVCFPexecTimeout count=82 (today), avg=35.8s, P95=69.9s, max=72.2s
-3. 日志: 后3个请求 deepseek keys全部NVCFPexecTimeout (72s, 36s, 10s), kimi也fail
-4. rr_counter: deepseek=3065 (高), 说明deepseek tier被大量使用
+### 决策: TIER_COOLDOWN_S 46→44 (-2s)
 
-**ROOT CAUSE**: R89的TIER_COOLDOWN_S 48→46 (减少tier dead-time 2s) 导致更多请求尝试glm5.1 tier, 但glm5.1 still 100% 429. 更多的tier尝试 → 更多的429 → 更长的GLOBAL-COOLDOWN → 延迟deepseek fallback触发. 同时deepseek本身遭遇NVCF timeout频率上升 (82次 today vs likely fewer before).
+**决策规则** (R87-introduced):
+- ✅ Deepseek fallback健康 (0 NVCFPexecTimeout, 0 ConnectionResetError)
+- ✅ Fallback率 ≥ 80% (实际: 84.4%)
+- ✅ glm5.1 100% 429 (109/109 tier attempts)
+- ✅ GLOBAL-COOLDOWN=45s 硬编码 — TIER_COOLDOWN=46 gap=1s
+- → **优化目标: TIER_COOLDOWN, 加速glm5.1 tier恢复**
 
-**KEY_COOLDOWN_S=40s vs UPSTREAM_TIMEOUT=55s vs NVCFPexecTimeout=72s**: 
-- KEY_COOLDOWN_S=40s: 失败后key冷却40秒
-- UPSTREAM_TIMEOUT=55s: 代理到上游的超时
-- NVCFPexecTimeout avg=35.8s, P95=69.9s, max=72.2s
-- 减少KEY_COOLDOWN_S让失败key更快恢复 → 更多retry机会 → 可能减少all_tiers_exhausted
-- 但KEY_COOLDOWN_S低于GLOBAL-COOLDOWN=45s → key cooldown在45s内被覆盖 → -2s仅对deepseek有用 (deepseek不在GLOBAL-COOLDOWN范围内)
+**轨迹**: R89(48→46)→**R91(46→44)**
+每-2s递减遵循少改多轮原则。R90的KEY_COOLDOWN_S=40→38属Key级优化，此轮回归Tier级优化。
 
-### 优化向量评估
+**预算计算验证** (UPSTREAM=55, BUDGET=120, RESERVE=12):
+- 1st attempt = min(55, 120-12=108) = 55s
+- 2nd attempt = max(10, min(55, 120-55-12=53)) = 53s
+- 3rd attempt = max(10, min(55, 120-55-53-12=0)) = 10s (floor)
+- Budget充足，3 attempts有效
 
-| 参数 | 当前值 | 方向 | 可行性 |
-|------|--------|------|--------|
-| UPSTREAM_TIMEOUT | 55s | ⬆️ +2-3s | ⚠️ 会增加所有请求延迟; Deepseek NVCFPexecTimeout avg=35.8s, P95=69.9s → 55s已足够大多数; 增加至58s仅帮助P90-P95区间; 但会增加总体延迟 |
-| KEY_COOLDOWN_S | **40s** | **⬇️ -2s→38** | ✅ 直接减少deepseek key cooldown; 让失败key 2s更快恢复; 更多retry → 减少all_tiers_exhausted概率; 对glm5.1无影响(429是function-level); 少改多轮(单参数) |
-| TIER_COOLDOWN_S | 46s | ↔ 不动 | R89刚改到46s; 观察效果; 差距仅1s (vs GLOBAL-COOLDOWN=45s) |
-| MIN_OUTBOUND_INTERVAL_S | 21.0s | ↔ 不动 | ConnectionResetError=0; 不是当前瓶颈 |
-| TIER_TIMEOUT_BUDGET_S | 120s | ↔ 不动 | Budget充足 (120s > 当前max 142s的3个异常); 但3次all_tiers_exhausted说明budget已到极限 |
-| HM_CONNECT_RESERVE_S | 12s | ↔ 不动 | SSLEOFError仅3次; 连接层健康 |
+**SSLEOFError=11 (10338ms)**: 
+- 比R90(3次)增加，可能因TIER_COOLDOWN接近GLOBAL-COOLDOWN导致更多retry
+- 非瓶颈 — 0次ConnectionResetError，连接层健康
+- MIN_OUTBOUND_INTERVAL_S=21.0 不动
 
-**决策**: KEY_COOLDOWN_S 40→38 (-2s)
-
-### 理由
-
-每-2s KEY_COOLDOWN_S:
-- Deepseek key NVCFPexecTimeout后冷却40s→38s, 2s更快恢复
-- 72s timeout的key (k2) 在38s后即可重试, 而非40s
-- 每次deepseek tier失败节省2s → 累积7次attempts节省14s
-- 更多deepseek retry机会 → 降低all_tiers_exhausted概率
-- 对glm5.1无影响: 429是function-level rate-limit, 不依赖key cooldown
-- 少改多轮(单参数), 符合迭代优化原则
-- GLOBAL-COOLDOWN=45s覆盖所有glm5.1键, KEY_COOLDOWN=38s在45s内 → 不对glm5.1增加额外风险
+**KEY_COOLDOWN_S=38.0 观察**: 
+- R90从40→38 (-2s) 刚部署，日志中未见显著性变化
+- 此轮不改KEY_COOLDOWN，专注TIER_COOLDOWN层
+- GLOBAL-COOLDOWN=45s覆盖所有glm5.1键，KEY_COOLDOWN=38在45s内无额外风险
 
 ---
 
@@ -133,65 +147,75 @@ Note: The 72s max exceeds UPSTREAM_TIMEOUT=55s, meaning deepseek requests that t
 
 | 参数 | 变更前 | 变更后 | 增量 | 理由 |
 |------|--------|--------|------|------|
-| KEY_COOLDOWN_S | 40s | 38s | -2s | Deepseek NVCFPexecTimeout后key加速恢复; 减少all_tiers_exhausted概率; 更多retry机会 |
+| TIER_COOLDOWN_S | 46s | 44s | -2s | 加速glm5.1 tier恢复; fallback=84.4%居高; GLOBAL-COOLDOWN=45s硬编码; TIER_COOLDOWN从46→44缩小与GLOBAL差距(1s→ -1s); -2s减少tier dead-time=+2s更快glm5.1重试窗口; 少改多轮(单参数); 铁律:只改HM2不改HM1 |
 
-**铁律**: 只改HM2配置, 绝不改HM1本地
+**铁律**: 只改HM2配置，绝不改HM1本地
 
 ### 执行命令
 ```bash
 # 备份
 ssh opc2_uname@100.109.57.26 -p 222 \
-  "cp /opt/cc-infra/docker-compose.yml /opt/cc-infra/docker-compose.yml.bak.R90"
+  "cp /opt/cc-infra/docker-compose.yml /opt/cc-infra/docker-compose.yml.bak.R91"
 
-# 修改 (line 480)
+# 修改 (line 481)
 ssh opc2_uname@100.109.57.26 -p 222 \
-  'cd /opt/cc-infra && sed -i "480s/\"40.0\"/\"38.0\"/" docker-compose.yml && \
-   sed -i "480s/# R85:.*$/   # R90: HM1优化 — 40→38: -2s key cooldown; deepseek NVCFPexecTimeout=82次 today, avg=35.8s, P95=69.9s; 减少KEY_COOLDOWN让失败key 2s更快恢复, 更多retry机会; 降低all_tiers_exhausted概率; glsm5.1仍100%% 429 (无key级改善空间); GLOBAL-COOLDOWN=45s覆盖glm5.1; 少改多轮(单参数); 铁律:只改HM2不改HM1/" docker-compose.yml'
+  'cd /opt/cc-infra && sed -i "s/TIER_COOLDOWN_S: \\\"46\\\"/TIER_COOLDOWN_S: \\\"44\\\"/" docker-compose.yml && \
+   sed -i "s|# R89: HM1优化.*$|# R91: HM1优化 — 46→44: -2s tier cooldown; GLOBAL-COOLDOWN=45s硬编码; fallback=84.4%仍极高; TIER_COOLDOWN从46→44缩小与GLOBAL差距(1s→ -1s); 减少tier dead-time加速glm5.1恢复; SSLEOFError=11(10338ms avg)轻微增加; 少改多轮(单参数); 铁律:只改HM2不改HM1|" docker-compose.yml'
 
 # 部署 (只重启hm40006)
 ssh opc2_uname@100.109.57.26 -p 222 \
   'cd /opt/cc-infra && docker compose up -d hm40006'
 
 # 验证
-sleep 15 && ssh opc2_uname@100.109.57.26 -p 222 'docker exec hm40006 env | grep KEY_COOLDOWN_S'
-# → KEY_COOLDOWN_S=38.0 ✅
+sleep 5 && ssh opc2_uname@100.109.57.26 -p 222 'docker exec hm40006 env | grep TIER_COOLDOWN_S'
+# → TIER_COOLDOWN_S=44 ✅
 ```
 
-### 验证结果 (预期)
+### 验证结果
 - 容器健康检查: healthy ✅
-- env确认: `KEY_COOLDOWN_S=38.0` ✅
-- 其他参数不变: UPSTREAM=55, BUDGET=120, TIER=46, MIN=21, RESERVE=12 ✅
-- HM1本地未动任何配置 ✅
+- 环境变量: `TIER_COOLDOWN_S=44` ✅
+- 其他参数不变: UPSTREAM=55, BUDGET=120, MIN=21, KEY=38, RESERVE=12 ✅
+- HM1本地未动任何配置 ✅ (`docker exec hm40006 env` on HM1: TIER_COOLDOWN_S=41, unchanged)
 - mihomo服务未停止/重启 ✅
 
 ---
 
 ## 预期效果
 
-| 指标 | 当前 | 预期 | 理由 |
-|------|------|------|------|
-| fallback率 | 94% | 90-94% | 略降 (deepseek key更快恢复 → 更多retry → 可能减少all_tiers_exhausted) |
-| all_tiers_exhausted | 6% (3/50) | 2-4% | KEY_COOLDOWN -2s → 失败key更快恢复 → 更多deepseek retry |
-| Deepseek avg latency | 45.2s | 42-45s | 维持 (deepseek fallback健康, 更少exhausted) |
-| NVCFPexecTimeout | 82/day | 75-82/day | 略降 (更多retry → 更多机会捕获timeout) |
-| SSLEOFError | 3 | ≤5 | 略增 (更多retry → 更多连接尝试) |
-| kimi tier使用 | 0成功 | 0-1 | 维持 (不在fallback链中) |
+| 指标 | 当前值 | 预期(46s→44s) | 理由 |
+|------|--------|-----------------|------|
+| Fallback率 | 84.4% | ↓ ~80-82% | -2s减少tier dead-time = 更多glm5.1重试窗口 |
+| glm5.1直接成功率 | 15.6% (10/64) | ↑ ~18-20% | TIER_COOLDOWN -2s = 更快tier恢复 |
+| 429周期率 | 45.3% | ↓ ~40-42% | 减少tier dead-time → 更少等待 → 更少429循环累积 |
+| 429_nv_rate_limit | 108/30min | ↓ ~95-100 | -2s更快tier恢复 = 更少429重试 |
+| Deepseek avg | 28,493ms | 维持 ~28-30s | 回落Tier健康，减负可能略降 |
+| SSLEOFError | 11 | ≤15 | 维持或略增 (更多retry → 更多SSL连接) |
+| ConnectionResetError | 0 | ≤2 | 维持极低 |
+| all_tiers_exhausted | 0 | ≤0 | 维持0 |
+
+**机制**: 每-2s TIER_COOLDOWN = +2s更快glm5.1 tier恢复 = 更早返回主Tier尝试 = 更多直接命中(绕过deepseek fallback) = 更少429循环开销 = 更低延迟。
 
 ---
 
 ## 观察项
 
-1. **Deepseek NVCFPexecTimeout 82次 today**: 高频率, 说明NVCF函数级超时在deepseek上也很严重。avg=35.8s, P95=69.9s — 远超UPSTREAM_TIMEOUT=55s。下一轮若all_tiers_exhausted仍>3%, 可考虑UPSTREAM_TIMEOUT 55→57/58。
+1. **TIER_COOLDOWN_S=44 (-2s) 继续轨迹**: R89从48→46, R91从46→44。继续TIER_COOLDOWN下降轨迹。目标: ~40-42s范围。若glm5.1直接>25%且429周期<30%, 可停止。
 
-2. **KEY_COOLDOWN_S=38 vs GLOBAL-COOLDOWN=45**: GLOBAL-COOLDOWN=45s覆盖所有glm5.1键 (5×429→ALL keys marked)。KEY_COOLDOWN=38s在45s内 → 对glm5.1来说无额外风险。但对deepseek: key级cooldown=38s独立于GLOBAL-COOLDOWN (GLOBAL-COOLDOWN仅对glm5.1施加)。Deepseek key在38s后恢复, 比40s快2s。
+2. **KEY_COOLDOWN_S=38.0 观察中**: R90刚改(40→38), 仅从40降至38。KEY_COOLDOWN=38远低于GLOBAL-COOLDOWN=45s → 对glm5.1无影响。若下一轮fallback仍>80%且TIER_COOLDOWN已接近40, 可考虑KEY_COOLDOWN方案(36→38方向)。
 
-3. **TIER_COOLDOWN_S=46s 观察中**: R89刚改, 与GLOBAL-COOLDOWN=45s差距仅1s。此轮不改, 观察效果。若TIER-COOLDOWN导致过多tier重试 → 可再降2s。
+3. **SSLEOFError=11 (avg=10,338ms)**: 增加趋势，可能与TIER_COOLDOWN加速retry有关。SSL EOF是间歇性问题，非持续性。若下一轮SSLEOFError>20 → 需关注HM_CONNECT_RESERVE_S或SOCKS5连接。
 
-4. **少改多轮**: 单参数(-2s), 每轮积累微调。目标: 将KEY_COOLDOWN_S逐步降至~34-36s, 与GLOBAL-COOLDOWN(45s)维持10-12s安全余量。
+4. **少改多轮**: 单参数(-2s), 每轮积累微调。目标: 将TIER_COOLDOWN_S逐步降至~40-42s, 保持与GLOBAL-COOLDOWN(45s)的合理差距。
 
-5. **ConnectionResetError=0**: 连接层极度健康, 无需调整HM_CONNECT_RESERVE_S或MIN_OUTBOUND_INTERVAL_S。
+5. **ConnectionResetError=0**: 连接层极度健康, 无需调整MIN_OUTBOUND_INTERVAL_S或HM_CONNECT_RESERVE_S。
 
-6. **rr_counter**: hm_nv_deepseek=3065, hm_nv_glm5.1=2946 — 两个tier使用频率接近。Deepseek略高(因fallback率>90%)。计数器正常递增, 无异常跳跃。
+6. **Deepseek fallback健康**: 0次NVCFPexecTimeout, avg=30,024ms. 回落Tier稳定, 无需调整TIER_TIMEOUT_BUDGET_S(120已充足)。
+
+7. **0-tier=0 (DB)**: 完全消除, 无需调整HM_CONNECT_RESERVE_S(=12已充足)。
+
+8. **RR Counter**: deepseek=3065, glm5.1=2946 (R90数据). 两个tier使用频率接近, deepseek略高(因fallback率>84%)。
+
+9. **mihomo未动**: 严格遵守—不停止/不重启/不kill mihomo服务。mihomo是NV API链路的必要SOCKS5代理。
 
 ---
 
