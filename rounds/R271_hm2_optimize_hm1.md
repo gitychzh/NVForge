@@ -74,12 +74,12 @@ R270将TIER_COOLDOWN_S从34→38，修复了R265造成的KEY<TIER反向约束违
 ### 全参数评估
 | Parameter | Current | Adjustment Needed | Reason |
 |-----------|---------|-------------------|--------|
-| UPSTREAM_TIMEOUT | 68 | No | 1h仅1ATE且在R270前; P95 per-key: k0=39s,k1=41s,k2=72s,k3=51s,k4=68s → k2/k4 P95接近/超过68s但均为NVCF server-side variance(Pitfall#29); further reduction risks截断合法长请求. **稳** |
-| TIER_TIMEOUT_BUDGET_S | 164 | No | 2×68=136, remaining=28s >> 5s threshold; ATE由6-7次NVCF timeout(168-196s)超出budget → NVCF server-side(Pitfall#41); R154验证budget增长diminishing returns. **稳** |
-| KEY_COOLDOWN_S | 38 | No | KEY=TIER=38不变量恢复; 0 429s → 无需增长; 38=38无从减. **稳** |
+| UPSTREAM_TIMEOUT | 68 | No | P95=51-72s < 68s? No, P95 per-key: k0=39s, k1=41s, k2=72s, k3=51s, k4=68s. k2和k4的P95接近/超过68s → uptime减少可能导致截断这些长尾请求。但1h仅1ATE且发生在R270前，且都是NVCF server-side timeout(Pitfall#41). **稳** |
+| TIER_TIMEOUT_BUDGET_S | 164 | No | Budget: 2×68=136, remaining=28s >> 5s threshold. ATE由6-7次NVCF timeout(~168-196s)超出budget造成，属NVCF server-side(Pitfall#41). R154已验证budget增长diminishing returns. **稳** |
+| KEY_COOLDOWN_S | 38 | No | KEY=TIER=38不变量恢复. 0 429s → 无需增长; 38=38无从减. **稳** |
 | TIER_COOLDOWN_S | 38 | No | R270修复: 34→38恢复等值. **稳** |
-| MIN_OUTBOUND_INTERVAL_S | 19.2 | No | 2.5 req/min, 5×19.2=96s cycle >> KEY_COOLDOWN=38s; 0 429; 48% capacity utilization. **稳** |
-| HM_CONNECT_RESERVE_S | 24 | No | 0 budget_exhausted_after_connect. **稳** |
+| MIN_OUTBOUND_INTERVAL_S | 19.2 | No | 74 req/30min ≈ 2.5 req/min, 5×19.2=96s cycle >> KEY_COOLDOWN=38s. Capacity utilization ~48%. 0 429. **稳** |
+| HM_CONNECT_RESERVE_S | 24 | No | 0 budget_exhausted_after_connect errors. **稳** |
 
 ### ATE根因分析
 - 6h ATE=43, 全部NVCF server-side PexecTimeout storms
@@ -89,8 +89,9 @@ R270将TIER_COOLDOWN_S从34→38，修复了R265造成的KEY<TIER反向约束违
 
 ### Budget余量计算
 - UPSTREAM_TIMEOUT=68, 2×68=136, remaining=164-136=28s >> 5s threshold ✅
-- NVCF实际per-key timeout ~25-29s, 6 keys × 28s = 168s > 164s → storm期间6次尝试超出budget
-- 不增加BUDGET — 28s余量对2-timeout场景充裕; 6-timeout storms为NVCF server-side不可控
+- 但NVCF实际per-key timeout ~25-29s, 6 keys × 28s = 168s > 164s → 在storm期间6次尝试就超出budget
+- 增加BUDGET到168+5=173能让6 attempts的kimi有5s余量? 但R154证明diminishing returns — ATE次数不会下降(Pitfall#41: NVCF storms make kimi fire but kimi itself also often PexecTimeout)
+- **不增加BUDGET** — 当前28s余量对于2-timeout scenarios充裕; 6-timeout storms为NVCF server-side不可控
 
 ## 🔧 变更执行
 
