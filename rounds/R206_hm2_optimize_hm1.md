@@ -116,7 +116,7 @@
 
 ### Bottleneck Analysis
 - **9 ATE in 30min** — 但全部是NVCF PexecTimeout风暴, 两个集群(10:28-10:41, 12:28-12:33), 每次约154s ≈ 6 keys × ~25s/key
-- **Pitfall #41确认**: ATE中kimi_hm_nv num_attempts=0 — deepseek tier消耗全部budget, kimi无法启动
+- **Pitfall #41确认**: ATE中kimi_hm_nv num_attempts=0 — deepseektier消耗全部budget, kimi无法启动
 - **Pitfall #43确认**: NVCF内部超时(~25s/key)远低于UPSTREAM_TIMEOUT=70s — HM配置无法影响NVCF何时触发PexecTimeout
 - **R154 diminishing returns**: 增加TIER_TIMEOUT_BUDGET_S不能减少NVCF服务器侧超时导致的ATE
 - **0 429, 0 fallback** — 没有速率限制或路由问题
