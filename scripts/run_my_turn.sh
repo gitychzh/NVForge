@@ -96,8 +96,15 @@ echo "" | tee -a "$RUN_LOG"
 # 启动claude非交互session
 # --allow-dangerously-skip-permissions: 无人值守必须(否则权限拦截)
 # --add-dir: 允许访问仓库目录
+# systemd service的PATH不含npm-global, 需显式找claude
+CLAUDE_BIN="$(command -v claude 2>/dev/null || echo "$HOME/.npm-global/bin/claude")"
+if [ ! -x "$CLAUDE_BIN" ]; then
+    echo "[$(date '+%Y%m%d_%H%M%S')] claude未找到($CLAUDE_BIN), 退出" | tee -a "$RUN_LOG"
+    rm -f "$TRIGGER_FILE"
+    exit 127
+fi
 cd "$REPO_DIR"
-claude -p "$(cat "$PROMPT_FILE")" \
+"$CLAUDE_BIN" -p "$(cat "$PROMPT_FILE")" \
     --add-dir "$REPO_DIR" \
     --add-dir "$HOME/cc-infra" \
     --allow-dangerously-skip-permissions \
