@@ -103,7 +103,18 @@ if grep -qE "$MY_TURN_MARKER" "$LATEST_ROUND"; then
     } > "$TRIGGER_FILE"
     # 写LOCK_FILE: 已通知, 防止重复触发(直到下一个对端commit)
     echo "$AFTER" > "$LOCK_FILE"
-    exit 0  # 退出码0, 不让systemd标Failed
+    # R314: 自动执行 — 调用执行器在本机起claude session改对端
+    EXECUTOR="$REPO_DIR/scripts/run_my_turn.sh"
+    if [ -x "$EXECUTOR" ]; then
+        echo "[$TS] $ROLE_LABEL: 调用执行器 $EXECUTOR 自动执行优化..."
+        bash "$EXECUTOR" 2>&1
+        EXIT_C=$?
+        echo "[$TS] $ROLE_LABEL: 执行器退出 code=$EXIT_C"
+        exit $EXIT_C
+    else
+        echo "[$TS] $ROLE_LABEL: 执行器不存在, 仅写trigger通知(CC手动介入)"
+        exit 0
+    fi
 fi
 
 # 对端提交但不是轮到我(我是反对者角色)
