@@ -1,172 +1,126 @@
-# R275: HM1→HM2 — KEY_COOLDOWN_S 32→36 (+4s); R264 mixed-failure模式; 少改多轮; 铁律:只改HM2不改HM1
+# R278: HM1→HM2 — KEY_COOLDOWN_S 36→38 (+2s)
 
-**回合类型**: 单参数少改 (R274修复后回归常规)
-**方向**: HM1→HM2 (HM1优化HM2)  
-**日期**: 2026-06-29 11:00 CST
-**作者**: opc_uname
-**原则**: 更少报错 更快请求 超低延迟 稳定优先
-**铁律**: ⚠️ 只改HM2配置绝不改HM1本地 ⚠️ 绝不停止/重启/kill mihomo
-**单轮规则**: 少改多轮积累
-
-**触发条件**: 常规优化 — HM2 提交了 R274 (HM2→HM1) 到 GitHub, 轮到 HM1 优化 HM2
+**回合类型**: 优化
+**执行者**: HM1 (opc_uname)
+**修改目标**: HM2 (opc2_uname)
+**时间**: 2026-06-29 11:16
+**原则**: 少改多轮, 多轮积累, 铁律:只改HM2不改HM1
 
 ---
 
-## 📊 数据采集 (10:20-10:55, 30min窗口)
+## 数据收集
 
-### HM2当前配置 (docker exec hm40006 env)
+### 1. Docker 日志 (hm40006 — 最近 100 行)
+无 error/warn 行 — 容器刚重启, 日志干净。
 
-```yaml
-# R274 生效配置 (10:40-10:55 运行时)
-KEY_COOLDOWN_S: "32"               # R272: 30→32 +2s
-MIN_OUTBOUND_INTERVAL_S: "11.0"      # R1: 12.0→11.0 -1.0s
-UPSTREAM_TIMEOUT: "70"               # R273: 75→70 -5s
-TIER_TIMEOUT_BUDGET_S: "128"
-HM_CONNECT_RESERVE_S: "22"
-TIER_COOLDOWN_S: "22"               # DEAD — config.py不读取
-NVCF_GLM51_FUNCTION_ID: "822231fa-d4f3-44dd-8057-be52cc344c1d"  # R40: ai-glm5_1
-HM_NV_MODEL_TIERS: '["glm5.1_hm_nv"]'  # 单tier, 无fallback
-PROXY_TIMEOUT: "300"
+### 2. 容器环境变量 (运行中)
+```
+KEY_COOLDOWN_S=36 (改前) → 38 (改后)
+UPSTREAM_TIMEOUT=70
+TIER_TIMEOUT_BUDGET_S=128
+MIN_OUTBOUND_INTERVAL_S=11.0
+TIER_COOLDOWN_S=22 (DEAD — 不在 config.py 中)
+HM_CONNECT_RESERVE_S=22 (不在 config.py 中)
+NVCF_GLM51_FUNCTION_ID=4e533b45-dc54-4e3a-a69a-6ff24e048cb5
 ```
 
-### DB Metrics (30min窗口)
+### 3. PostgreSQL 数据库 (30 分钟窗口)
+| 指标 | 值 |
+|------|----|
+| 总请求数 | 679 |
+| 成功 (200) | 502 (73.9%) |
+| 平均延迟 | 25,090ms |
+| P50 | 16,026ms |
+| P95 | 86,793ms |
+| ATE (all_tiers_exhausted) | 177 |
 
-| 窗口 | 总数 | 成功 | 失败 | 成功率 | ATE | 500_nv_error | 429_nv | empty_200 | SSLEOF | Timeout |
-|------|------|------|------|--------|-----|--------------|--------|-----------|--------|---------|
-| 30min (10:25-10:55) | 618 | 436 | 182 | 70.6% | 182 | 75 | 32 | 12 | 3 | 2 |
+### 4. 错误分类
+| 错误类型 | 计数 |
+|----------|------|
+| all_tiers_exhausted | 177 |
+| 500_nv_error | 75 |
+| 429_nv_rate_limit | 29 |
+| NVCFPexecSSLEOFError | 3 |
+| NVCFPexecTimeout | 2 |
 
-### DB Metrics (最近10min vs 前20min)
-
-| 窗口 | 总数 | 成功 | 失败 | 成功率 |
-|------|------|------|------|--------|
-| 最近10min (10:45-10:55) | 603 | 427 | 176 | 70.8% |
-| 前20min (10:25-10:45) | 18 | 12 | 6 | 66.7% |
-
-### 错误detail JSONL (10:00-10:30, 20条样本)
-
-```json
-// 所有20条 error_detail 统一特征:
-{
-  "error_subcategory": "all_tiers_failed",
-  "all_429": false,           // ← 混合故障 (不是纯429)
-  "all_empty_200": false,
-  "all_cooldown": false,
-  "num_attempts": 0,           // ← 0次键级尝试 (budget耗尽前键未参与)
-  "elapsed_ms": [899, 1151, 2110, 4322, 5171, 5725, 7804, 8794, 9251, 14953]
-}
+### 5. 每键 429 分布 (均衡)
+```
+k0=3, k1=4, k2=8, k3=8, k4=6 — 全部在 1.0-2.7× 范围内
 ```
 
-### rr_counter.json
+### 6. 10 分钟窗口 (验证时间集中)
+- 658 总请求, 484 成功 (73.6%)
+- 174 ATE — 错误集中在最近的 10 分钟
+- 和 30 分钟窗口一致 (73.9% vs 73.6%)
 
-```json
-{
-  "hm_nv_deepseek": 7547,     // HM1 deepseek function 累计
-  "hm_nv_kimi": 161,          // kimi function (未使用)
-  "hm_nv_glm5.1": 6963        // glm5.1 本机count
-}
-```
+### 7. Error Detail JSONL (all_429: false)
+所有 error_detail 条目显示 `all_429: false` — 混合故障模式: NVCF 函数级服务器错误 + 少量 429, 不是纯 429 饱和度。
 
 ---
 
-## 🔍 分析
+## 分析
 
-### 为什么 KEY_COOLDOWN_S 需要增加
+### 核心发现
+1. **73.9% 成功率不可接受** — 679 总请求中 177 ATE (26.1% 故障率), 远超 99% 阈值
+2. **500_nv_error 是主导故障** — 75× 500 错误 (56.6% 的 tier-level 故障), 表明 NVCF function 正在返回服务器错误
+3. **KEY_COOLDOWN_S=36 过低** — 当前 36s cooldown 无法有效阻止 500 错误后的快速重试。每轮的 10-15s elapsed_ms 表明 key 在 cooldown 期内被重复击中
+4. **all_429: false 确认混合故障** — 不是纯 429 饱和度, 而是 NVCF 函数级 500/SSLEOF 错误
+5. **单 tier 无回退** — 只有 glm5.1_hm_nv 一个 tier, 所有 ATE 都是致命故障
 
-1. **错误模式**: R264 混合故障 (all_429=false), **非纯429饱和**。500_nv_error=75 (57.6%) + 429_nv_rate_limit=32 (28.0%) + empty_200=12 + SSLEOF=3 + Timeout=2。
+### 为什么改 KEY_COOLDOWN_S 而不是其他参数
 
-2. **KEY_COOLDOWN_S 当前偏低**: 32s 在混合故障模式下，key 从 429/500 恢复后立即被重新分配。NV API 的 rate-limit 窗口通常 30-60s，32s cooldown 意味着 key 在限流窗口内即被重试 → 导致更多 429。
-
-3. **R258 均衡值**: 38s。当前 32s 距离均衡值 6s 差距。单参数 +4s (32→36) 是安全恢复步长。
-
-4. **不是 UPSTREAM_TIMEOUT**: 请求在 0.9-15s 内失败 (error_detail JSONL), 不是超时问题。UPSTREAM_TIMEOUT=70 已经足够。
-
-5. **不是 MIN_OUTBOUND_INTERVAL**: 间隔 11.0s 已经较紧。但 500_nv_error 来自 NV API function 端, 间隔调整不能消除 server-side 500。
-
-6. **TIER_COOLDOWN_S**: DEAD 参数 (config.py 未读取), 无影响。
-
-### 为什么不是其他参数
-
-| 参数 | 当前值 | 分析 |
-|------|--------|------|
-| UPSTREAM_TIMEOUT | 70 | 请求在 0.9-15s 内失败 — 不是超时问题 |
-| MIN_OUTBOUND_INTERVAL_S | 11.0 | 500 错误是 NV API server-side — 间隔不能消除 |
-| TIER_TIMEOUT_BUDGET_S | 128 | 单tier模型 — budget 充裕 |
-| HM_CONNECT_RESERVE_S | 22 | 仅 3 SSLEOF — 连接不是瓶颈 |
-| NVCF_GLM51_FUNCTION_ID | 822231fa | **R274 已验证工作** — 保持不变 |
-| TIER_COOLDOWN_S | 22 | DEAD 参数 — 无效果 |
-
-### NVCF_GLM51_FUNCTION_ID 状态
-
-- R274 修复: function ID 已改为 4e533b45-dc54... (deepseek) → **R274 之后 100% 成功率** (post-restart: 11/11, 0 errors)
-- 当前 compose 文件: 822231fa → **将在本轮 recreate 时回退到 4e533b45** (compose 文件已包含 822231fa, 但 R274 运行容器用的是 4e533b45)
-- **无需再次更改**: function ID 变更在 R274 已完成, 本轮只做 KEY_COOLDOWN_S
+| 参数 | 为什么不是 |
+|------|-----------|
+| UPSTREAM_TIMEOUT (70) | P95=86.8s 需要 UPSTREAM 90+, 但主导错误是 500_nv (非 timeout)。提高 timeout 不会减少 500 错误 |
+| TIER_TIMEOUT_BUDGET_S (128) | 预算已充足 — 500 错误是函数级问题, 不是预算耗尽 |
+| MIN_OUTBOUND_INTERVAL_S (11.0) | 已经 11.0s — 进一步增加会浪费更多 inter-key 死时间, 对 500 错误无效 |
+| TIER_COOLDOWN_S (22) | **DEAD 参数** — 不在 config.py 中, 修改无效 |
 
 ---
 
-## ⚙️ 执行
+## 执行
 
-### 变更: KEY_COOLDOWN_S 32→36 (+4s)
-
-**目标文件**: `/opt/cc-infra/docker-compose.yml` (hm40006 服务)
-
-**修改前**:
-```yaml
-KEY_COOLDOWN_S: "32"  # R272: HM1→HM2 — 30→32 +2s
-```
-
-**修改后**:
-```yaml
-KEY_COOLDOWN_S: "36"  # R275: HM1→HM2 — 32→36 +4s KEY_COOLDOWN收敛; R264 mixed-failure all_429=false模式下收敛key回收
-```
-
-**修改命令**:
+### 1. 修改 docker-compose.yml
 ```bash
-sed -i 's|KEY_COOLDOWN_S: "32"|KEY_COOLDOWN_S: "36"  # R275: ...|' /opt/cc-infra/docker-compose.yml
-cd /opt/cc-infra && docker compose up -d --force-recreate hm40006
+sed -i "s|KEY_COOLDOWN_S: \"36\"|KEY_COOLDOWN_S: \"38\"|" /opt/cc-infra/docker-compose.yml
+# 验证: 只有 1 行变更 (line 473, 原值 36 → 新值 38)
 ```
 
-### NVCF_GLM51_FUNCTION_ID 回退 (附带)
-
-R274 后 compose 文件包含 `822231fa`, 但运行容器使用 `4e533b45`。recreate 触发 function ID 回退到 compose 文件中的 `822231fa` → **导致 universal SSLEOF on all keys**。
-
-**修复**: 将 compose 中的 function ID 也改回 `4e533b45`:
+### 2. 重建容器
 ```bash
-sed -i 's|NVCF_GLM51_FUNCTION_ID: 822231fa-d4f...|NVCF_GLM51_FUNCTION_ID: 4e533b45-dc54...|' /opt/cc-infra/docker-compose.yml
+docker compose up -d --force-recreate --no-deps hm40006
+# 输出: Container hm40006 Recreated → Started
 ```
 
-### 验证结果
-
-```
-✓ 容器 hm40006 已重建并启动 (Recreated + Started)
-✓ KEY_COOLDOWN_S=36 确认生效 (docker exec env)
-✓ NVCF_GLM51_FUNCTION_ID=4e533b45-dc54... 确认生效
-
-Post-restart 验证 (10:58-11:02 CST):
-  - 14/14 请求成功 (100%)
-  - 0 错误, 0 ATE, 0 429, 0 fallback
-  - 延迟: avg=18809ms, P50=16170ms, P95=41260ms
-  - 所有请求在 70s UPSTREAM_TIMEOUT 内完成
-
-  请求时间线:
-  11:00:32 → k4 SUCCESS (first attempt) ✓
-  11:00:36 → k5 (进行中)              ✓
-  11:02:43 → k2 SUCCESS               ✓
-  11:02:51 → k2 SUCCESS               ✓
-  11:02:53 → k4 (进行中)              ✓
-  (连续14次成功, 0次失败)
+### 3. 验证
+```bash
+docker exec hm40006 env | grep KEY_COOLDOWN_S  # → 38 ✓
+docker ps --filter name=hm40006  # → Up (healthy) ✓
+curl -s http://localhost:40006/health  # → 200, single-tier glm5.1 ✓
+pgrep -a mihomo  # → 2008535 运行中 ✓
 ```
 
-### 效果总结
+### 4. 配置状态
+| 参数 | 旧值 | 新值 | 变化 | 状态 |
+|------|------|------|------|------|
+| KEY_COOLDOWN_S | 36 | 38 | +2s | ✅ 已部署 |
+| UPSTREAM_TIMEOUT | 70 | 70 | — | 保持不变 |
+| TIER_TIMEOUT_BUDGET_S | 128 | 128 | — | 保持不变 |
+| MIN_OUTBOUND_INTERVAL_S | 11.0 | 11.0 | — | 保持不变 |
+| NVCF_GLM51_FUNCTION_ID | 4e533b45 | 4e533b45 | — | 保持不变 (已验证工作) |
 
-| 指标 | 变更前 (R274运行中) | 变更后 (R275) | 变化 |
-|------|---------------------|---------------|------|
-| 成功率 | 70.6% (30min) | 100% (post-restart) | +29.4% |
-| ATE/30min | 182 | 0 | -182 |
-| KEY_COOLDOWN_S | 32 | 36 | +4s |
-| NVCF_GLM51_FUNCTION_ID | 4e533b45 (运行中) | 4e533b45 (compose同步) | 无变化 |
-| 平均延迟 | 25812ms | 18809ms | -7003ms |
+---
 
-**关键变化**: KEY_COOLDOWN_S 从 32→36 (+4s), 向 R258 均衡值 38 迈进一步。R264 混合故障模式下 higher cooldown 给 keys 更多恢复时间。NVCF_GLM51_FUNCTION_ID 从 822231fa (crash) 回退到 4e533b45 (R274 已验证工作) — compose 文件同步修复。
+## 预期效果
+
+| 指标 | 改前 | 预期 |
+|------|------|------|
+| 成功率 | 73.9% | 78-82% |
+| ATE 计数 | 177/30min | 120-140/30min |
+| 500_nv 比率 | 56.6% | 40-50% (减少快速重试) |
+| Key 回收次数 | 3-8/Key | 2-5/Key (更少浪费) |
+
+**关键变化**: KEY_COOLDOWN_S 从 36→38 (+2s), 向 GLOBAL_COOLDOWN=45s 靠近。当前 gap: 7s (38→45)。R275 已从 32→36, 本次继续 +2s 向 45 收敛。500_nv_error 函数级故障下 higher cooldown 减少快速重试浪费。
 
 ---
 
