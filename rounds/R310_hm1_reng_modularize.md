@@ -92,3 +92,30 @@
 | 路由 | k1/k3/k5=mihomo(7894/7896/7899), k2/k4=DIRECT | 不变 |
 
 ## ⏳ 轮到HM2优化HM1  ← 脚本检测此标记(交替优化序列恢复)
+
+---
+
+## 8. 路由回归修复 (2026-06-29 22:28, 同轮补正)
+
+R310 期间 docker-compose 的 5 个 `HM_NV_PROXY_URL` 被意外清空(从 k1/k3/k5=mihomo
+变成全直连), 与 §4.6/§7 round file 声称的"路由不变"不符. 抓包实测确认全直连
+(直连 NVCF 100.25.79.1:443, 无 789x). 这与用户 Req6 要求的 k1/k3/k5 走 mihomo 不符.
+
+**修复**: 恢复 compose env
+- `HM_NV_PROXY_URL1=http://host.docker.internal:7894` (k1 mihomo)
+- `HM_NV_PROXY_URL2=""` (k2 direct)
+- `HM_NV_PROXY_URL3=http://host.docker.internal:7896` (k3 mihomo)
+- `HM_NV_PROXY_URL4=""` (k4 direct)
+- `HM_NV_PROXY_URL5=http://host.docker.internal:7899` (k5 mihomo)
+
+`docker compose up -d hm40006` 重启, health=ok.
+
+**三层验证(全过)**:
+1. env: 容器�� `env | grep HM_NV_PROXY_URL` 确认 URL1/3/5=7894/7896/7899, URL2/4 空 ✅
+2. 抓包: nsenter 容器 netns tcpdump 同时拍到
+   - 直连: `172.18.0.5 → 98.88.49.146.443` (NVCF, k2/k4 路径)
+   - mihomo: `172.18.0.5 → 172.17.0.1.7896` (SOCKS5, k3 路径) ✅
+3. HM-KEY 日志: k1/k3/k5=`via http://host.docker.internal:789x`, k2/k4=`DIRECT` ✅
+4. DB: 重启后请求 `host_machine=opc_uname`, status=200, RR k1→k5 正常轮转 ✅
+
+路由恢复为 Req6 设计, 模块化代码逻辑零改动(本次仅改 compose env, 未碰 .py).
