@@ -59,7 +59,14 @@ fi
 LATEST_AUTHOR=$(git log -1 --format='%an' HEAD)
 LATEST_HASH="$AFTER"
 LATEST_MSG=$(git log -1 --format='%s' HEAD)
-LATEST_ROUND=$(ls -1t "$REPO_DIR/rounds"/R*_*.md 2>/dev/null | head -1)
+# 找最新round文件: 按R号数字排序(不按mtime, 避免git触碰改序), 排除RN占位文件
+LATEST_ROUND=$(ls "$REPO_DIR/rounds"/R*_*.md 2>/dev/null \
+    | grep -oP 'R\K[0-9]+' \
+    | paste - <(ls "$REPO_DIR/rounds"/R*_*.md 2>/dev/null) \
+    | grep -vP '\t\S*RN_' \
+    | sort -n \
+    | tail -1 \
+    | cut -f2)
 
 if [ -z "$LATEST_ROUND" ]; then
     echo "[$TS] $ROLE_LABEL: 无round文件, 等待"
@@ -72,8 +79,8 @@ FILENAME=$(basename "$LATEST_ROUND")
 # 是我自己提交的(且round文件标记不是我轮次) → 标记已处理
 if [ "$LATEST_AUTHOR" = "$MY_GIT_USER" ]; then
     # 即使我提交的, 也要看round标记(可能我提交了round标记轮到对端, 此时不应触发我)
-    if grep -qE "$MY_TURN_MARKER" "$LATEST_ROUND"; then
-        # 我提交的但标记说轮到我? 不应发生(我提交应标记轮到对端)。安全起见不触发, 标记已处理
+    if tail -5 "$LATEST_ROUND" | grep -qE "$MY_TURN_MARKER"; then
+        # 我提交的但末尾标记说轮到我? 不应发生(我提交应标记轮到对端)。安全起见不触发, 标记已处理
         :
     fi
     echo "$LATEST_HASH" > "$LOCK_FILE"
@@ -84,8 +91,8 @@ fi
 # 对端提交了, 检查是否轮到我
 echo "[$TS] $ROLE_LABEL: 对端($OPPONENT_USER)提交 $LATEST_HASH, 轮次: $FILENAME"
 
-# 检查是否轮到我了(grep整个文件, 标记可能在文件末尾)
-if grep -qE "$MY_TURN_MARKER" "$LATEST_ROUND"; then
+# 检查是否轮到我了: 只看文件末尾5行(避免正文里引用标记的误匹配)
+if tail -5 "$LATEST_ROUND" | grep -qE "$MY_TURN_MARKER"; then
     echo "=================================================="
     echo "  ✅[$TS] 轮到我了 — $ROLE_LABEL 执行优化 (CC请介入新session)"
     echo "  对端提交: $LATEST_MSG"
