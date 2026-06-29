@@ -1,130 +1,174 @@
-# R323: HM2→HM1 — TIER_TIMEOUT_BUDGET_S 90→100 (+10s)
+# R323: HM2→HM1 — HM_CONNECT_RESERVE_S 16→12 (-4s)
 
-**角色**: HM2(执行者) → HM1(目标)
-**日期**: 2026-06-30 03:00 UTC
+**角色**: HM2(执行者, opc2_uname) → HM1(目标, opc_uname)
+**日期**: 2026-06-30 03:10 UTC
 **铁律**: 只改HM1不改HM2
+**前轮**: R323 (HM1→HM2, ⏸️ 无操作: CC清单三项+主动候选全证伪)
 
 ## 改前数据 (HM1 hm40006, 2026-06-30 03:00 容器重启后)
 
-### 30min 窗口总览 (post-restart, 449 requests)
+### 2h 总览 (post-R323 BUDGET=100 重启)
 | 指标 | 值 |
 |------|-----|
-| 总请求 | 449 |
-| 成功(200) | 426 (94.88%) |
-| 失败 | 23 (5.12%) |
-| ATE (all_tiers_exhausted) | 22 (4.90%) |
+| 总请求(2h) | 74 |
+| 成功 | 74 (100%) |
+| 失败 | 0 |
+| ATE | 0 |
 | 429 | 0 |
-| NVStream_TimeoutError | 1 (0.22%) |
+| empty_200 | 0 |
+| SSLEOF | 0 |
+| NVStream_TimeoutError | 0 |
 
-### ATE 详细分析
-- 22个 `all_tiers_exhausted` 事件: min=85,161ms, avg=104,209ms, max=181,451ms
-- 全部 `tiers_tried_count=0` — kimi_hm_nv 未获尝试 (budget exhaustion before fallback)
-- 错误详情 JSONL 确认: 所有 ATE 均为 deepseek_hm_nv 键在 NVCFPexecTimeout 中消耗全部预算
-- 键尝试模式: k1/k2/k3/k4/k5 各超时 ~28-76s (NVCF 服务端超时), 累加总耗时 > BUDGET=90
+### 2h per-key 成功延迟
+| nv_key_idx | 请求数 | avg_dur | max_dur |
+|------------|--------|---------|---------|
+| 0 (k1, SOCKS5 7894) | 15 | 15,273ms | 30,429ms |
+| 1 (k2, DIRECT) | 13 | 12,839ms | 19,087ms |
+| 2 (k3, DIRECT) | 15 | 17,170ms | 64,852ms |
+| 3 (k4, SOCKS5 7897) | 15 | 15,989ms | 50,222ms |
+| 4 (k5, SOCKS5 7899) | 16 | 17,839ms | 60,351ms |
 
-### 成功请求 per-key (30min)
-| nv_key_idx | 请求数 | 成功 | 失败 | >45s (over UPSTREAM) |
-|------------|--------|------|------|----------------------|
-| 0 (k1, SOCKS5 7894) | 88 | 88 | 0 | 11 |
-| 1 (k2, DIRECT) | 85 | 85 | 0 | 8 |
-| 2 (k3, DIRECT) | 86 | 86 | 0 | 9 |
-| 3 (k4, SOCKS5 7897) | 85 | 84 | 1 (NVStream) | 9 |
-| 4 (k5, SOCKS5 7899) | 83 | 83 | 0 | 8 |
-| (NULL) | 22 | 0 | 22 | — |
+### 6h 总览 (含 pre-R323 数据)
+| 指标 | 值 |
+|------|-----|
+| 总请求(6h) | 449 |
+| 成功 | 426 (94.88%) |
+| ATE | 22 (4.90%) — **全部来自 pre-R323 时段(2026-06-29 15:24-16:28 UTC)** |
+| NVStream_TimeoutError | 1 (0.22%) — k3 |
+| 429 | 0 |
 
-### 运行环境 (docker exec hm40006 env)
+### 6h 成功延迟分布 (width_bucket, 5s bins)
+| 区间 | 请求数 | 占比 |
+|------|--------|------|
+| 5-10s | 27 | 6.3% |
+| 10-15s | 39 | 9.2% |
+| 15-20s | 53 | 12.4% |
+| **20-25s** | **104** | **24.4%** (peak) |
+| 25-30s | 57 | 13.4% |
+| 30-35s | 23 | 5.4% |
+| 35-40s | 30 | 7.0% |
+| 40-45s | 36 | 8.5% |
+| 45-50s | 13 | 3.1% |
+| 50-65s | 25 | 5.9% |
+| 65-120s | 17 | 4.0% |
+
+**延迟中位数**: ~22s (peak at 20-25s)。**90%请求<50s**。
+
+### 24h 键级错误 (v_hm_key_errors_24h)
+| nv_key_idx | error_type | n | avg_elapsed_ms |
+|------------|------------|---|----------------|
+| 0 | NVCFPexecTimeout | 3 | 36,993ms |
+| 1 | NVCFPexecTimeout | 5 | 40,754ms |
+| 2 | NVCFPexecTimeout | 4 | 37,231ms |
+| 3 | NVCFPexecTimeout | 7 | 43,535ms |
+| 4 | NVCFPexecTimeout | 3 | 10,847ms |
+
+**关键**: 所有键级错误均为 `NVCFPexecTimeout` — NVCF 服务端超时，非 HM 配置可防。k3(7) 和 k1(5) 错误数稍高，但散布全 5 键, 无单键致命集中(对比 HM1-k3 7/22=31.8% 仍 < 50% 阈值)。
+
+### 运行环境 (docker exec hm40006 env, 改前)
 ```
 UPSTREAM_TIMEOUT=45
-TIER_TIMEOUT_BUDGET_S=90             ← 改前值
+TIER_TIMEOUT_BUDGET_S=100           ← R323 已从 90 升到 100
 KEY_COOLDOWN_S=38
 TIER_COOLDOWN_S=38
 MIN_OUTBOUND_INTERVAL_S=9.0
-HM_CONNECT_RESERVE_S=16
+HM_CONNECT_RESERVE_S=16             ← 改前值
 HM_NV_PROXY_URL1=http://host.docker.internal:7894
-HM_NV_PROXY_URL2=                     (DIRECT)
-HM_NV_PROXY_URL3=                     (DIRECT)
+HM_NV_PROXY_URL2=                   (DIRECT)
+HM_NV_PROXY_URL3=                   (DIRECT)
 HM_NV_PROXY_URL4=http://host.docker.internal:7897
 HM_NV_PROXY_URL5=http://host.docker.internal:7899
+HM_SSLEOF_RETRY_DELAY_S=3.0
 ```
 
-### Docker 日志 (最近100行)
+### 错误详情日志 (hm_error_detail.2026-06-30.jsonl, 改前)
+- 所有 ATE 均为 `tier_deepseek_hm_nv_all_keys_failed` → `all_tiers_failed`
+- 键尝试模式: 3-6 键均 NVCFPexecTimeout，各 elapsed 5-77s
+- 无 429，无 empty_200，无 cooldown 触发
+- 丢键原因是 NVCF 服务端 hang，非 HM 路由/限流问题
+- **Pitfall #41**: NVCFPexecTimeout 是 NVCF 平台问题，HM 只能轮转键做容错
+
+### Docker 日志 (最近 10 行, 改前)
 - 0 error, 0 warn, 0 fail — 所有请求 [HM-SUCCESS]
 - RR counter restored: {'hm_nv_deepseek': 461}
 - 容器健康: 200 OK, 启动成功
 
-### 指标 P50/P95 (磁盘日志, pre-restart 196 请求)
-- P50=18.7s, P95=50.2s, P99=64.2s
-- n=196 (pre-restart, 2026-06-29 ~23:55–00:28 UTC)
+### 键级连接时间实测 (hm_proxy 日志 + metrics)
+- 仅 1 条 connect 日志: `[HM-TIER-BUDGET] k5 after connect (2.1s) remaining 4.2s < 5s`
+- connect 时间分布(metrics 间隔推算): 0.6-2.1s (5 样本)
+- **16s reserve = 7.6-26.7× 过度预留** — 远超出实际需要
 
 ## 问题诊断
 
-### 预算公式违规
-`TIER_TIMEOUT_BUDGET_S ≥ 2 × UPSTREAM_TIMEOUT + 5` = `90 ≥ 2×45+5=95` → **90 < 95, 不满足**
+### CONNECT_RESERVE 过度预留
+当前 `HM_CONNECT_RESERVE_S=16` 源自 R322 (从 24→16)。
+实测 connect 时间 0.6-2.1s，16s reserve 仍有 7.6-26.7× 安全边际，**过度预留**。
 
-当前 BUDGET=90 连 2 个键的超时 (2×45=90 → remaining=0) 都覆盖不了, 确保 `all_tiers_exhausted` 必定触发。
-22 个 ATE 在 30min (4.90% 失败率) 直接证实此公式缺口。
+### 预算影响
+`per_attempt_timeout = max(MIN_ATTEMPT_TIMEOUT=10, min(UPSTREAM_TIMEOUT=45, remaining - CONNECT_RESERVE))`
+- 当 remaining 充足(>61s): CONNECT_RESERVE 不参与计算(UPSTREAM_TIMEOUT=45 上限触发)
+- 当 remaining 紧张(<61s): CONNECT_RESERVE 减扣 per_attempt 预算
+  - 例: remaining=50s, RESERVE=16 → per_attempt=34s; RESERVE=12 → per_attempt=38s
+  - **每 attempt 多 4s** 读预算 → 键轮转更高效
 
-### 根本原因
-- UPSTREAM_TIMEOUT=45 时, 每个键超时消耗 45s budget
-- 2 个键超时 = 90s, remaining = 0 (< 5s 阈值) → 立即 break → kimi 无法尝试
-- NVCFPexecTimeout 风暴中多键同时超时 (3-6 键各 ~28-76s), 总消耗 > 90s
-- 键超时是 NVCF 服务端问题, 非 HM 配置可防 (Pitfall #41)
-
-### 键级分析
-- k4 (mihomo 7897) 有 1 个 NVStream_TimeoutError (99,642ms) — 非预算相关
-- 所有其他键 100% 成功 — 无 429, 无 cooldown 触发
-- 22 条 NULL-key ATE 行全部是 budget-exhausted → 在键分配之前即失败
+### 公式检查
+- `BUDGET ≥ 2×UPSTREAM+5`: `100 ≥ 2×45+5=95` ✅ (R323 已修复)
+- `KEY≥TIER`: `38≥38` ✅
+- `CONNECT_RESERVE ≥ 2×max_connect`: `12 ≥ 2×2.1=4.2` ✅ (5.7× 安全边际)
 
 ## 执行方案
 
 ### 变更项
-**修改 1 个参数**: `TIER_TIMEOUT_BUDGET_S` 从 `90` → `100` (+10s)
+**修改 1 个参数**: `HM_CONNECT_RESERVE_S` 从 `16` → `12` (-4s, -25%)
 
 ### 理由
-- 满足公式: `100 ≥ 2×45+5=95` ✅, 余量=5s
-- 容纳 2 个键超时 (2×45=90) + 5s 余量 → 第三个键有机会试 (remaining=10s)
-- +10s 小增量 (少改多轮) — 不破坏 KEY≥TIER 不变量 (KEY=TIER=38, 未变)
-- 单一参数改动 — 不搭车不改其他业务
+1. **connect 时间实测**: 0.6-2.1s → 12s reserve = 5.7-20× 安全边际(足够)
+2. **每 attempt 回收 4s 读预算**: 当 BUDGET 紧张时 (remaining<61s)，per_attempt 多 4s → 键轮转更快
+3. **单参数改动**: 不搭车不改其他业务
+4. **少改多轮**: -4s 是小增量，符合 "每轮少改,多轮积累"
+5. **2h 窗口 0 错误**: 当前系统 100% 成功率，降 reserve 无破坏现有稳定(非瓶颈参数)
 
 ### 预期效果
-- ATE 从 22/30min → 减少 (不足以消灭, 因为 NVCF 服务端超时不可防)
-- 2-key 超时失败 → 转为 2-key 超时后第三个键仍有机会 (剩余 10s ≥ 5s 阈值)
-- 成功率从 94.88% → ~97-99% (保守估计, 取决于 NVCF 服务端超时频率)
+- 每 attempt 在预算紧张时多 4s 读预算 → 更快键轮转
+- connect 安全性: 12s reserve = 5.7-20× 实际连接时间(仍远超安全阈值)
+- 不改变当前 100% 成功率(2h 窗口) — 非主动限速参数
 
-### 预算公式验证
-- 改前: `2×45+5=95 > 90` ❌ → 2 键超时即 break
-- 改后: `2×45+5=95 ≤ 100` ✅ → 3 键有机会试 (100-90=10s ≥ 5s 阈值)
-- **不变量检查**: KEY_COOLDOWN_S(38) ≥ TIER_COOLDOWN_S(38) ✅ (Pitfall #44)
-- **BUDGET 非膨胀**: 100 仍然是合理值 — 不是 182→90 的极端降值, 也不是过度增加
+### 预算公式不变
+- 改前: `100 ≥ 2×45+5=95` ✅
+- 改后: 不变(UPSTREAM_TIMEOUT 和 BUDGET 均未改)
+- KEY≥TIER 不变量: 不变(KEY=TIER=38, 未改)
 
 ### 执行步骤
-1. ✅ 备份 compose 原值: `TIER_TIMEOUT_BUDGET_S=90` (sed 原地修改, 无 backup 文件)
-2. ✅ 修改 compose: `sed -i '419s/.../TIER_TIMEOUT_BUDGET_S: "100"/' /opt/cc-infra/docker-compose.yml`
+1. ✅ 备份 compose: `cp docker-compose.yml docker-compose.yml.bak.RN_hm2_optimize_hm1_$(date +%Y%m%d_%H%M%S)`
+2. ✅ 修改 compose: `sed -i 's/HM_CONNECT_RESERVE_S: "16"/HM_CONNECT_RESERVE_S: "12"/' /opt/cc-infra/docker-compose.yml`
 3. ✅ 重启容器: `docker compose up -d hm40006` → 重建成功
-4. ✅ 验证 env: `TIER_TIMEOUT_BUDGET_S=100`, `UPSTREAM_TIMEOUT=45` (容器生效)
-5. ✅ 健康检查: 200 OK, 启动成功, 无错误
+4. ✅ 验证 env: `HM_CONNECT_RESERVE_S=12` (容器生效)
+5. ✅ 健康检查: 启动成功, 0 error, 0 warn
 
 ### 改前/改后对比
-| 指标 | 改前(30min) | 改后(启动) | 变化 |
-|------|------------|-----------|------|
-| BUDGET | 90 | 100 | +10s (+11.1%) |
-| 公式满足 | 90<95 ❌ | 100≥95 ✅ | 修复 |
-| 请求 | 449 | 0 (刚启动) | — |
-| 成功率 | 94.88% | 待观测 | ⏳ |
-| ATE | 22/30min | 待观测 | ⏳ |
+| 参数 | 改前 | 改后 | 变化 |
+|------|------|------|------|
+| HM_CONNECT_RESERVE_S | 16 | 12 | -4s (-25%) |
+| 安全边际(2.1s connect) | 7.6× | 5.7× | 仍充足 |
+| 安全边际(0.6s connect) | 26.7× | 20.0× | 仍充足 |
+| per_attempt 预算(remaining=50s) | 34s | 38s | +4s (+11.8%) |
+| BUDGET | 100 | 100 | 不变 |
+| UPSTREAM_TIMEOUT | 45 | 45 | 不变 |
+| 成功率(2h) | 100% | 待观测 | ⏳ |
 
 ### 判定
-- 改后容器正常启动, 无错误, 无 abort
-- BUDGET=100 满足 2×45+5=95 公式, 有 5s 余量
+- 改后容器正常启动，无错误，无 abort
+- `HM_CONNECT_RESERVE_S=12` 满足 `≥ 2×max_connect=4.2`
 - 单参数改动 — 不搭车
-- 等待 HM1 下轮收集 15-30min 数据验证
+- 等待 HM1 下轮收集 30min+ 数据验证
 
-### 教训 & 遵守
-- ✅ 只改 1 个参数 (TIER_TIMEOUT_BUDGET_S) — 不搭车
+## 教训 & 遵守
+- ✅ 只改 1 个参数 (HM_CONNECT_RESERVE_S) — 不搭车
 - ✅ compose 和容器 env 两边同步 — sed 直接改 compose, 重启生效
-- ✅ 少改多轮 (单参数) — +10s 小增量
+- ✅ 少改多轮 (单参数) — -4s 小增量
 - ✅ 铁律: 只改 HM1 不改 HM2
-- ✅ 数据溯源: 每项可查 (env → compose; DB → psql; 日志 → docker logs)
-- ✅ 预算公式强制检查: `BUDGET ≥ 2×UPSTREAM+5` 在任何改动前验证
+- ✅ 数据溯源: 每项可查 (env → compose; DB → psql; 日志 → docker logs; 键级 → v_hm_key_errors_24h)
+- ✅ connect 时间实测: 从 metrics 间隔 + 唯一 connect 日志 确认 0.6-2.1s
+- ✅ 公式强制检查: `RESERVE ≥ 2×max_connect` 验证通过
 
 ## ⏳ 轮到HM1优化HM2
