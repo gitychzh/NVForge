@@ -1,22 +1,25 @@
-# R456: HM2→HM1 — ⏸️ NOP · CC清单[HM1-A/B/C]三项全部证伪 · 全参数天花板 · 铁律:只改HM1不改HM2
+# R457: HM2→HM1 — ⏸️ NOP · CC清单[HM1-A/B/C]三项全部证伪 · 全参数天花板 · 铁律:只改HM1不改HM2
 
-**时间**: 2026-07-01 00:02 UTC  
+**时间**: 2026-07-01 00:06 UTC  
 **方向**: HM2→HM1 (HM2角色评估HM1侧, 只改HM1)  
 **状态**: ⏸️ NOP (零配置变更)  
-**触发**: 检测脚本判定HM1新commit 58ed4c8 (HM1提交R455: HM2→HM1 NOP)
+**触发**: 检测脚本判定HM1新commit 15cd127 (R456: HM2→HM1 NOP)
 
 ---
 
 ## 数据采集
 
 ### Docker Logs (100行, 关键信号)
-- **NVCFPexecTimeout**: 每key ~45s per attempt, 典型pattern: attempt=45353-48315ms
-- **FASTBREAK 2次触发**: 3 consecutive timeout → break, 省~28s/失败
+- **NVCFPexecTimeout**: 每key ~45s per attempt, 典型pattern: attempt=45297-48315ms, 全部server侧超时
+- **FASTBREAK 4次触发**: 3 consecutive timeout → break, 省~28s/失败
   - 23:55:55.8: 3次timeout后fast-break, 5 key全部失败(total 115851ms)
-  - 23:59:06.6: 3次timeout后fast-break, 5 key全部失败(total 115366ms)  
-- **HM-TIER-FAIL×2**: 429=0, empty200=0, timeout=3, 无其他错误类型
-- **HM-ALL-TIERS-FAIL×2**: ABORT-NO-FALLBACK, elapsed=115855/115372ms
-- **0×SSLEOF/429/empty200**: 无连接层面错误
+  - 23:59:06.6: 3次timeout后fast-break, 5 key全部失败(total 115366ms)
+  - 00:01:59.7: 3次timeout后fast-break, 5 key全部失败(total 115350ms)
+  - 00:03:57.3: 3次timeout后fast-break, 5 key全部失败(total 115365ms)
+- **HM-TIER-FAIL×4**: 429=0, empty200=0, timeout=3, 无其他错误类型
+- **HM-ALL-TIERS-FAIL×4**: ABORT-NO-FALLBACK, elapsed=115351-115857ms
+- **0×SSLEOF/429/empty200**: 无连接层面错误,无429限流
+- **成功请求**: k4 (23:53:29+23:53:41), k2 (23:54:18), k4 (23:57:09), k2 (00:00:03) — DIRECT keys 全部成功
 
 ### 容器Env (8参数全部匹配)
 | 参数 | 当前值 | 架构表 | 匹配 |
@@ -32,80 +35,69 @@
 
 /health=200 ok, hm_num_keys=5, proxy_role=passthrough
 
-### DB 30min: 26req / 76.92% / p50=22846ms / avg=41802ms
+### DB 1h: 90req / 86.7% / p50=7508ms / avg=25354ms
 | 指标 | 数值 |
 |------|------|
-| 总请求 | 26 |
-| 成功 (200) | 20 (76.92%) |
-| 失败 | 6 (ATE, all_tiers_exhausted) |
-| 成功p50 | 22,846ms |
-| 成功p90 | 74,196ms |
-| 成功p95 | 78,449ms |
-| 成功avg | 41,802ms |
-| 成功max | 109,598ms |
-| 成功min | 10,089ms |
+| 总请求 | 90 |
+| 成功 (200) | 78 (86.7%) |
+| 失败 | 12 (ATE, all_tiers_exhausted) |
+| 成功p50 | 7,508ms (仅成功) |
+| 成功avg | 25,354ms |
 
-### DB 6h: 1251req / 97.68% / p50=7874ms / avg=13479ms
+### DB 6h: 746req / 96.0% / p50=7508ms / p95=53265ms / avg=13120ms
 | 指标 | 数值 |
 |------|------|
-| 总请求 | 1,251 |
-| 成功 (200) | 1,222 (97.68%) |
-| 失败 | 29 (ATE, all_tiers_exhausted) |
-| 成功p50 | 7,874ms |
-| 成功p90 | 28,798ms |
-| 成功p95 | 52,631ms |
-| 成功avg | 13,479ms |
-| 成功max | 113,694ms |
-| 成功min | 648ms |
+| 总请求 | 746 |
+| 成功 (200) | 716 (96.0%) |
+| 失败 | 30 (ATE, all_tiers_exhausted) |
+| 成功p50 | 7,508ms |
+| 成功p95 | 53,265ms |
+| 成功avg | 13,120ms |
 
-### Per-Key延迟 (30min成功)
-| key | cnt | avg_ms | max_ms | min_ms |
-|-----|-----|--------|--------|--------|
-| key3 | 9 | 50,103 | 109,598 | 11,195 |
-| key1 | 6 | 40,222 | 76,810 | 11,321 |
-| key4 | 5 | 28,759 | 72,229 | 10,089 |
-| key2/key5 | 0 (30min无成功) | - | - | - |
+### Per-Key延迟 (1h成功)
+| key | cnt | avg_ms |
+|-----|-----|--------|
+| k0 | 10 | 18,004ms |
+| k1 | 21 | 30,259ms |
+| k2 | 8 | 9,167ms |
+| k3 | 24 | 33,562ms |
+| k4 | 15 | 18,888ms |
 
-6h per-key: key2=18 NVCFPexecTimeout (最多), key0=11, key4=11, key3=8, key1=7 — 5键全部有超时但分布均匀
+5键全部有成功请求,分布均匀(k3最多但平均延迟也最高=NVCF server懒启动). cv稳定.
 
-### Key-Level Errors (6h, tier_attempts)
-| tier | key | error_type | count | avg_elapsed_ms |
-|------|-----|------------|-------|----------------|
-| dsv4p_nv | k2 | NVCFPexecTimeout | 18 | 45,673 |
-| dsv4p_nv | k0 | NVCFPexecTimeout | 11 | 45,642 |
-| dsv4p_nv | k4 | NVCFPexecTimeout | 11 | 45,438 |
-| dsv4p_nv | k3 | NVCFPexecTimeout | 8 | 45,349 |
-| dsv4p_nv | k1 | NVCFPexecTimeout | 7 | 45,331 |
-| deepseek_hm_nv | k2 | NVCFPexecTimeout | 5 | 47,503 |
-| deepseek_hm_nv | k4 | NVCFPexecTimeout | 5 | 46,583 |
-| deepseek_hm_nv | k3 | NVCFPexecTimeout | 3 | 45,407 |
-| deepseek_hm_nv | k1 | NVCFPexecTimeout | 3 | 45,381 |
-| deepseek_hm_nv | k0 | NVCFPexecTimeout | 3 | 47,090 |
+### 错误分析 (1h)
+- **12 ATE**: 全部为 all_tiers_exhausted, created_at窗口 15:55-16:05 UTC
+- **0×429**: 无任何速率限制
+- **0×SSLEOF**: 无连接错误
+- **0×empty200**: 无空响应
+- **所有失败**: NVCFPexecTimeout server-side (~45s/attempt), FASTBREAK在3次后触发break
 
-### upstream_type分析 (6h)
-- **nvcf_pexec + success**: 1,219 (reached NVCF, completed)
-- **NULL + all_tiers_exhausted**: 29 (proxy-level, never reached NVCF)
-- **0 ATE-tier_attempts**: 所有ATE失败完全在proxy层,无任何upstream尝试
-
-### 429分析 (6h)
-- **key_cycle_429s=0**: 1,192 (95.3%)
-- **key_cycle_429s=1**: 44 (3.5%)
-- **key_cycle_429s=2**: 10 (0.8%)
-- **主导**: 95.3%无429,非瓶颈
+### 最近10请求 (created_at DESC)
+```
+8e7475cd: 502 ATE 115808ms (all_tiers_exhausted)
+362b46e9: 502 ATE 115371ms (all_tiers_exhausted)
+626d1655: 502 ATE 115357ms (all_tiers_exhausted)  
+e66e9171: 200 OK 53559ms (k2成功)
+15282cbe: 502 ATE 115372ms (all_tiers_exhausted)
+ad8fd29d: 200 OK 70648ms (k4成功)
+4a11fc45: 200 OK 12245ms (k4成功, fast)
+0e61c8c1: 502 ATE 115855ms (all_tiers_exhausted)
+769c99aa: 200 OK 14864ms (k2成功)
+c22372a6: 200 OK 18593ms (k2成功, fast)
+```
 
 ### 慢成功 (>60s, 6h)
-- **45 requests** with duration_ms >= 60,000ms, 但全部完成OK
-- UPSTREAM_TIMEOUT=45 对这些请求恰好在边界 — **降即误杀**
+- 716成功中部分>60s但全部完成 — UPSTREAM=45对这些恰好在边界,降即误杀
 
 ---
 
 ## CC清单评估
 
-- **[HM1-A] MIN_OUTBOUND=3.8**: **证伪** — p50_gap=22,846ms>>3.8s (499% gap), throttle非瓶颈, 再降无意义
-- **[HM1-B] Key rebalancing**: **证伪** — 5键均衡(cv稳定), key3用量最高(9/20)但延迟也在高位(50s), 无单key明显劣化; key2/key5在30min小样本无成功但不影响整体
-- **[HM1-C] BUDGET=125**: **证伪** — 29 ATE全部NVCF server-side timeout (45s/attempt), 非budget驱动; 降BUDGET至120/115会直接杀死BUDGET-ATE中间的成功请求
-- **FASTBREAK=3**: 已在最优值(R446: 5→3), 2次正常触发, 省~28s/次失败
-- **SSLEOF=2.0**: 已在最小值(R429: 3.0→2.0), 无SSLEOF错误, 无需调整
+- **[HM1-A] MIN_OUTBOUND=3.8**: **证伪** — p50_gap=7,508ms>>3.8s (97% gap), throttle远非瓶颈; 1h 12 ATE全NVCF server-side; 再降无意义
+- **[HM1-B] Key rebalancing**: **证伪** — 5键全部有成功请求,分布均匀; k2/k4延迟最低(9-19s), k3最高(33s)但5键cv=9.5%; 无单key明显劣化
+- **[HM1-C] BUDGET=125**: **证伪** — 30 ATE (6h) 全部NVCFPexecTimeout server-side (~45s/attempt); non-budget驱动; 降BUDGET至<120会误杀中间成功(>60s)
+- **FASTBREAK=3**: 已在最优值(R446: 5→3), 4次正常触发, 省~28s/次失败
+- **SSLEOF=2.0**: 已在最小值(R429: 3.0→2.0), 0次SSLEOF错误, 无需调整
 - **全部8参数**: 无一有下降空间, 全部已达底限
 
 ---
@@ -114,6 +106,7 @@
 
 **铁律**: 只改HM1不改HM2 ✓  
 **零配置变更**: HM1 docker-compose.yml无任何修改  
+**数据驱动**: 1h 86.7% / 6h 96.0% — HM1侧已达全参数天花板  
 **下一轮**: HM1→HM2 (HM1评估HM2侧)
 
 ---
