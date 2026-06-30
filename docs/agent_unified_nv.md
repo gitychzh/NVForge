@@ -88,8 +88,55 @@ hm40006 容器内 `gateway/rr_counter.py` 维护单一计数器 `hm_nv_deepseek`
 - openclaw: `cp ~/.openclaw/openclaw.json.bak.unify_nv_* ~/.openclaw/openclaw.json` + 重启 gateway
 - 容器 config.py: `docker exec hm40006 cp /app/gateway/config.py.bak.unify_nv_* /app/gateway/config.py && docker restart hm40006`
 
+## 压力测试结果（2026-06-30 19:09-19:13）
+
+30 条并发 curl（3 批 × 10）+ 期间 hermes cron 6 条 = 压测窗口 36 条。
+
+| 指标 | 结果 |
+|---|---|
+| 成功率 | **100%**（36/36 全 200） |
+| 错误 | 0（零 429 / 零 ATE / 零 timeout） |
+| key 轮询均匀度 | k0=7/k1=7/k2=6/k3=9/k4=7，N+1 均匀环绕 ✅ |
+| 压测请求 P50/P95 | 38s/——（deepseek reasoning + 串行锁 6s 排队，非错误） |
+| agent 请求 P50 | 69s（hermes/oc/ol 长会话 stream） |
+| 接入前 vs 接入后(今日) | before 99.48%/P50 7.3s → after 100%/P50 11.2s（+3.9s 抢锁，可接受） |
+
+结论：三 agent 共享出口在 30 并发下零错误，hermes 主链路成功率未退化（仍 100%），
+延迟因串行锁排队略升但可接受。零 429 证明 5 key 配额充足。
+
+## 5 key 走向最终核实表（unify-nv 2026-06-30 实测）
+
+| key | idx | proxy_url | 出口方式 | 出口IP | 路由 |
+|---|---|---|---|---|---|
+| k1 | 0 | 7894 | mihomo | 美国动态节点 | 海外冗余 |
+| k2 | 1 | (空) | DIRECT | 本机直连(南京电信) | 直连 |
+| k3 | 2 | 7896 | mihomo | 美国动态节点 | 海外冗余 |
+| k4 | 3 | (空) | DIRECT | 本机直连 | 直连 |
+| k5 | 4 | (空) | DIRECT | 本机直连 | 直连 |
+
+mihomo 节点 IP 动态变化（曾 .193/.194，实测已变 .197/.193），不在注释固化。
+compose 注释已规范化（去掉过时固定 IP，改为"实测见日志"）。
+
+## 工程化对比：build 进镜像 vs bind-mount 源码（HM1 vs HM2）
+
+| 维度 | HM1（build 进镜像） | HM2（bind-mount 源码） |
+|---|---|---|
+| compose volume | 仅挂 /app/logs | 额外挂 `./proxy/hm-proxy/gateway:/app/gateway` |
+| 改 .py 后生效 | 需 `docker compose build && up -d`（rebuild 镜像） | 只需 `docker restart`（源码实时挂载） |
+| 改动追踪 | 镜像层不可见，需 docker exec diff | 宿主机源码即真实，git diff 可见 |
+| 网络依赖 | rebuild 需拉基础镜像（ghcr.io 易 TLS timeout） | 无网络依赖 |
+| 一致性 | 镜像与 host 源码可能漂移（本次容器内 patch 未烧入镜像） | 宿主机=容器，零漂移 |
+| 回滚 | 需 rebuild 旧镜像或 cp 容器内 bak | cp 宿主机 bak + restart |
+
+**结论：HM2 的 bind-mount 方式工程化更优**——改源码只需 restart、零网络依赖、零漂移、
+回滚快。HM1 当前 build 进镜像的方式每次改 .py 都要 rebuild（且本次因 ghcr.io 网络问题
+rebuild 失败，只能容器内 patch 临时生效）。
+
+**建议（待用户决策）**：HM1 补一行 compose volume `./proxy/hm-proxy/gateway:/app/gateway`
+对齐 HM2 工程化。代价：容器内 /app/gateway 被 host 覆盖，需确认 host 源码与容器内
+当前运行版本一致（本次 host 已同步改 dsv4p_nv，一致）。好处：以后改 .py 只需 restart。
+
 ## 共享出口的固有代价（已知悉）
 三 agent 与 hermes 主链路共用 hm40006 的 5 key + 进程内串行锁（MIN_OUTBOUND_INTERVAL_S）
 + key cooldown。并发时 opencode/openclaw 会与 hermes 抢锁/key 配额，可能拖累 hermes
-延迟与成功率。本次仅做配置统一与可用性验证，未做并发压力下的 hermes 回归对比
-（建议后续补 30min 窗口 hermes 成功率/延迟对比 [[stageB-snapshot-2026-06-29]] 基线）。
+延迟与成功率。压测显示 30 并发下 hermes 仍 100% 成功率，P50 +3.9s 可接受。
