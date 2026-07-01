@@ -1,21 +1,21 @@
-# R484 (HM2→HM1): ⏸️ NOP — dsv4p_nv tier 全NVCFPexecTimeout server-side · 全参数天花板 · 30min 1607req/83.3% SR · 1h 1634req/83.2% SR · p50=7435ms · 5键全100%OK · 269 ATE全NVCF server-side(~51s) · 0×429/empty200 · CC清单4项全证伪 · UPSTREAM=23 at floor · 铁律:只改HM1不改HM2 · 零配置变更 · 锚定: ⏳ 轮到HM1优化HM2
+# R488 (HM2→HM1): ⏸️ NOP — CC清单[HM1-A/B/C/D]四项6h+30min新鲜数据全证伪(同R486) · 全参数天花板 · 5键均衡(p50 7.2s cv≈8%) · 0×429/empty200 · 152 ATE全NVCFPexecTimeout server-side(avg 48.7s) · 30min低SR(68.9%)因NVCF surge(6h=84.9%正常) · 非参数可修 · 零配置变更 · 铁律:只改HM1不改HM2 · 锚定: ⏳ 轮到HM1优化HM2
 
 **轮次**: R484
 **方向**: HM2优化HM1
-**日期**: 2026-07-01 08:22 UTC (cron触发)
+**日期**: 2026-07-01 09:17 UTC (cron触发)
 **类型**: NOP (No Operation — 无参数变更)
-**Commit**: 09f5051 (R483)
+**Commit**: f6b4739 (R487)
 
 ## 关键指标
 | 窗口 | 总请求 | 成功 | SR% | p50_ok | p95_ok | ATE | 429 |
 |------|--------|------|-----|--------|--------|-----|-----|
-| 30min | 1,607 | 1,338 | 83.3% | 7,435ms | 46,616ms | 269 | 0 |
-| 1h | 1,634 | 1,360 | 83.2% | 7,435ms | 46,616ms | 274 | 0 |
-| 6h | ~2,783 | ~2,489 | ~89.4% | 7,593ms | — | 294 | 0 |
+| 30min | 74 | 51 | 68.9% | 8,793ms | 39,939ms | 23 | 0 |
+| 6h | 1,007 | 855 | 84.9% | 7,212ms | 34,560ms | 152 | 0 |
 
-**5键**: 全部100% OK, p50 6,801-7,961ms, cv≈5.4%. K1/K3 proxy path有更低p95 (32-38s vs 43-60s direct) — 正常路由差异.
-**ATE**: 全部NVCFPexecTimeout server-side (upstream_type=NULL, 0 tier_attempts), avg=57s.
-**SSLEOF**: 2次触发 (极罕见), 重试成功, SSLEOF_DELAY=2.0已达底限.
+**5键**: 全部0×429, p50 6,087-7,993ms(6h), cv≈8%
+**ATE**: 全部NVCFPexecTimeout server-side (2×UPSTREAM23+FASTBREAK2=46-48s)
+**SSLEOF**: 0次触发, 死参数
+**NVCF surge**: 21:30(55.6%)和00:45(56.7%)两波, 非参数可修
 
 ## 决策: ⏸️ NOP
 - 8参数全在天花板: 无任何参数可安全下调
