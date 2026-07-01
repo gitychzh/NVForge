@@ -30,7 +30,7 @@ import threading
 LISTEN_HOST = "0.0.0.0"
 LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "40006"))
 PROXY_TIMEOUT = int(os.environ.get("PROXY_TIMEOUT", "300"))
-UPSTREAM_TIMEOUT = int(os.environ.get("UPSTREAM_TIMEOUT", "45"))  # R38.5: 60→45 (NV p95<30s)
+UPSTREAM_TIMEOUT = int(os.environ.get("UPSTREAM_TIMEOUT", "30"))  # CC-2026-07-01: 45->30, NVCF挂死超时更快放弃切key; compose env 同步  # R38.5: 60→45 (NV p95<30s)
 
 # ─── Gateway auth (局域网 agent 共享 key, 2026-06-30) ──────────────────────
 # 空 = 不校验(向后兼容); 非空 = /v1/* 须带 Authorization: Bearer <HM_GATEWAY_API_KEY>
@@ -45,27 +45,52 @@ PROXY_ROLE = os.environ.get("PROXY_ROLE", "passthrough")
 # ─── Logging ──────────────────────────────────────────────────────────────
 LOG_DIR = os.environ.get("LOG_DIR", "/app/logs")
 
-# ─── NVCF pexec configuration (single model: dsv4p_nv, 三 agent 通用) ──────
-# unify-nv: 内部 model key 从 deepseek_hm_nv 改为 dsv4p_nv (反映通用语义, 非 Hermes 专属).
-# 旧名 deepseek_hm_nv 在 MODEL_MAP 里保留为 alias, 向后兼容 hermes config 与 DB 历史.
+# ─── NVCF pexec configuration (三模型 pass-through, 各 agent 各后端) ──────
+# 3model (2026-07-01): 从单 dsv4p_nv 坍缩态扩为三模型直路由, 三 agent 各对应一真实后端.
+#   hermes   → kimi_nv  (f966661c nvquery-kimi-k2_6)
+#   opencode → dsv4p_nv (8915fd28 sglang-deepseek-v4-pro)
+#   openclaw → glm5_1_nv (6155636e ai-glm-5_1)
+# NVCF 平台实测 (2026-07-01 key1, 169 functions): 三 id 均 ACTIVE 且 pexec 200.
+# 思考能力抓包实测 (2026-07-01 key1 直连 NVCF, 完整 dump 全字段, 足 max_tokens + 推理题):
+#   - deepseek sglang 8915fd28: ★ 真支持思考. 触发参数=reasoning_effort(取值 max/high/...),
+#     内容在 message.reasoning_content(非流式) / delta.reasoning_content(流式逐块). rc 非空 174-343 字符.
+#     thinking:{type:enabled} 对 sglang 无效(200 但 rc 空, 参数被忽略).
+#   - glm5.1 6155636e: ★ 真支持思考, 但触发方式与 deepseek 完全不同!
+#     触发参数=chat_template_kwargs:{enable_thinking:true} (glm 原生 chat template 方式, 非 reasoning_effort).
+#     内容字段同 reasoning_content. rc 非空 1388-1757 字符, usage completion_tokens plain 224→思考 711.
+#     reasoning_effort 任何合法值(none/minimal/low/medium/high/xhigh) → 200 但 rc 恒空(无效); =max → 400.
+#     thinking:{type:enabled} / 顶层 enable_thinking / thinking:"enabled" → 400 拒收.
+#   - kimi f966661c: ★ 真支持思考. 触发参数=reasoning_effort(同 deepseek, OpenAI 风格),
+#     也接受 thinking:{type:enabled} / chat_template_kwargs.enable_thinking (三种都 rc 非空 878-3193).
+#     内容字段同 reasoning_content. 用 reasoning_effort 与 deepseek 保持一致.
+# 教训: NVCF 每个 function 思考触发参数各不相同, 不能假设统一, 必须逐个完整 dump 抓包.
+# inject 字段语义: dict, key=要注入的 body 参数路径, value=要设的值; 客户端已自带该参数则不覆盖.
 NVCF_BASE_URL = os.environ.get("NVCF_BASE_URL", "api.nvcf.nvidia.com")
 NVCF_PEXEC_MODELS = {
+    "kimi_nv": {
+        "function_id": os.environ.get("NVCF_KIMI_FUNCTION_ID",
+                                      "f966661c-790d-4f71-b973-c525fb8eafd4"),  # nvquery-kimi-k2_6 (ACTIVE, hermes 专用)
+        "strip_params": ["thinking_budget"],  # NVCF 拒 thinking_budget → 400
+        # ★ 抓包证实 (2026-07-01): kimi 接受 reasoning_effort/thinking:{type:enabled}/chat_template_kwargs 三种触发,
+        # 均返回非空 reasoning_content (rc 878-3193). 与 deepseek sglang 同用 OpenAI 风格 reasoning_effort 最一致.
+        # 客户端(hermes)自带则不覆盖.
+        "inject": {"reasoning_effort": "medium"},
+    },
     "dsv4p_nv": {
         "function_id": os.environ.get("NVCF_DEEPSEEK_FUNCTION_ID",
-                                      "ee2b0de2-dba5-4a21-993d-d393bacfb853"),  # dynamo-deepseek-v4-pro (ACTIVE, supports reasoning_content)
-        # thinking-via-dynamo (2026-06-30): orion (4e533b45) does NOT emit reasoning_content
-        # for any thinking param; dynamo (ee2b0de2) does, via deepseek-native thinking:{type:"enabled"}.
-        # Verified: dynamo streaming returns reasoning_content chunks BEFORE content chunks.
-        # strip_params still strips thinking_budget (glm5.1 legacy); thinking/reasoning_effort pass through.
-        "strip_params": ["thinking_budget"],  # R277: strip thinking_budget — empty_200 root cause
-        # thinking-inject (2026-07-01): 三 agent 网关侧统一注入 thinking:{type:"enabled"}.
-        # 动机: dynamo function 触发 reasoning_content 的硬条件是 body 必须带 thinking:{type:enabled}.
-        # - openclaw: 自带注入 (DSv4 thinking wrapper), 不受影响 (已有 thinking 时不覆盖).
-        # - hermes: nv_cus 走 legacy path, 只给 kimi 注入 thinking, dsv4p_nv 不注入.
-        # - opencode: 只发 reasoning_effort, 不发 thinking:{type:enabled}, 单独 effort 不触发 dynamo.
-        # 网关侧补齐: 当 body 无 thinking 字段时补 {type:enabled}, 让三 agent 全部拿到思考链.
-        # 安全: 仅对此 model 开启 (inject_thinking=True); glm5.1 等其他 model 不受影响.
-        "inject_thinking": True,
+                                      "8915fd28-fe8f-47d6-a35d-d745d78b35d5"),  # sglang-deepseek-v4-pro (ACTIVE, opencode 专用)
+        "strip_params": [],  # deepseek params 全透传
+        # ★ 抓包证实: reasoning_effort 触发 sglang 真思考, rc 非空. 客户端(openclaw --thinking)自带则不覆盖.
+        "inject": {"reasoning_effort": "medium"},
+    },
+    "glm5_1_nv": {
+        "function_id": os.environ.get("NVCF_GLM51_FUNCTION_ID",
+                                      "6155636e-8ca8-4d9a-b4e5-4e8d231dfd3f"),  # ai-glm-5_1 (ACTIVE, openclaw 专用)
+        # ★ strip reasoning_effort(对 glm5.1 无效且 =max 会 400) + thinking 字段(400) + thinking_budget(400)
+        "strip_params": ["thinking_budget", "reasoning_effort", "thinking"],
+        # ★ 抓包证实: glm5.1 唯一有效触发=chat_template_kwargs.enable_thinking=true (glm 原生方式).
+        # 客户端(opencode)不发此参数, 网关必须注入; 已自带则不覆盖.
+        "inject": {"chat_template_kwargs": {"enable_thinking": True}},
     },
 }
 
@@ -89,14 +114,18 @@ if HM_NUM_KEYS < 5:
 
 # ─── R40 removed: no more LiteLLM glm5.1 HTTP containers ───
 
-# ─── Single-model tier (unify-nv: dsv4p_nv only, no fallback) ────────────
-NV_MODEL_TIERS = ["dsv4p_nv"]
+# ─── Three-model tiers (3model 2026-07-01: 各 agent 各后端, 无跨 tier fallback) ───
+# NV_MODEL_TIERS 仅用于 get_tier_index 定位 start tier; upstream.execute_request 改 tier_order=[mapped_model]
+# 单元素, 天然无跨 tier fallback (各 agent 各后端语义, 不允许 deepseek 悄悄变 glm5.1).
+NV_MODEL_TIERS = ["kimi_nv", "dsv4p_nv", "glm5_1_nv"]
 
 NV_MODEL_IDS = {
+    "kimi_nv": "moonshotai/kimi-k2.6",
     "dsv4p_nv": "deepseek-ai/deepseek-v4-pro",
+    "glm5_1_nv": "z-ai/glm-5.1",
 }
 
-DEFAULT_NV_MODEL = "dsv4p_nv"  # unify-nv: 单模型 dsv4p, 三 agent 通用
+DEFAULT_NV_MODEL = "dsv4p_nv"  # 裸 model 兜底 (opencode 裸名即此)
 
 # ─── Tier timeout budget ──────────────────────────────────────────────────
 TIER_TIMEOUT_BUDGET_S = float(os.environ.get("TIER_TIMEOUT_BUDGET_S", "60"))
@@ -107,21 +136,25 @@ AGENT_SUFFIXES = {
 }
 DEFAULT_AGENT_SUFFIX = "_nv"
 
-# ─── Model name mapping (unify-nv: single canonical name dsv4p_nv) ───────
-# 历史别名 (deepseek_hm_nv / dsv4p / deepseek* 等) 已移除, 统一为 dsv4p_nv.
-# detect_nv_model() 对未知名 fallback 到 DEFAULT_NV_MODEL, 旧请求不受影响.
+# ─── Model name mapping (3model 2026-07-01: pass-through, 不再坍缩) ─────
+# 三模型各自路由到对应内部 key, 不再统一坍缩到 dsv4p_nv.
+# detect_nv_model() 对未知名 fallback 到 DEFAULT_NV_MODEL (dsv4p_nv).
 MODEL_MAP = {
-    "dsv4p_nv": "dsv4p_nv",  # 唯一规范名
-    "deepseek-v4-pro": "dsv4p_nv",  # thinking-via-dynamo: 让 openclaw DSv4 thinking wrapper 命中白名单
-    # openclaw 的 createDeepSeekV4OpenAICompatibleThinkingWrapper 只认 model id
-    # "deepseek-v4-pro" (split("/").pop()), 才会注入 thinking:{type:"enabled"}。
-    # 此别名映射到内部 dsv4p_nv, 后端不变, 仅触发 openclaw 思考注入。
+    "kimi_nv": "kimi_nv",
+    "kimi-k2.6": "kimi_nv",
+    "moonshotai/kimi-k2.6": "kimi_nv",
+    "dsv4p_nv": "dsv4p_nv",
+    "deepseek-v4-pro": "dsv4p_nv",
+    "deepseek-ai/deepseek-v4-pro": "dsv4p_nv",
+    "glm5_1_nv": "glm5_1_nv",
+    "glm5.1": "glm5_1_nv",
+    "z-ai/glm-5.1": "glm5_1_nv",
 }
 
 def detect_nv_model(model_id: str) -> str:
     """Map a frontend model name to the internal NV model key.
 
-    Returns: dsv4p_nv (the only supported model). Falls back to
+    Returns: one of kimi_nv / dsv4p_nv / glm5_1_nv. Falls back to
     DEFAULT_NV_MODEL for unrecognized names.
     """
     mapped = MODEL_MAP.get(model_id, None)
@@ -158,9 +191,11 @@ def throttle_outbound():
             now = time.monotonic()
         _outbound_last_sent = now
 
-# ─── Context window (unify-nv: dsv4p_nv) ────────────────────────────────
+# ─── Context window (3model: 三模型各 131072) ───────────────────────────
 MODEL_INPUT_TOKEN_SAFETY = {
+    "kimi_nv": 131072,
     "dsv4p_nv": 131072,
+    "glm5_1_nv": 131072,
 }
 DEFAULT_CONTEXT_FALLBACK = 131072
 
@@ -179,6 +214,21 @@ from .rr_counter import (  # noqa: E402
     _next_nv_key,
     _save_rr_counter,
 )
+
+
+# ─── R502: Stream upgrade for non-stream requests ──────────────────────
+# Non-stream reqs to NVCF have ~48%% SR vs ~87%% for stream (kimi-k2.6 thinking).
+# NVCF server must complete full inference before sending first byte in non-stream,
+# causing frequent pexec_timeout. Stream mode avoids this by establishing TTFB earlier.
+# FORCE_STREAM_UPGRADE=1: upgrade non-stream → stream internally, accumulate SSE,
+# return non-stream JSON to caller. Zero caller-visible change.
+# R502: When force-stream-upgrade is active, non-stream requests are sent as stream
+# to NVCF. Thinking requests (injected thinking:type:enabled) need longer for first
+# byte. This override extends the per-attempt upstream timeout for upgraded requests
+# only (original non-stream callers). Default: 55s (vs 25s normal), giving thought
+# models more time to emit the first SSE chunk.
+HM_FORCE_STREAM_UPGRADE_TIMEOUT = int(os.environ.get('HM_FORCE_STREAM_UPGRADE_TIMEOUT', '55'))
+HM_FORCE_STREAM_UPGRADE = os.environ.get('HM_FORCE_STREAM_UPGRADE', '0')
 from .cooldown import (  # noqa: E402
     is_key_cooling,
     mark_key_cooling,

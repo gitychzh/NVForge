@@ -36,14 +36,19 @@ def _build_pexec_body(oai_body, tier_model, nvcf_config):
     for param in strip_params:
         pexec_body.pop(param, None)
 
-    # thinking-inject (2026-07-01): 网关侧统一补 thinking:{type:"enabled"}.
-    # 仅对声明了 inject_thinking=True 的 model 生效 (当前仅 dsv4p_nv/dynamo).
-    # dynamo function 触发 reasoning_content 的硬条件是 body 必须带 thinking:{type:enabled};
-    # hermes (legacy path 不注入) / opencode (只发 reasoning_effort) 都缺这个字段.
-    # 已有 thinking 字段则不覆盖 (openclaw 自带注入, 尊重其 reasoning_effort 配置).
-    if nvcf_config.get("inject_thinking") and "thinking" not in pexec_body:
-        pexec_body["thinking"] = {"type": "enabled"}
-        _log("HM-INJECT-THINKING", f"({tier_model}) body had no thinking field → injected thinking:{{type:enabled}}")
+    # thinking-inject (2026-07-01, per-model 抓包驱动):
+    # 每个 model 的 NVCF_PEXEC_MODELS[tier]["inject"] dict 声明要注入的 body 参数
+    # (key=参数路径顶层名, value=要设的值). 不同后端思考触发参数各异(抓包证实):
+    #   - dsv4p sglang 8915fd28: reasoning_effort (OpenAI 风格)
+    #   - glm5.1 6155636e:        chat_template_kwargs.enable_thinking (glm 原生)
+    # 客户端已自带该参数则不覆盖(尊重 openclaw --thinking xhigh 等显式设置).
+    # 注入在 strip 之后, 故 strip 掉的参数由 inject 补回正确形式(如 glm5.1 strip 掉 reasoning_effort
+    # 因对它无效, 再由 inject 补 chat_template_kwargs).
+    inject_map = nvcf_config.get("inject", {}) or {}
+    for param, value in inject_map.items():
+        if param not in pexec_body:
+            pexec_body[param] = value
+            _log("HM-INJECT-THINKING", f"({tier_model}) body had no {param} → injected {param}={value!r}")
 
     return pexec_body
 
