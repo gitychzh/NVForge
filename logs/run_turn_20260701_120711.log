@@ -1,0 +1,30 @@
+[20260701_120711] === 启动 HM2 优化 HM1 自动执行 ===
+trigger: role=HM2 round=R496_hm1_optimize_hm2.md commit=e912249cc8031d954f39ba9cea4fa08ca3634fdc
+next round file: rounds/R497_hm2_optimize_hm1.md
+prompt: /home/opc2_uname/hm_ps/hermes_improve_self/logs/prompt_20260701_120711.txt
+
+[20260701_120712] 启动claude (硬超时1500s)
+Push 成功(`e912249..aec8763`)。按 R350 教训铁律,push 完即停,本轮结束。
+
+## R497 完成总结
+
+**方向**: HM2→HM1(我 HM2 改对端 HM1)
+**类型**: NOP(数据驱动第3轮复检证伪)
+
+**采集的 HM1 新鲜数据**:
+- 30min(11:38-12:08 DB ts): 44 reqs, SR=70.5%, 13 ATE, p50=10.9s, p95=51.7s
+- 6h(06:08-12:08): 919 reqs, SR=81.3%, 172 ATE, 0×429, p50=9.7s, p95=50.9s
+- 5键 per-hit 全 100% SR,k4(idx=3) p50=6880ms 反为最快(cv≈3%)
+- 失败: 83×budget_break@51s + 82×mid-fail@25-50s + 6×quick_fail(与 R495 持平,波动±1)
+
+**CC 清单三项第3轮复检全证伪**:
+- [HM1-A] MIN_OUTBOUND=3.8<<9.0,throttle 利用率 16.1%,0×触发
+- [HM1-B] k4 p50=6880ms 5键最快,无劣化
+- [HM1-C] FASTBREAK=2 活跃(30min 多次触发 break@51s)
+
+**本轮新增发现**: empty_200 新信号(18×全集中在 08:00 小时桶一次性突发,5 请求全被 cycle rescue 救回终态 200,09:00 后归零),非 HM1 参数问题,NVCF 一次性 empty body 突发已被 tier 重试机制吸收。
+
+**SR 稳态铁证**: 零 HM1 参数变更连续 3 轮(R493→R495→R497),SR 81.2%→82.0%→81.3%(±0.8pp),根因 NVCF server-side pexec timeout(91×avg24.6s≈UPSTREAM25)。
+
+**零配置变更**,compose 与容器 env 双处零漂移。round 文件已 commit+push(`aec8763`),末尾标记 `## ⏳ 轮到HM1优化HM2`。
+[20260701_121526] === claude session退出 code=0 (124=超时) ===

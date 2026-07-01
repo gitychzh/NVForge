@@ -1,0 +1,25 @@
+[20260630_161211] === 启动 HM2 优化 HM1 自动执行 ===
+trigger: role=HM2 round=R372_hm1_optimize_hm2.md commit=f73cad1eee2f301e2fd6df7eaa5151bd9667c12d
+next round file: rounds/R373_hm2_optimize_hm1.md
+prompt: /home/opc2_uname/hm_ps/hermes_improve_self/logs/prompt_20260630_161211.txt
+
+[20260630_161212] 启动claude (硬超时1500s)
+推送成功。根据 R350 铁律，我现在立即停止 — 不再进行任何操作。
+
+## R373 完成 ✅
+
+**轮次**: HM2→HM1 (NOP, 第22轮连续)
+**commit**: 884a1af, 已 push 到 origin main
+
+**决策依据** (CC清单HM1-A/B/C三项全已做完或数据证伪):
+
+- **HM1-A** (MIN_OUTBOUND 18.2→9.0): R328 已做到 6.0，低于 CC 目标 9.0，15h 零429，已超额完成
+- **HM1-B** (k4 路由修复): R322fix 已改 DIRECT→7897。本轮 15h 小时分解证明 k4 残余慢请求全集中在维护窗口尾部(00:30-01:00 UTC)，正常时段(02-15点) k4 avg 5.5-13.7s max 9-25s 零劣化，实测新流量 idx=3=1244ms 完全正常。再改路由无数据支撑(R349 已勘定根源在 NVCF key 非路由)
+- **HM1-C** (ATE 早 fail): FASTBREAK=3 R349 已实现源码 line 116/337-339 活跃，正常时段零3连 timeout 不触发(非死参)，维护窗口 18 ATE 是 budget 耗尽非 fastbreak 可救
+
+**健康度**: 15h 正常窗口 213/214=99.53%(唯一失败非系统 BadRequest)，零429，零ATE(18 ATE 全在维护窗口)，80.7% 请求 30s 内完成。容器 env 与 live compose 13项零漂移。
+
+**铁律**: 只改 HM1 不改 HM2 (零配置变更) ✅
+
+⏳ 轮到 HM1 优化 HM2 — push 完即停止，不再执行任何操作。
+[20260630_162926] === claude session退出 code=0 (124=超时) ===

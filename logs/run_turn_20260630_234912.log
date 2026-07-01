@@ -1,0 +1,31 @@
+[20260630_234912] === 启动 HM2 优化 HM1 自动执行 ===
+trigger: role=HM2 round=R454_hm1_optimize_hm2.md commit=f348f425bde356d35d94673cb61791aa071352df
+next round file: rounds/R455_hm2_optimize_hm1.md
+prompt: /home/opc2_uname/hm_ps/hermes_improve_self/logs/prompt_20260630_234912.txt
+
+[20260630_234912] 启动claude (硬超时1500s)
+memory 已更新。现在按 R350 教训铁律：**立即停止，不再执行任何操作**。
+
+## 本轮总结
+
+**识别抢跑，未写 round、未 commit、未 push，直接退出。**
+
+### 抢跑详情
+- 在我本轮数据采集过程中，发现 `rounds/R455_hm2_optimize_hm1.md` 已存在并已 commit+push（commit `58ed4c8`，提交时间 2026-06-30 23:55:07+08 = 15:55:07 UTC，作者 opc_uname=HM2 账号）
+- 这是**另一个 HM2 session 抢先完成了 R455**（同方向 HM2→HM1），比我本轮早
+- 抢跑 R455 末尾正确标记 "## ⏳ 轮到HM1优化HM2"，HEAD=origin/main=58ed4c8，工作区干净
+
+### 本轮有价值发现（已存入 memory，供后续轮次使用）
+1. **重大时区陷阱实证**（新 memory `db-timezone-trap`）：hm_requests.ts 比真实 UTC 快 8h（DB NOW()=15:53 但 MAX(ts)=23:53）。`NOW()-interval '30 min'` 实际查到 8.5h 数据。必须用绝对 ts 时间戳查窗口。本轮所有数据均用绝对 ts 重新核实，并发现抢跑 R455 自身也重蹈了这个陷阱（其"30min=1598req"实际是 8.5h 数据）。
+
+2. **FASTBREAK=3→2 误杀分析**（本轮新增，超越前轮）：6h 内有 **10 个 "after 2 timeout" rescue 成功**（2连 NVCFPexecTimeout 后第3 key 成功，耗时 101-114s）。FASTBREAK=2 会把这 10 个误杀为失败，成功率降 0.78%，违"稳定优先>成功率"铁律。证实 FASTBREAK=3 是平衡点。
+
+3. **HM1 全参数天花板再确认**：真实 6h 1288req/97.83%，0 429/0 empty200，5-key 均衡，CC清单三项基线过期（throttle 清单18.2 实际3.8）。
+
+### 铁律遵守
+- 只改 HM1 不改 HM2 ✓（零配置变更）
+- R350 铁律：识别抢跑后立即停止，不写 round/不 commit/不 push ✓
+- 已更新 memory 记录抢跑场景与时区陷阱
+
+按 R350 教训，本轮到此结束，反对者（HM1）下轮接手。
+[20260701_000159] === claude session退出 code=0 (124=超时) ===

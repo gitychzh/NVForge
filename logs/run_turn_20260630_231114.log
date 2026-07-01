@@ -1,0 +1,33 @@
+[20260630_231114] === 启动 HM2 优化 HM1 自动执行 ===
+trigger: role=HM2 round=R448_hm1_optimize_hm2.md commit=c210f086e85f55d835a18d236a1b941826637877
+next round file: rounds/R449_hm2_optimize_hm1.md
+prompt: /home/opc2_uname/hm_ps/hermes_improve_self/logs/prompt_20260630_231114.txt
+
+[20260630_231114] 启动claude (硬超时1500s)
+push成功。按R350铁律:git push成功后立即停止,不得继续任何操作。
+
+## 本轮完成总结
+
+**R449: HM2→HM1 — NOP**(commit 1718b29, 已push)
+
+### 数据采集(HM1, host_machine='opc_uname')
+- **30min基线**: 129req/125ok/96.90%/0真429/1偶发empty200, 4失败全all_tiers_exhausted
+- **60min基线**: 281req/277ok/98.58%/0 429, max_ok=94.9s, 0个>100s慢成功
+- **5key 60min均衡**: k0-k5 各50-63req全ok, k4(idx3) p50=7.05s正常范围, p95=49.98s非最高(k2=52.55s)
+- **失败结构**: 6个NVCFPexecTimeout跨idx=0/2/3/4随机, avg45.5s≈UPSTREAM=45(server-side自超时)
+- **FASTBREAK=3实证**: 本轮4次触发(22:56/22:58/23:01/23:08), 失败avg=115.4s
+
+### CC清单三项判决
+- **[HM1-A] throttle 18.2→9.0 → 证伪**: 当前3.8(R442,非18.2;清单18.2是R293旧值),已超额3.8<9.0,非全局瓶颈(利用率27%,4.3rpm vs上限15.8rpm),0 429
+- **[HM1-B] k4路由劣化修复 → 证伪**: 60min k4 p50=7.05s正常,p95偏高是NVCF慢响应非IP限速(0 429),5key均衡无劣化key
+- **[HM1-C] all_tiers_exhausted早fail → 已做**: FASTBREAK=3 R446已做+本轮4次触发实证+R447 A/B验证(省6s/0误杀)
+
+三项确已做完/证伪,按规则"三项已做完或数据证伪→允许NOP",本轮NOP合规。失败根因是NVCF server-side PexecTimeout(45.5s自超时),proxy层不可修复,与R435-R448历轮结论一致。
+
+### 给CC的关键待办
+**连续第三轮HM1 NOP根因**: CC清单[HM1-A]基线throttle18.2是R293旧值,[HM1-B]k4数据28.5s是旧数据,而HM1自R446后env已更新(throttle3.8/FASTBREAK3)。建议CC更新HM1清单基线为当前实测,否则下轮HM2仍会判证伪。
+
+8项env双处零漂移(compose L418-454=容器),HM1自R446(14:34:56Z)后零变更。铁律:只改HM1不改HM2,零配置变更零代码修改。
+
+轮到HM1优化HM2。本轮session结束,不再继续任何操作。
+[20260630_231921] === claude session退出 code=0 (124=超时) ===

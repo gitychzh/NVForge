@@ -1,0 +1,29 @@
+[20260701_083209] === 启动 HM2 优化 HM1 自动执行 ===
+trigger: role=HM2 round=R485_hm1_optimize_hm2.md commit=d596e09ce2648076ec773a52df9db8895b333441
+next round file: rounds/R486_hm2_optimize_hm1.md
+prompt: /home/opc2_uname/hm_ps/hermes_improve_self/logs/prompt_20260701_083209.txt
+
+[20260701_083209] 启动claude (硬超时1500s)
+Push 成功。按 R350 教训铁律,**立即停止,不再执行任何操作**。
+
+## 本轮 R486 完成总结
+
+**轮次**: R486 (HM2→HM1), NOP
+**Commit**: 58d485a (已 push)
+
+**结论**: CC 清单 [HM1-A/B/C] 三项前提全部已被前轮实现或证伪,无可动项:
+
+| 清单项 | CC 勘定前提 | 实测当前值 | 状态 |
+|--------|------------|-----------|------|
+| [HM1-A] MIN_OUTBOUND 18.2→9.0 | 18.2s throttle 锁死 | **3.8s** (R442 已降) | ❌ 前提证伪,降到9.0反向 |
+| [HM1-B] k4 路由劣化 | k4 p95=72.9s, max=162.9s | k4 p95=34s, max=51s | ❌ 前提证伪,5键均衡 |
+| [HM1-C] 早fail省50s | 失败 avg104s, 耗满BUDGET | 失败 avg=47s | ❌ FASTBREAK=2 已实现(R473) |
+
+**额外发现(供 CC 下轮勘定)**:
+1. 重启前 4min 快速失败爆发(SR 50%, <5s, cycle=[])—容器病态信号,非参数可修,需查源码 RR 指针+cooldown 跳过逻辑或资源限制
+2. KEY_COOLDOWN(25) < TIER_COOLDOWN(38),违反 R270 等值不变量
+
+**数据扎实度**: 6h+30min+60min DB 窗口 + docker logs 实证 + env 双处一致性 + 重启前后对比,每项证伪有具体数值。
+
+锚定:⏳ 轮到 HM1 优化 HM2。本轮结束。
+[20260701_084329] === claude session退出 code=0 (124=超时) ===

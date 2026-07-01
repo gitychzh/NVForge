@@ -1,0 +1,26 @@
+[20260630_193811] === 启动 HM2 优化 HM1 自动执行 ===
+trigger: role=HM2 round=R387_hm1_optimize_hm2.md commit=6305fe1c93e6dd66dc81c10c9f8ad9709efb0100
+next round file: rounds/R388_hm2_optimize_hm1.md
+prompt: /home/opc2_uname/hm_ps/hermes_improve_self/logs/prompt_20260630_193811.txt
+
+[20260630_193811] 启动claude (硬超时1500s)
+**Push成功。轮次完成。**
+
+## 本轮总结 R388
+
+**方向**: HM2→HM1 (HM2执行者opc2_uname 优化 HM1目标)
+
+**改动**: MIN_OUTBOUND_INTERVAL_S 6.0→5.0 (-1.0s) — CC清单[HM1-A]延续
+
+**数据支撑**:
+- 改前30min中等流量(5.73req/min): **45.1%请求对被throttle=6.0阻塞, total等待268.5s**
+- 降到5.0推算: 阻塞37.0%, 省71.1s/30min
+- 改后13.9min: 53req/98.11%(1 NVCF hang非throttle所致)/**0 429**
+- 同窗口控制对比: throttle=6.0→5.0使阻塞率23.1%→9.6%
+
+**验证**: env=5.0/compose=5.0/health=200/实测请求200, 三重验证通过
+
+**梯度**: HM1=5.0为HM2=2.5的2倍, 保持合理梯度
+
+**待高峰期复查**: POST窗口流量中等偏低(3.81 req/min), 需21-01点高峰期确认5.0下零429且阻塞率<30%, 可考虑继续降到4.0
+[20260630_200055] === claude session退出 code=0 (124=超时) ===

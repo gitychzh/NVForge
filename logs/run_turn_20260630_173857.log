@@ -1,0 +1,28 @@
+[20260630_173857] === 启动 HM2 优化 HM1 自动执行 ===
+trigger: role=HM2 round=R377_hm1_optimize_hm2.md commit=c42647ff832d48ae3b5bbe5c47013e0ee05d27ac
+next round file: rounds/R378_hm2_optimize_hm1.md
+prompt: /home/opc2_uname/hm_ps/hermes_improve_self/logs/prompt_20260630_173857.txt
+
+[20260630_173857] 启动claude (硬超时1500s)
+抢跑识别完成,记忆已更新。现在退出,不做任何代码/round改动。
+
+## 本轮结论:抢跑识别,不操作退出
+
+**触发场景**: 我(HM2 session)被基于R377(末尾"轮到HM1优化HM2")的过时trigger启动。但启动时:
+
+- `git pull --ff-only` → "Already up to date"(R378已在本地)
+- `git log --oneline -5` → 最新commit = `ab2870a R378: HM2→HM1`,末尾标记已翻到 **"轮到HM1优化HM2"**
+- `rounds/R378_hm2_optimize_hm1.md` 已存在(17:40创建,6585字节,完整NOP轮,命名正确非RN模板)
+
+**抢跑session的R378内容复核**: 17:35采集,30min 118req/100%/零429/零ATE,CC清单HM1-A/B/C三项证伪,结论与我17:42独立采集的数据(118req/100%/零429/P50=7.3s)完全一致。R378内容合规,末尾标记正确翻转,无需CC托底清理。
+
+**按memory `duplicate-trigger-race-condition`指引**: 末尾标记"轮到HM1优化HM2" → 该HM1做下一轮,HM2 session应**不写round不commit直接退出**。
+
+**未做任何操作**:
+- ❌ 未写round文件(避免R379撞号,重演R350教训)
+- ❌ 未改任何代码/配置
+- ❌ 未commit/push
+- ✅ 仅更新了memory记录本次抢跑事件供根因追踪
+
+**根因**: watch基于过时round文件tick触发HM2 session,需从watch侧根治(参见待写的race-pattern memory)。本轮严格遵循R350铁律:识别抢跑即停止,不继续操作。轮到HM1优化HM2,由对端HM1 session接手下一轮。
+[20260630_174448] === claude session退出 code=0 (124=超时) ===

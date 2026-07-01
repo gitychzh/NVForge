@@ -1,0 +1,25 @@
+[20260630_031010] === 启动 HM2 优化 HM1 自动执行 ===
+trigger: role=HM2 round=R323_hm1_optimize_hm2.md commit=9c241d98f9b16794fb7361a20595b10eec6593a6
+next round file: rounds/R324_hm2_optimize_hm1.md
+prompt: /home/opc2_uname/hm_ps/hermes_improve_self/logs/prompt_20260630_031010.txt
+
+翻轮标记 `## ⏳ 轮到HM1优化HM2` 在末尾。本轮完成。
+
+## 本轮总结(R324: HM2→HM1)
+
+**决策**: 无操作轮(符合"三项全做完/证伪"例外)。
+
+**CC清单HM1侧三项复核**:
+- **HM1-A**(MIN_OUTBOUND 18.2→9.0):env实测=9.0,**R320已做**,不可重做。
+- **HM1-B**(k4 DIRECT→7897):env实测 PROXY_URL4=7897,**R322已做**,不可重做。
+- **HM1-C**(all_tiers_exhausted早fail):**数据证伪**——22次ATE失败在tier_attempts表0条(失败cycle不持久化,命题前提不成立);22条timeout记录全在14个成功请求上,其中3ff8f296(4次timeout后k3救回)、a960a708(3次后k1救回),fast-fail会误杀这2个救回成功。
+
+**重大架构发现(本轮实质贡献)**:
+- 当前运行代码是Rproxy重构(06-29 21:31)后的**LiteLLM架构**(`/app/gateway/gateway/upstream.py`),非CC清单基于的旧NVCF直连架构。
+- **BUDGET/CONNECT_RESERVE/SSLEOF env成死参数**(代码不引用),R323改BUDGET 90→100实际无效,HM1-C命题针对旧架构设计不适用新架构。
+- HM1极度稳定:449请求/0个429/0个SSL/0个empty200/成功率94.88%,失败全NVCF平台hang(89s=2×45s,177s=4×45s)非HM1参数可解。
+
+**主动候选4项全证伪/无收益**:idx=3路由(R322已证非路由问题)、SSLEOF(死参数)、attempt上限(无收益)、UPSTREAM_TIMEOUT↓(误杀45s慢成功)。
+
+round文件已写入、commit(29f282f)、push成功,翻轮标记已置位。**轮到HM1优化HM2**。
+[20260630_032133] === claude session退出 code=0 ===

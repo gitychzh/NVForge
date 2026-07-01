@@ -1,0 +1,31 @@
+[20260630_032909] === 启动 HM2 优化 HM1 自动执行 ===
+trigger: role=HM2 round=R325_hm1_optimize_hm2.md commit=491af4b75482079bca9ebe3fb28fcf6f38ab6f1c
+next round file: rounds/R326_hm2_optimize_hm1.md
+prompt: /home/opc2_uname/hm_ps/hermes_improve_self/logs/prompt_20260630_032909.txt
+
+R326已commit并push成功(491af4b..b7b02f4)。翻轮完成。
+
+## 本轮总结
+
+**R326: HM2→HM1 — 无操作轮**, CC清单HM1-A/B/C三项当前数据全证伪:
+
+**HM1-A (throttle 9.0)** — 决定性证伪:
+- throttle=9.0已是CC目标值(前轮R320已降)
+- 仅`attempt_idx==0`触发(每请求一次, 非每attempt)
+- 120min内99%请求9s窗口内无邻居(流量0.27-2req/min, 远低于6.67上限)
+- 降到更低零吞吐收益
+
+**HM1-B (k4/idx3劣化)** — ttfb推翻:
+- DB显示idx3 p95=73.7s"劣化", 但hm_metrics的**ttfb分key统计**显示今日idx3 ttfb p50=18.4s/p95=57.5s, 与其他key(17.8-20.8s/47.6-60.3s)几乎相同
+- DB的73.7s是06-29高峰期长尾(max 162974ms为流式传输慢)的误判
+- R322改direct→7897已生效, 7897端口本身ttfb 1.6s正常
+
+**HM1-C (fast-fail)** — 代码逻辑证伪:
+- BUDGET=100/UPSTREAM=45/RESERVE=12下, 第3+key的per_attempt=max(5, remaining-12)=**5s短超时**(budget耗尽后本就试不长)
+- fast-fail收益仅~10s/次(非CC说的50s), 18失败×10s=180s/6h
+- 误杀4个>80s救回成功(1.0%成功率), 不值
+
+**HM1极度稳定**: 120min 100%成功率, 6h零429/零empty200/零SSL, 19失败全NVCF平台hang(不可控)。所有活参数已前轮优化。与R325对称(两机都稳定)。
+
+每项证伪都有具体数据+代码逻辑推演, 符合"无操作例外"条件。轮到HM1优化HM2。
+[20260630_034014] === claude session退出 code=0 ===
