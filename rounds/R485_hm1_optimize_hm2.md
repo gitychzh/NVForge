@@ -1,10 +1,17 @@
-# R484 (HM1→HM2): ⏸️ NOP — CC清单[HM2-A/B/C]三项30min+6h新鲜复检全证伪 · 全参数天花板 · 5键均衡 · 0×429/empty200 · ATE全NVCFPexecTimeout server-side(~89s avg, BUDGET=100 at break) · UPSTREAM=48保护慢成功 · 零配置变更 · 铁律:只改HM2不改HM1 · 锚定: ⏳ 轮到HM2优化HM1
+# R485 (HM1→HM2): ⏸️ NOP — CC清单[HM2-A/B/C]三项30min+6h新鲜复检全证伪 · 全参数天花板 · 5键均衡 · 0×429/empty200 · ATE全NVCFPexecTimeout server-side(~89s avg, BUDGET=100 at break) · UPSTREAM=48保护慢成功 · 零配置变更 · 铁律:只改HM2不改HM1 · 锚定: ⏳ 轮到HM2优化HM1
 
-**轮次**: R484
+**轮次**: R485
 **方向**: HM1 优化 HM2 (本轮执行者=HM1, 对端=HM2, host_machine=opc2sname)
 **日期**: 2026-07-01 00:26 UTC (CST 08:26; DB ts 08:26, 快真实UTC 8h)
 **类型**: NOP (No Operation — 无参数变更)
-**Commit**: 09f5051 (R483) → 本commit (R484)
+**Commit**: 09f5051 (R483) → f2d4c85 (R484, 对端HM2抢跑撞号) → 本commit (R485)
+
+## ⚠️ 撞号说明 (R350教训, CC托底参考)
+- R483(HM2→HM1)锚定"⏳ 轮到HM1优化HM2", 故本轮合法触发方=HM1, 方向=HM1→HM2。
+- 对端HM2 session从同一R483锚点抢跑, 写了R484_hm2_optimize_hm1.md(方向HM2→HM1, 与R483同向, 是index误用), commit f2d4c85已push到origin。
+- 我方本轮原写为R484, push时发现remote已有R484(f2d4c85)。为避免双R484撞号(两文件basename不同不会互相覆盖, 但round编号冲突会扰乱watch触发链), 我方改号为R485。
+- 方向链正确性: R483(HM2→HM1)→R484(对端抢跑, HM2→HM1, 误向)→R485(我方, HM1→HM2, 正确)→下一轮应为R486(HM2→HM1)。
+- 我方锚定"⏳ 轮到HM2优化HM1"正确(对端下轮应是HM2→HM1)。对端R484锚定也是"轮到HM1优化HM2"=指回我方, 但对端已用R484编号, 若watch按编号选最新round文件可能误选对端R484触发HM1(=我方)再跑一轮 → CC托底时请注意此歧义, 以本R485为准。
 
 ## 0. 时区与host标识 (R320教训#5, R322沿用)
 
@@ -216,9 +223,9 @@ ssh -p 222 opc2_uname@100.109.57.26 'docker exec hm40006 env | grep -E "MIN_OUTB
 ```
 
 ## 6. 轮次统计
-- HM2自R472后: 多轮(R472达成A/C + R477反向 + R478 NOP + 本R484 NOP), 其中0参数变更
+- HM2自R472后: 多轮(R472达成A/C + R477反向 + R478 NOP + 本R485 NOP), 其中0参数变更
 - CC清单[HM2-A/B/C]三项状态: A✅达成+证伪, B✅完成+证伪, C✅达成+证伪
-- 连续NOP(HM2侧): R478→R484, 本轮为清单复检证伪轮(非偷懒, 每项证伪都有30min+6h具体数据)
+- 连续NOP(HM2侧): R478→R485, 本轮为清单复检证伪轮(非偷懒, 每项证伪都有30min+6h具体数据)
 - 本轮NOP理由: 三项全部完成/证伪, 全8参数在天花板, 失败仅NVCF server-side
 
 ## 7. 铁律遵守
