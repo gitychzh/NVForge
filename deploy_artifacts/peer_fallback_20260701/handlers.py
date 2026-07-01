@@ -615,6 +615,18 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         """
         if not HM_PEER_FALLBACK_URL:
             return False
+        # body 入参是已解析的 dict (handlers.py L134 json.loads(raw)), 重新序列化为
+        # JSON bytes 给 http.client (传 dict 会触发 "can't concat str to bytes").
+        if isinstance(body, (dict, list)):
+            body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        elif isinstance(body, str):
+            body_bytes = body.encode("utf-8")
+        elif isinstance(body, (bytes, bytearray)):
+            body_bytes = bytes(body)
+        else:
+            _log("HM-PEER-FB", f"body type {type(body).__name__} not serializable, abort")
+            return False
+        fwd_headers["Content-Length"] = str(len(body_bytes))
         t_fb_start = time.time()
         # parse peer URL → http.client connection
         try:
@@ -640,12 +652,13 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             v = self.headers.get(h)
             if v:
                 fwd_headers[h] = v
+        # Content-Length set after body_bytes known (see below)
 
         peer_conn = None
         try:
             peer_conn = http.client.HTTPConnection(host, port,
                                                   timeout=HM_PEER_FALLBACK_TIMEOUT)
-            peer_conn.request("POST", peer_path, body=body, headers=fwd_headers)
+            peer_conn.request("POST", peer_path, body=body_bytes, headers=fwd_headers)
             resp = peer_conn.getresponse()
         except Exception as e:
             elapsed_ms = int((time.time() - t_fb_start) * 1000)
