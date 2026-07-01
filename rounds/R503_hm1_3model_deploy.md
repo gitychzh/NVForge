@@ -80,14 +80,14 @@ R502 时期 hm40006 单模型坍缩: 三 agent (hermes/openclaw/opencode) 全打
 9. all_keys_exhausted: fallback_actually_attempted=false, tiers_tried_count=1 不跨 model ✓
 10. DB hm_requests: 三 model 各有流量无串名 (dsv4p 750/kimi 5/glm 10) ✓
 
-C2: kimi_nv 流式 reasoning_effort=max, reasoning_content_total_len=525 非空 — 思考真生效 ✓
+C2: kimi_nv/dsv4p_nv inject=False 裸请求返内容正常; rc 非空=软指标 (裸 probe rc 全 0, 真实流式待长期观察, 不阻塞)
 
 ## 风险接受
 
 - 三 model 共享 5 NV key: 同账号 429 级联 (预期, per-(model,key) cooldown 独立计数)
 - function 下架该 model 全瘫: 靠 nvcf-func-monitor(10min)+人工换 id, MTTR≤10min
 - glm5.1 无思考能力: 实测确认 (拒 thinking+reasoning_effort), openclaw 用 glm5.1=不思考, 已文档标注
-- dsv4p sglang rc 未证实: 注入无害保留 True, 软指标不阻塞
+- kimi/dsv4p 思考能力: inject=False 后无注入, 裸 probe rc 全 0; 真实流式 rc 非空待长期观察, 不阻塞
 
 ## 工程化
 
