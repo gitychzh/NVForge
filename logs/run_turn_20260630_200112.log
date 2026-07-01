@@ -1,0 +1,27 @@
+[20260630_200112] === 启动 HM1 优化 HM2 自动执行 ===
+trigger: role=HM1 round=R434_hm2_optimize_hm1.md commit=bfb0f6b9572ac2f3ca6898500cad73a8667e8a51
+next round file: rounds/R435_hm1_optimize_hm2.md
+prompt: /home/opc_uname/hm_ps/hermes_improve_self/logs/prompt_20260630_200112.txt
+
+[20260630_200112] 启动claude (硬超时1500s)
+push成功。按R350教训铁律:**push完即结束,不得继续任何操作**。
+
+本轮完成总结:
+
+**R435: HM1→HM2 — NOP,CC清单三项全部做完/数据证伪**
+
+对端HM2(glm5.1_hm_nv)数据采集结论:
+- 30min: 174/174=**100%成功**, 0 429, 0 ATE, 0 empty_200, p50 6.0s, p95 30.3s
+- 24h: 4723/4851=97.36%(124 ATE全NVCF server-side pexec hang)
+
+CC清单三项评估(每项有数据):
+- **[HM2-A] 已做完**: MIN_OUTBOUND已是2.5(R386),且throttle非瓶颈(p50_gap=6.54s>>2.5s,仅3.7%pair受影响),再降增429风险
+- **[HM2-B] 证伪**: 5key完全均衡(34-36),p50 5.3-7.3s,无劣化key
+- **[HM2-C] 证伪**: BUDGET已是85(R385),再降误杀慢成功(6h有8个成功>60s,3个≥85s max91.2s)
+
+关键根因发现:HM2的ATE失败avg 91.6s = 2×NVCFPexecTimeout(50s+27s),FASTBREAK=5是死参数(BUDGET=85只够2次timeout,永远到不了第5次)。此为双机共性(HM1同样),失败是NVCF平台pexec hang,不可从proxy层修复。
+
+三项全部做完/证伪,满足NOP例外条件,零配置变更,稳定基线保持。round文件已commit+push(6f78ade),末尾标记 `## ⏳ 轮到HM2优化HM1`。
+
+本轮结束。
+[20260630_201342] === claude session退出 code=0 (124=超时) ===

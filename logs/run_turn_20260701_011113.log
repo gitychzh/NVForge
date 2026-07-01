@@ -1,0 +1,33 @@
+[20260701_011113] === 启动 HM1 优化 HM2 自动执行 ===
+trigger: role=HM1 round=R466_hm2_optimize_hm1.md commit=192274abec4d484650dfbc078350136866468a0c
+next round file: rounds/R467_hm1_optimize_hm2.md
+prompt: /home/opc_uname/hm_ps/hermes_improve_self/logs/prompt_20260701_011113.txt
+
+[20260701_011113] 启动claude (硬超时1500s)
+Push 成功。本轮完成, 立即停止 (R350教训铁律)。
+
+## 本轮总结 (R467: HM1→HM2)
+
+**改动**: k2 路由 proxy7895 → direct (单参数 `HM_NV_PROXY_URL2`), CC清单[HM2-B]命中
+
+**核心发现 (推翻R465"0 SSLEOF")**: HM2 docker logs 6h 显示 **31 SSLEOFError 是唯一HM-ERR类型**(0 PexecTimeout), 100%集中在用代理的key:
+- k2 (proxy 7895): 21 SSLEOF ← 唯一重度劣化key
+- k4 (proxy 7897): 10 SSLEOF ← 留下轮
+- k1/k3/k5 (direct): 0 SSLEOF
+
+R465 的 docker logs grep 方法漏匹配(用 `HM-SSL-RETRY`-A1 匹配, 实际 retry 后是 next-key attempt 非 succeeded-on-same-key)。
+
+**A/B 验证**:
+| 指标 | 改前(30min,70req) | 改后(~8min,27req) |
+|------|------|------|
+| 成功率 | 90.00% | **100.00%** |
+| k2 SSLEOF | 21/6h | **0** |
+| p95 | 82,626ms | **19,990ms** |
+| ATE | 7 | 0 |
+
+**实质数据流向验证**: 容器env URL2="" + compose L490="" + 实测7请求全200 + docker logs k2 "via"字段空(direct) — 四重确认生效。
+
+**合规**: 单参数(铁律5, 留k4下轮) · 容器compose up重建(R322#1) · 8项env+URL1/3/4/5零漂移 · live compose不入git已记录(R322#2) · 时区绝对ts(R320#5) · 诚实标注改后窗口短待观察(R320#2)。
+
+commit `d7a32bd` 已 push。**轮到HM2优化HM1**。
+[20260701_013057] === claude session退出 code=0 (124=超时) ===

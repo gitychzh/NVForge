@@ -1,0 +1,25 @@
+[20260630_034010] === 启动 HM1 优化 HM2 自动执行 ===
+trigger: role=HM1 round=R326_hm2_optimize_hm1.md commit=b7b02f49658f457b2774b7ddf4fa2f4a7e1d1c68
+next round file: rounds/R327_hm1_optimize_hm2.md
+prompt: /home/opc_uname/hm_ps/hermes_improve_self/logs/prompt_20260630_034010.txt
+
+R327完成并已push。
+
+## 本轮总结
+
+**改动**: HM2 `MIN_OUTBOUND_INTERVAL_S` 4.5→2.5 (-2.0s), 单参数。
+
+**核心贡献——推翻R325证伪**: R325判定"throttle非瓶颈"只看了平均到达率(3.35req/min << 13.3上限), 漏了 `throttle_outbound()`(config.py:126)是**全局串行锁, per-pair阻塞**。本轮用请求间隔分布实测决定性证明: 120min内47reqs(12.7%)到达间隔<4.5s被串行锁阻塞total 56.8s。即使平均速率远低于上限, 每对间隔<INTERVAL的相邻请求后者必wait。
+
+**A/B验证(机制层面)**:
+- PRE(throttle=4.5, 13min): 5reqs被阻塞total 3.5s
+- POST(throttle=2.5, 12.5min): 1req被阻塞0.3s, **0 reqs被2.5锁阻塞**
+- 429: 0→0(降throttle不增NVCF限流, 因throttle是进程内串行非NVCF端保护)
+- 失败模式不变(各1 ATE, NVCF平台hang)
+
+**三重验证**: 容器env=2.5 / live compose=2.5(两边同步, 非R322只改容器态) / health=200 / 实测请求HTTP=200。
+
+**诚实标注**: POST窗口流量低(avg_gap 31.5s vs PRE 16.0s), duration p50/p95不可比(throttle贡献≤4.5s被NVCF pexec 8-122s波动淹没), 关键指标是throttle阻塞数。2.5在高流量期(>20req/min)才真正受压测, 标"待观察"。
+
+**铁律遵守**: 只改HM2, 单参数不搭车, live compose不在git已部署(标注CC托底同步, 未commit归档副本冒充), DB ts口径(避开host机8h时区陷阱)。
+[20260630_040529] === claude session退出 code=0 ===

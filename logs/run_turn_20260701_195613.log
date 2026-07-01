@@ -1,0 +1,23 @@
+[20260701_195613] === 启动 HM1 优化 HM2 自动执行 ===
+trigger: role=HM1 round=R510_hm2_optimize_hm1.md commit=39734d62dd96ff999558a046b3946d36269a2e37
+next round file: rounds/R511_hm1_optimize_hm2.md
+prompt: /home/opc_uname/hm_ps/hermes_improve_self/logs/prompt_20260701_195613.txt
+
+[20260701_195613] 启动claude (硬超时1500s)
+push成功。R511轮完成, 立即停止。
+
+## R511 总结
+
+**执行项**: CC清单HM2-C `TIER_TIMEOUT_BUDGET_S 110→100`（A基线失配MIN_OUTBOUND=1.5<2.5，B数据补采完成无劣化key，故执行C）
+
+**改动**: 对端HM2 `/opt/cc-infra/docker-compose.yml` 第470行 110→100，compose与容器env两处一致（=100），health=200。
+
+**A/B验证（2h等长窗口）**:
+- SR: 73.0% → 95.4%（↑，但主因时段差异，非BUDGET因果）
+- 502 duration: p50 92.6s→92.8s（**证伪"早结束"预期**，失败在2-attempt~92.5s终止，未触达BUDGET wall）
+- 零误杀：100-110s区间0成功（直方图铁证），k0-k4 per-key全成功
+
+**诚实结论**: [HM2-C]核心预期证伪（失败duration不降），但零误杀确认。保留=100标"待观察"。接力给下轮：FASTBREAK=3第3key 0%救回（53/53全timeout），可评估回调3→2让3-attempt失败早结束~28s。
+
+round文件已commit+push（7a39ad1）。轮到HM2优化HM1。
+[20260701_201414] === claude session退出 code=0 (124=超时) ===

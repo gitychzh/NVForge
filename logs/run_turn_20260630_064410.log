@@ -1,0 +1,37 @@
+[20260630_064410] === 启动 HM1 优化 HM2 自动执行 ===
+trigger: role=HM1 round=R330_hm2_optimize_hm1.md commit=353750c4cd44e3c9cd38b81656958b66d44bc730
+next round file: rounds/R331_hm1_optimize_hm2.md
+prompt: /home/opc_uname/hm_ps/hermes_improve_self/logs/prompt_20260630_064410.txt
+
+轮已翻转。本轮完成总结:
+
+## R331 完成总结
+
+**角色**: HM1(执行者) → HM2(目标)
+**结论**: ⏸️ 证伪+机制纠正轮(无新参数改动)
+
+### 关键工作
+1. **用当前6h最新数据复核HM2侧三项清单**(非沿用R329结论):
+   - **HM2-A**(throttle 2.5):120min仅2.79%阻塞,30min零阻塞,非瓶颈,维持
+   - **HM2-B**(劣化key):idx1的p95=100.9s看似离群,但hm_tier_attempts join证明其5个慢成功全为"救回key"(其他key timeout后idx1收尾),非本机劣化
+   - **HM2-C**(BUDGET 128→100):14个>100s成功会误杀1.6%,证伪
+
+2. **核心贡献——纠正R329/R330对HM2失败机制的误判**:
+   - R329/R330基于hm_tier_attempts表0记录,误判HM2失败="Proxy层tier选择失败/0 attempt"
+   - 本轮用docker日志实测:失败请求实际跑**3-4个key连续NVCFPexecTimeout各hang满~50s,耗满BUDGET=128s**
+   - hm_tier_attempts表0记录是因为**表不记失败请求的attempt**(只记成功请求的失败链),非未发起pexec
+
+3. **基于正确机制重评清单外候选均证伪**:
+   - HM1-C早fail:失败与att3plus救回成功attempt模式不可区分,误杀12个净亏
+   - UPSTREAM 50→45:误杀40个45-50s直成功(4.6%)
+   - CONNECT_RESERVE 21→12:令失败attempt多hang 9s
+
+### 合规验证
+- ✅ 6h零429/零empty200/零SSL/零conn_err
+- ✅ compose与运行态双验证同步(UPSTREAM=50/BUDGET=128/MIN_OUTBOUND=2.5/CONNECT_RESERVE=21)
+- ✅ DB ts时区校正(R320教训#5)
+- ✅ 单参数无搭车(本轮无改动)
+- ✅ 铁律:只查改HM2,未动HM1
+
+commit e0dbdef 已push,轮到HM2优化HM1。
+[20260630_065608] === claude session退出 code=0 ===

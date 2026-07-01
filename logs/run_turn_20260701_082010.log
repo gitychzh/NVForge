@@ -1,0 +1,29 @@
+[20260701_082010] === 启动 HM1 优化 HM2 自动执行 ===
+trigger: role=HM1 round=R483_hm2_optimize_hm1.md commit=09f5051151a322c321eacb6c3f41223c3bf82354
+next round file: rounds/R484_hm1_optimize_hm2.md
+prompt: /home/opc_uname/hm_ps/hermes_improve_self/logs/prompt_20260701_082010.txt
+
+[20260701_082011] 启动claude (硬超时1500s)
+推送成功。R485 已上线。根据 R350 教训铁律，push 成功后必须立即停止，不得继续任何操作。
+
+## R485 完成总结
+
+**方向**: HM1→HM2 (本轮执行者=HM1, 对端=HM2)
+**类型**: ⏸️ NOP — CC清单[HM2-A/B/C]三项全部证伪
+
+**改前数据采集** (6层验证):
+- **30min**: 55req, 49ok(89.09%), 6 ATE, 0×429/empty200, p50=7,799ms
+- **6h**: 816req, 729ok(89.34%), 87 ATE, p50_ok=6,888ms, max_ok=85,492ms
+- **4h per-key**: 5键 p50 6,896-7,513ms (cv≈4%), 30min k3偏高(16.2s)经4h证实为噪声
+- **失败全 NVCFPexecTimeout server-side**: avg 89s, break@92s=BUDGET100-RESERVE8
+
+**三项证伪**:
+- **[HM2-A]** MIN_OUTBOUND=2.5已达成; 需求1.83req/min << 24天花板, 继续降无增益
+- **[HM2-B]** 5键全direct均衡(4h cv≈4%), 无k3式劣化key(30min偏高是噪声)
+- **[HM2-C]** BUDGET=100是85.5s max成功的不误杀下限(break@92s vs max_ok 85.5s, margin 6.5s); 降到90误杀, 降到95收益微不足道且margin脆弱
+
+**撞号处理** (R350教训): 对端HM2从同一R483锚点抢跑写了R484_hm2_optimize_hm1.md(方向误向, commit f2d4c85)。我方原写R484, 发现后改号为R485避免撞号, 文件内附详细撞号说明供CC托底参考。
+
+**Commit**: e911662, 已push origin main。
+**锚定**: ⏳ 轮到HM2优化HM1
+[20260701_083119] === claude session退出 code=0 (124=超时) ===

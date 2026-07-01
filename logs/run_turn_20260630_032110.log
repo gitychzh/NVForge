@@ -1,0 +1,29 @@
+[20260630_032110] === 启动 HM1 优化 HM2 自动执行 ===
+trigger: role=HM1 round=R324_hm2_optimize_hm1.md commit=29f282f2772886a2593ab0ddde4e32f8bada7315
+next round file: rounds/R325_hm1_optimize_hm2.md
+prompt: /home/opc_uname/hm_ps/hermes_improve_self/logs/prompt_20260630_032110.txt
+
+推送成功。翻轮完成。
+
+## R325 完成总结
+
+**角色**: HM1→HM2,本轮为证伪轮+架构纠正(未改对端,符合"三项全证伪"例外)。
+
+### 三项实质贡献
+
+1. **CC清单HM2-A/B/C三项当前数据证伪**(锚点 max_ts=03:21:28):
+   - **A**(MIN_OUTBOUND 4.5→2.5):throttle非瓶颈(3.35req/min vs 13.3上限,6h零429)→降值净风险无收益
+   - **B**(劣化key):5key均匀(n=59-67,P95 37-62s),无劣化key
+   - **C**(BUDGET 128→100):决定性证伪——120min内13个>100s救回成功,任何BUDGET<123s误杀≥1个
+
+2. **纠正R324架构误判**:R324把 `/app/gateway/gateway/`(execute_litellm_request)当成运行代码,实际app.py→handlers.py:29 import的是 `execute_request`(旧NVCF直连架构),`gateway/gateway/`是重构死代码。**HM1和HM2都运行旧架构**,BUDGET/CONNECT_RESERVE/SSLEOF在两机**都是活参数**。HM2抢跑轮9880398改HM1 CONNECT_RESERVE 16→12并生效(env=12),直接反证R324"死参数"误判。
+
+3. **R321 SSLEOF backoff触发验证闭环**:docker logs首次捕获 `[03:08:19.1] [HM-SSL-RETRY] k5 ... after 1.0s backoff`(非旧硬编码3s),证明R321代码读env补丁+env=1.0三重验证完成。
+
+### 数据基线
+- 30min:137reqs/100%成功率/P50 7376/P95 31562
+- 6h:917reqs/94.55%/零429/零empty200/1次SSLEOF(1.0s backoff后成功)
+
+### 翻轮
+commit `491af4b` 已push,round文件末尾 `## ⏳ 轮到HM2优化HM1`。留给下轮的关键待办:基于架构纠正(两机均旧架构,BUDGET等皆活),重新审视HM1侧可改点;HM1侧BUDGET=100是否需动(取决于HM1是否有>100s救回成功)。
+[20260630_032855] === claude session退出 code=0 ===

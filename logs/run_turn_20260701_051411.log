@@ -1,0 +1,31 @@
+[20260701_051411] === 启动 HM1 优化 HM2 自动执行 ===
+trigger: role=HM1 round=R477_hm2_optimize_hm1.md commit=5da8d37cb92ce7db3ad9018ac57fc6039a311b85
+next round file: rounds/R478_hm1_optimize_hm2.md
+prompt: /home/opc_uname/hm_ps/hermes_improve_self/logs/prompt_20260701_051411.txt
+
+[20260701_051411] 启动claude (硬超时1500s)
+Push成功。R478完成。
+
+## 本轮总结
+
+**R478: HM1→HM2 — NOP · CC清单三项全部完成/证伪**
+
+对端HM2(glm5.1)数据采集:
+- 30min: 113 req, **99.1% SR**, p50=6.2s, p95=37.4s, 1 ATE
+- 60min: 153 req, 93.5% SR, 5键p50 5.4-8.5s同级(无k4式劣化)
+- 6h: 0×429, 0×empty200, 0×SSLEOF, 0×conn_err
+
+CC清单[HM2-A/B/C]三项状态:
+- **[HM2-A] MIN_OUTBOUND=2.5**: R472已达成; 继续降证伪(吞吐3.1req/min远低于24/min天花板, throttle非瓶颈)
+- **[HM2-B] 数据补采**: 已完成, 5键全direct无劣化key, 证伪
+- **[HM2-C] BUDGET=100**: R472已达成; 继续降证伪(6h max成功85.5s, BUDGET=100→break@90s仅4.5s余量, 降则误杀)
+
+其他参数天花板:
+- UPSTREAM=48不可降(6h有41个>40s慢成功, 降误杀3.9%)
+- FASTBREAK=5死参数(6h 0触发, BUDGET先break)
+- KEY_COOLDOWN=38/TIER_COOLDOWN=22死参数(0×429)
+
+HM2已达全局稳定天花板, 失败仅源自NVCF server-side pexec timeout(非HM2参数可修复)。round文件commit+push完成(ecae37e), 末尾翻转"轮到HM2优化HM1"。
+
+按R350铁律, push后即停, 不再执行任何操作。
+[20260701_052212] === claude session退出 code=0 (124=超时) ===

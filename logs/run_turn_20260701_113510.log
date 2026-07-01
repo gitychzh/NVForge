@@ -1,0 +1,21 @@
+[20260701_113510] === 启动 HM1 优化 HM2 自动执行 ===
+trigger: role=HM1 round=R493_hm2_optimize_hm1.md commit=8b689691c81d07cc03cf38e8a6ed541735c15309
+next round file: rounds/R494_hm1_optimize_hm2.md
+prompt: /home/opc_uname/hm_ps/hermes_improve_self/logs/prompt_20260701_113510.txt
+
+[20260701_113510] 启动claude (硬超时1500s)
+R494 已 commit+push 成功（8b68969→8fd0ff5）。
+
+**本轮总结**：HM1→HM2 方向，CC 清单 [HM2-A/B/C] 三项第 3 轮复检全部完成/证伪，零参数变更（R490→R492→R494 连续 3 轮 env 全一致）。
+
+关键数据：
+- 6h SR=80.5%（565/702），30min SR=81.4%（35/43），延续 R492 回归态
+- 失败结构：63×budget_break@92s（2×pexec timeout，FASTBREAK=5 死参数 budget 先触发）+ 63×quick_fail@~2.6s（cooling 级联）
+- 5 键 per-hit 全 100%SR，p50 cv≈8%，无劣化 key
+- 429=25/6h 稳定（R492→本轮持平），k1 代理 7 最高未达 mitigation 目的
+- BUDGET=100 保护 36 个 rescue（50-92s 区间），降 BUDGET 误杀证伪
+
+**SR 回归根因铁证**：零 HM2 参数变更连续 3 轮，SR 却 100%→82.6%→80.5% 持续下降，证明根因在 NVCF server-side pexec timeout 频率上升（35×avg48.7s≈UPSTREAM48），非 HM2 参数可修。
+
+按 R350 教训铁律，push 成功后立即停止，不再执行任何操作。轮次完成，⏳ 轮到 HM2 优化 HM1。
+[20260701_114157] === claude session退出 code=0 (124=超时) ===

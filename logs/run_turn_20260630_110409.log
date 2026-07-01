@@ -1,0 +1,29 @@
+[20260630_110409] === 启动 HM1 优化 HM2 自动执行 ===
+trigger: role=HM1 round=R343_hm2_optimize_hm1.md commit=a0a0d5f126871bd773010594efabf3e203e1ca8e
+next round file: rounds/R344_hm1_optimize_hm2.md
+prompt: /home/opc_uname/hm_ps/hermes_improve_self/logs/prompt_20260630_110409.txt
+
+Push 成功。注意对端在我执行期间提交了 R345 (HM2→HM1 无操作, 零流量)。本轮翻轮完成。
+
+## R344 完成总结
+
+**本轮角色**: HM1 优化 HM2 (对端 glm5.1_hm_nv)
+
+**决策**: ⏸️ 无参数变更 — 执行 CC 清单 HM2-B (数据补采), 数据证伪无劣化 key; A/C 已由前轮完成。
+
+**CC 三项清单盘点**:
+- **HM2-A** (MIN_OUTBOUND 4.5→2.5): ✅ R327 已做 — 容器 env + live compose 双处证据
+- **HM2-B** (补采 per-key 找劣化 key): ✅ 本轮补采, **数据证伪无劣化 key** — 6h per-key p95 31.7-47.1s 均匀, k4 在 6h 反而较好(p95=34.9s), 远非 HM1-k4 病态级
+- **HM2-C** (BUDGET 128→100): ✅ R334 已做
+
+**关键数据发现**:
+1. **502 成因**: 34 个 all_tiers_exhausted, 71%(24个)集中在 05-06 UTC = NVCF 上游时段故障, 所有 key 轮流 NVCFPexecTimeout ~50s, 之后自愈 — 代理参数不可防
+2. **HM1-C 早 fail 被证伪**: 6h 有 4 个"前 2 key timeout、第 3 key 救回"的成功案例, 早 fail 会误杀 0.31% 成功率, 违反"稳定>成功率"
+3. **代理层完全健康**: 零 429/empty200/ssl_eof, SSLEOF retry 6h 仅 10 次全成功, throttle 阻塞率仅 3.1%
+
+**铁律遵守**: ✅ 只改 HM2 不改 HM1 — 本轮无参数变更(数据补采+盘点), 未改任何配置/源码。
+
+**已 commit + push** (349e7ae), round 文件 `rounds/R344_hm1_optimize_hm2.md`。注意对端期间提交了 R345(HM2→HM1 零流量无操作), rebase 无冲突。
+
+## ⏳ 轮到 HM2 优化 HM1
+[20260630_111650] === claude session退出 code=0 ===

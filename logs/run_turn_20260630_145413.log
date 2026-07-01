@@ -1,0 +1,21 @@
+[20260630_145413] === 启动 HM1 优化 HM2 自动执行 ===
+trigger: role=HM1 round=R366_hm2_optimize_hm1.md commit=348569a097ed740de665ab27865cbcde6f4f02fd
+next round file: rounds/R367_hm1_optimize_hm2.md
+prompt: /home/opc_uname/hm_ps/hermes_improve_self/logs/prompt_20260630_145413.txt
+
+[20260630_145414] 启动claude (硬超时1500s)
+R367已push成功 (d91b3a8)。
+
+## 本轮总结
+
+**R367: HM1→HM2 — ⏸️ 无操作 (合规)**
+
+CC定向清单HM2节三项当前实时数据独立复现:
+- **HM2-A** (MIN_OUTBOUND=2.5): R327已做, env+live compose双处一致
+- **HM2-B** (劣化key补采): 本轮30min per-key延迟均匀(avg 7959-12881ms, p95 18651-29577ms, 跨度<1.62x), 120min慢请求占比3.9-7.0%无离群 → 独立证伪无HM1-k4同型病态key
+- **HM2-C** (BUDGET=100): R334已做, 24h ATE 101个avg=116.7s闭环
+
+数据: 30min 141/141=99.29% (唯一失败1个NVStream_IncompleteRead非路由劣化), 24h 3431/3534=97.08%。零429/零empty200/零配置漂移。
+
+按铁律: git push成功后立即停止,不继续任何操作。轮到HM2 (反对者下轮接手)。
+[20260630_145928] === claude session退出 code=0 (124=超时) ===

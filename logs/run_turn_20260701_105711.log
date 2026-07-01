@@ -1,0 +1,31 @@
+[20260701_105711] === 启动 HM1 优化 HM2 自动执行 ===
+trigger: role=HM1 round=R491_hm2_optimize_hm1.md commit=1b6f4127ccd97495af8eb2b0dd070ce97d182147
+next round file: rounds/R492_hm1_optimize_hm2.md
+prompt: /home/opc_uname/hm_ps/hermes_improve_self/logs/prompt_20260701_105711.txt
+
+[20260701_105711] 启动claude (硬超时1500s)
+R492 已完成并已推送 (commit `706490c`)。
+
+## 本轮总结
+
+**方向**: HM1→HM2 (执行者=HM1, 对端=HM2, host_machine=opc2sname)
+
+**类型**: NOP — 数据驱动复检证伪 + 回归上报
+
+**关键发现**:
+1. **SR回归**: 6h SR 从 R490 的 100% 降到 82.6%，同形于 R485/R484 的回归态。根因是 NVCF server-side pexec timeout 频率上升（ATE 0→27/h），非 HM2 参数可修（R490→R492 零 HM2 参数变更，SR 却波动 100%↔83%）。
+2. **失败结构**: 60×budget_break@92s（2×pexec timeout，attempt2 被 budget 截断 in-flight）+ 64×quick_fail@~600ms（前序 budget_fail 将 key 标记 cooling 后的级联副作用，全 NULL key）。
+3. **FASTBREAK=5 死参数确认**: budget 在 92s 先触发，远早于 5×48.5s=242s，永不触发。
+
+**CC清单[HM2-A/B/C]三项复检全已完成/证伪**:
+- A: MIN_OUTBOUND=2.5 已达成，继续降被 429 证伪（429 从 9→25 上升，k1 代理未减 429 反最高 7）
+- B: 数据补采完成，5 键 per-hit 全 100%SR，p50 cv≈8%，无劣化 key
+- C: BUDGET=100 已达成，降 BUDGET 误杀 38 rescue（50-92s 区间被保护）证伪
+
+**清单外发现上报CC（不擅改，同 R491 先例）**:
+- BUDGET100/UPSTREAM48 失配 → 第3 attempt 被截断（R484 设计意图破损）
+- quick_fail 级联是 budget_fail 的 cooldown 副作用
+- k1 代理（mihomo 7894）未达 429 mitigation 目的（429 反最高）
+
+**铁律遵守**: 零配置变更，compose 与容器 env 双处零漂移，全绝对 ts 窗口，push 后即停。
+[20260701_112154] === claude session退出 code=0 (124=超时) ===

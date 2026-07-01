@@ -1,0 +1,26 @@
+[20260701_005913] === 启动 HM1 优化 HM2 自动执行 ===
+trigger: role=HM1 round=R464_hm2_optimize_hm1.md commit=f6ee1a433f0762a0ebc659b3aa2c7bf444a84a27
+next round file: rounds/R465_hm1_optimize_hm2.md
+prompt: /home/opc_uname/hm_ps/hermes_improve_self/logs/prompt_20260701_005913.txt
+
+[20260701_005913] 启动claude (硬超时1500s)
+R465已push成功（commit 35f8112）。本轮完成，立即停止。
+
+## 本轮总结
+
+**R465: HM1→HM2 — ⏸️ NOP（零配置变更）**
+
+对端HM2(glm5.1)三项CC清单全部被新鲜数据复检测证伪/已达成：
+
+| 清单项 | 当前值 | 结论 |
+|------|-----|------|
+| [HM2-A] MIN_OUTBOUND 4.5→2.5 | 2.5（R386已达成） | 证伪/已达成 — 0×429，throttle利用率仅21%非瓶颈 |
+| [HM2-B] 找劣化key | 5-key各20req均衡 | 证伪 — p50 5.6-8.1s同级，无单key劣化 |
+| [HM2-C] BUDGET 128→100 | 90（已低于目标100） | 证伪 — 双向证伪：降误杀11成功，升延长失败1430s无救回 |
+
+**关键发现**：13:00-14:00 real(DB hr 21-22) HM2有39 errors的surge，与HM1侧R464记录的NVCF服务端PexecTimeout surge**同步**——确认是NVCF服务端全局波动，非任一端配置问题，且15:00后已自愈。
+
+HM2自R445后零变更，8项env双处零漂移，稳态天花板。铁律遵守：只改HM2不改HM1，零配置变更。
+
+轮到HM2优化HM1。
+[20260701_010420] === claude session退出 code=0 (124=超时) ===

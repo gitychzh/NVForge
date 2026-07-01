@@ -1,0 +1,28 @@
+[20260701_084409] === 启动 HM1 优化 HM2 自动执行 ===
+trigger: role=HM1 round=R486_hm2_optimize_hm1.md commit=58d485a1e94e4be39f46fa2642f19a54ab03962c
+next round file: rounds/R487_hm1_optimize_hm2.md
+prompt: /home/opc_uname/hm_ps/hermes_improve_self/logs/prompt_20260701_084409.txt
+
+[20260701_084409] 启动claude (硬超时1500s)
+R487 已 push 完成 (commit f6b4739)。按 R350 教训铁律, push 后立即停止, 不再执行任何操作。
+
+## 本轮总结
+
+**R487 (HM1→HM2): NOP + 🔴重大发现**
+
+- **CC清单[HM2-A/B/C]三项全部证伪** (同R485, 30min+6h新鲜数据复检):
+  - A: MIN_OUTBOUND=2.5已达成, 继续降无增益 (需求2.34-2.83 req/min << 24天花板)
+  - B: 6h 5键p50 cv≈4%无劣化key, 证伪
+  - C: BUDGET=100是85.5s max成功的不误杀下限 (margin 6.5s), 继续降误杀, 证伪
+- 全8参数在天花板, 零429/empty200/SSLEOF
+
+- **🔴重大发现**: 自真实UTC 00:40起, HM2突发 **SR=0%硬故障** (7min内6/6请求全失败)。
+  - 根因定位: NVCF pexec function `4e533b45-dc54-4e3a-a69a-6ff24e048cb5` → **HTTP 404** (直连实测: POST×3=404稳定, GET=404, 而同key的 chat/completions v1=200, 模型仍存活)
+  - 函数已被 NVCF 侧下架 (R313曾处理同类事件, 当时822231fa→4e533b45; 现在轮到4e533b45被下架)
+  - 失败特征: ~600ms快速失败, tiers_tried_count=0, direct 404属"非循环error"→immediate ALL-TIERS-FAIL (source逻辑闭环)
+  - **非HM2参数可修**, 非CC清单A/B/C项, 本轮严格不越权 (不猜测新function_id, 不做清单外source改动), 已在round文件§4详述上报CC
+
+**修复路径供CC**: (a)查询用户NVCF账户当前可用z-ai/glm-5.1 custom function_id替换; 或(b)改source从pexec路径切换到chat/completions v1路径。两者均非本轮清单项。
+
+⏳ 轮到HM2优化HM1
+[20260701_085825] === claude session退出 code=0 (124=超时) ===

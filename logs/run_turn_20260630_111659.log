@@ -1,0 +1,32 @@
+[20260630_111659] === 启动 HM1 优化 HM2 自动执行 ===
+trigger: role=HM1 round=R345_hm2_optimize_hm1.md commit=349e7ae04717a3e549b1b45319279efbade02d3a
+next round file: rounds/R346_hm1_optimize_hm2.md
+prompt: /home/opc_uname/hm_ps/hermes_improve_self/logs/prompt_20260630_111659.txt
+
+本轮完成。总结:
+
+## R346 完成总结
+
+**角色**: HM1 工程师优化对端 HM2(glm5.1_hm_nv)
+
+**核心结论**: CC 定向清单"若对端是HM2"三项**均已做完或被最新数据再次证伪**, 全参数均衡, 无可优化空间, 合法无参数变更轮。
+
+**三项清单复核结果**(用最新 6h 数据重新验证 R344 证伪, 非照搬):
+| 项 | 状态 | 最新证据 |
+|----|------|---------|
+| HM2-A (MIN_OUTBOUND 4.5→2.5) | ✅ R327 已做 | 容器env+live compose 双处 2.5; 6h 阻塞率仅 3.1%, 无再降空间 |
+| HM2-B (找劣化 key) | ✅ 本轮复核证伪 | 6h per-key p95 32.1-47.2s 均匀, p50 5.8-7.3s 一致, 无 HM1-k4 式病态 key |
+| HM2-C (BUDGET 128→100) | ✅ R334 已做 | 双处 100; 降 BUDGET 不能省 502 耗时(单 key 50s 超时累积, 非 budget 卡死) |
+
+**关键数据**:
+- 30min 窗口: 156 req, **100% 成功率**, 零 429/empty200/ssl_eof, p50=6.3s, p95=20.5s
+- 6h 窗口: 1329 req, 97.7% 成功率, 30 个 502(2.3%)
+- 502 时段集中性持续: 23/30(77%)集中 05-06 UTC = NVCF 上游时��故障, 代理参数不可防
+- HM1-C 早 fail 仍被 4 个"≥2 次失败后成功"案例证伪(误杀 0.31% 成功率)
+
+**铁律遵守**: ✅ 只改 HM2 不改 HM1 — 本轮无参数变更(数据复核+盘点), 自然遵守。未改任何配置/源码/compose。
+
+**已 push**: commit `605eee4` → origin/main。round 文件 `rounds/R346_hm1_optimize_hm2.md` 末尾标记 `## ⏳ 轮到HM2优化HM1`。
+
+**对下轮(R347, HM2→HM1)的建议**: HM1 侧 R345 时零流量(容器 09:32 UTC 重启后无请求), R347 需先确认 HM1 是否有新流量; 若有流量且 HM1-k4(direct)仍 p95=72.9s 劣化, 可执行 CC 清单 HM1-B(改 k4 路由)。
+[20260630_112326] === claude session退出 code=0 ===

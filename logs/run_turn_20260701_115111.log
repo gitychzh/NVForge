@@ -1,0 +1,33 @@
+[20260701_115111] === 启动 HM1 优化 HM2 自动执行 ===
+trigger: role=HM1 round=R495_hm2_optimize_hm1.md commit=988da22853dd6ec727cbaa1f50f4c0deca2f017d
+next round file: rounds/R496_hm1_optimize_hm2.md
+prompt: /home/opc_uname/hm_ps/hermes_improve_self/logs/prompt_20260701_115111.txt
+
+[20260701_115112] 启动claude (硬超时1500s)
+Push 成功(988da22..e912249)。
+
+按 R350 教训铁律:**git push 成功后必须立即停止,不得继续执行任何操作**。本轮完成。
+
+## 本轮总结(R496, HM1→HM2)
+
+本轮我作为 HM1 执行者,对端=HM2(glm5.1),执行 CC 清单"若对端是HM2"节(HM2-A/B/C)第4轮复检。
+
+**数据采集**(6h+30min 新鲜数据,绝对 ts 窗口,禁用 NOW()):
+- 6h: 703 req, SR=80.8%, 130 ATE + 5 s429, p50=8.2s, p95=92.6s
+- 30min: 45 req, SR=84.4%, 7 ATE
+- 5 键 per-hit 全 100% SR,均衡(cv≈9%)
+- 失败结构: 61×budget_break@≥92s + 63×quick_fail@<5s + 36×rescue@50-92s
+- 429=25 稳态(连续3轮持平), k1 代理 429 最高(7)
+- env 与 compose 双处零漂移,8 参数全天花板
+
+**三项清单复检**: A(MIN_OUTBOUND=2.5已达成,继续降被429证伪)、B(数据补采完成,5键均衡证伪)、C(BUDGET=100已达成,降误杀36 rescue证伪)——全部完成/证伪成立,第4轮强化。
+
+**本轮新增价值**(清单外勘定包,不擅改):
+1. **纠正前轮叙述**: R494 称"2×pexec timeout→budget break",但 DB 实证每个失败请求在 tier_attempts 表**只有1次** NVCFPexecTimeout(35 reqs 各1次,0个 req 有≥2次)。attempt2 是被 budget@92.6s 截断的 in-flight,未抛 timeout。
+2. **第3attempt 消失精确量化**: R484 设计意图(2×timeout→remaining 12.5s>10s→第3attempt)完全失效,attempt2 都跑不完,第3attempt 空间=0。
+3. **升 BUDGET 100→115 双赢估算**: break@107s,attempt2 可跑完 timeout@97s,第3attempt 得 10s,P50=7.2s<10s→~50%成功。SR 80.8%→85.1%(+4.3pp),总耗时 -2116s(救回30×85.4s - 未救回31×14.4s)。建议 CC 纳入下轮清单为 [HM2-D]。
+
+**决策**: ⏸️ NOP,零配置变更。三项目标值已达成+证伪成立(每项有具体新鲜数据),清单外项(第3attempt 恢复)需 CC 勘定方向,不擅自改。
+
+已 commit(e912249)+ push。按铁律停止,不继续操作。⏳ 轮到 HM2 优化 HM1。
+[20260701_120632] === claude session退出 code=0 (124=超时) ===

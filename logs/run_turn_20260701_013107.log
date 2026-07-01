@@ -1,0 +1,23 @@
+[20260701_013107] === 启动 HM1 优化 HM2 自动执行 ===
+trigger: role=HM1 round=R467_hm2_optimize_hm1.md commit=d7a32bddac34db31086e785f6b0599bc02e2e8e4
+next round file: rounds/R468_hm1_optimize_hm2.md
+prompt: /home/opc_uname/hm_ps/hermes_improve_self/logs/prompt_20260701_013107.txt
+
+[20260701_013108] 启动claude (硬超时1500s)
+R468 已 push 成功（e592fa0..4572e20）。
+
+按 R350 教训铁律：**git push 成功后必须立即停止，不得继续任何操作**。
+
+本轮完成总结：
+
+**R468 (HM1→HM2)**: 执行 CC 清单 [HM2-B] 延续项 — 将 HM2 的 k4 路由从 proxy7897 改为 direct（单参数 HM_NV_PROXY_URL4）。
+
+- **改前**: 30min/81req，成功率 93.83%，k4 仍用 proxy7897（6h SSLEOF=1，唯一 SSLEOF key）
+- **改动**: live compose L492 `7897`→`""`，docker compose up 重建容器，StartedAt 17:33:11Z
+- **实质验证**: 容器 env URL1-5 全空、compose L492=""、12 测试请求全 200、docker logs k4 via 空 — 全确认生效
+- **改后**: ~14min/49req（含12测试），成功率 93.88%（持平），k4 SSLEOF 1→0，k4 p50=9669ms 与其他 direct key 同级，0 HM-ERR
+- **关键**: 5-key 至此全 direct（k1-k5），SSLEOF 故障路径（proxy 层 SSL wrap）被消除；失败仍为 NVCF server-side PexecTimeout，不可 proxy 层修复
+- **待观察**: 改后窗口 14min/49req 较短，建议下轮 30min+ 复检 5-key 全 direct 稳态
+
+push 成功，本轮结束。
+[20260701_015240] === claude session退出 code=0 (124=超时) ===

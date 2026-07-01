@@ -1,0 +1,33 @@
+[20260630_114911] === 启动 HM1 优化 HM2 自动执行 ===
+trigger: role=HM1 round=R349_hm2_optimize_hm1.md commit=5f88ca766f385525e2b41aa3e1dea00b162aaa2c
+next round file: rounds/R350_hm1_optimize_hm2.md
+prompt: /home/opc_uname/hm_ps/hermes_improve_self/logs/prompt_20260630_114911.txt
+
+R350全流程完成。最后做个简短总结。
+
+## R350 完成总结
+
+**轮次**: HM1→HM2 (本轮我是HM1执行者,改对端HM2)
+
+**改动**: HM2-C 对称移植 — 将R349在HM1部署的 `consecutive NVCFPexecTimeout fast-fail-at-3` 源码逻辑**对称移植到HM2** upstream.py(5处改动: init计数 + 3处reset + 1处increment/break), env `HM_PEXEC_TIMEOUT_FASTBREAK=3` 默认可调回滚。
+
+**为什么做这项(不是又一个无操作轮)**:
+- CC清单HM2节A/B/C三项确实已做完/证伪(最新6h数据再确认:A=2.5已做、B无劣化key per-key p95 31.37-41.57s均匀、C=100已做)
+- 但发现R348"早fail证伪"存在**数据漏洞**:R348证伪的是阈值2(误杀0.29%),而R349实际部署的是阈值3。用HM2最新6h数据评估阈值3:误杀仅2/1418=**0.14%**(只误杀≥3连续timeout后救回的2个案例)
+- HM2的502**100%是3-4次连续NVCFPexecTimeout**(24h: 14×timeout=3 + 52×timeout=4),fast-fail-at-3必触发每个502
+
+**A/B实战验证(改后16min恰逢NVCF故障期)**:
+| 指标 | 改前30min | 改后16min |
+|------|-----------|-----------|
+| 502 avg | 94.21s | 90.41s |
+| 502 max | 100.36s | 91.74s |
+| 502 timeout=4占比 | 24h: 52/66=79% | **0/6=0%** |
+| HM-PEXEC-FASTBREAK触发 | N/A | **6次(每502 1次)** |
+| 误杀救援成功 | N/A | 0 |
+
+**核心收益(已实测)**: fast-break消除timeout=4的502(改前avg 122.4s→改后~90s),**每502省~28.2s**,24h 52个timeout=4全消除可省**1466s/24h≈24.4分钟**。可证伪预测(502 timeout≤3 + 日志含HM-PEXEC-FASTBREAK)已验证成立。
+
+**铁律遵守**: ✅ 只改HM2不改HM1(改HM2源码+构建源) · 改前6h基线+24h timeout分布+2个误杀trace · 改后16min实战6个502数据 · 单逻辑点无搭车 · round文件commit+push(83af387) · 翻轮文件已在HM2创建
+
+round文件 `rounds/R350_hm1_optimize_hm2.md` 已commit+push,翻轮完成(⏳ 轮到HM2优化HM1)。
+[20260630_122330] === claude session退出 code=0 ===
