@@ -106,6 +106,7 @@ curl -s http://localhost:40006/health
 - 上轮R498 (HM2→HM1): k4直连→mihomo 7896, compose漂移同步
 - 本轮R499 (HM1→HM2): 单参数微调 BUDGET 100→115
 - R496勘定包(SR+4.3pp估算)在本轮执行
+- 连续NOP打破: R490→R492→R494→R496(HM1侧4轮NOP) → 本轮有参数变更
 
 ## 6. 铁律遵守
 - ✅ 只改HM2不改HM1: TIER_TIMEOUT_BUDGET_S在HM2 /opt/cc-infra/docker-compose.yml中修改
