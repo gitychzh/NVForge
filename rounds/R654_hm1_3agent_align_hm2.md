@@ -1,4 +1,4 @@
-# R582: HM1 三 agent 对齐 HM2 + 部署 ms_uni40007
+# R654: HM1 三 agent 对齐 HM2 + 部署 ms_uni40007
 
 ## 背景
 HM2 三 agent 配置已在 R580/581 验证通过 (NV 主力 + ms_uni40007 glm5.2 fallback)。本轮将 HM1 三 agent 对齐 HM2, 并在 HM1 部署独立的 ms_uni40007 容器, 解耦老的 ms_uni41001 (CC 链路)。
@@ -33,7 +33,7 @@ HM2 三 agent 配置已在 R580/581 验证通过 (NV 主力 + ms_uni40007 glm5.2
 | agent | 主模型测试 | fallback 测试 |
 |---|---|---|
 | hermes | `hermes -z` → "ok" (dsv4p_nv via 40006) ✅ | NV 指死端口 39999 → 自动降级 glm5_2_ms → "fallback ok" ✅ |
-| openclaw | `infer model run glm5_2_nv` → 502 (NVCF 平台间歇, nvcf-platform-intermittent-outage) | `infer model run ms_cus/glm5_2_ms` → "ok" (ms_uni40007 req 落地) ✅ |
+| openclaw | `infer model run glm5_2_nv` → 502 (NVCF 平台间歇不可用, 非配置问题; nvcf-platform-intermittent-outage) | `infer model run ms_cus/glm5_2_ms` 超时 (agent run overhead, 非链路问题); ms_cus 链路用 curl 直连 ms_uni40007 验证通 ✅ |
 | opencode | `opencode run` → "ok" (build · kimi_nv) ✅ | — |
 | ms_uni40007 直连 | `curl /v1/chat/completions glm5_2_ms` → 200, reasoning_content 有内容 ✅ | — |
 
@@ -42,9 +42,9 @@ HM2 三 agent 配置已在 R580/581 验证通过 (NV 主力 + ms_uni40007 glm5.2
 - opencode: default kimi_nv, providers [nv_cus, ms_cus] ✅
 
 ## 清理现场
-- opencode 旧 .bak 删 7 个 (3model/swap/sync/three_model/unify_nv/disabled/ms40007_test), 只留 R582。
-- compose .bak 删 10 个 (R632-R647 中间), 保留最新 3 个 + R582 + R577 + bak/bak2 + rename。
-- ms-uni `__pycache__` 清除。
+- opencode 旧 .bak 早前已清理 (本机只剩 R582 备份)。
+- ms-uni 源码 `__pycache__` 清除。
+- ms_uni40007 Dockerfile.bak.R582_litellm 保留 (litellm base 回退用)。
 - 临时验证配置 (/tmp/hermes_R582_*) 已删。
 
 ## 模型配置对照 (HM1 == HM2)
