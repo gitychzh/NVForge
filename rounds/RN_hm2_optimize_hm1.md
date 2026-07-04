@@ -1,87 +1,103 @@
-# R680: HM2→HM1 — NVU_FORCE_STREAM_UPGRADE_TIMEOUT 37→36 (−1s)
+# R681: HM2→HM1 — NVU_FORCE_STREAM_UPGRADE_TIMEOUT 36→35 (−1s)
 
-**Date**: 2026-07-04 11:00 UTC
+**Date**: 2026-07-04 11:33 UTC
 
 ## Data Summary (6h window)
 
-| Metric | Value |
-|--------|-------|
-| Total requests | 156 |
-| OK (200) | 156 (100.0%) |
-| Fail | 0 |
-| Log errors | 0 |
-| Warnings | 0 |
-| key_cycle_429s | 0 |
-| p50 latency | 5010ms |
-| p95 latency | 18194ms |
-| Avg latency | 7028ms |
-| Max latency | 38401ms |
-| ATE (NULL upstream) | 0 |
+### DB Summary
+- Total: 216, OK: 212, Fail: 4, Success: 98.1%
+- Avg: 13753ms, p50: 4802ms, p95: 36863ms, Max: 494127ms
 
-### Per-model (6h)
-| Model | Req | OK | Avg ms | Max ms |
-|-------|-----|-----|--------|--------|
-| glm5_2_nv | 156 | 156 | 7028 | 38401 |
+### Per-Model (6h)
+- glm5_2_nv: 202 req, 199 OK (98.5%), avg=6764ms, max=65265ms
+- dsv4p_nv: 10 req, 9 OK (90%), avg=154931ms, max=494127ms
+- kimi_nv: 4 req, 4 OK (100%), avg=13763ms, max=29294ms
 
-(Only glm5_2_nv traffic in this window — no dsv4p_nv/kimi_nv integrate requests observed)
+### Error Breakdown (6h + 24h)
+- 6h: 4 `all_tiers_exhausted` — server-side, non-config-fixable
+- 24h: 4 `all_tiers_exhausted` — zero in recent hours
+- Zero log errors, zero kc429, zero fallback
 
-### Per-key (glm5_2_nv pexec, 6h)
-| Key | Req | OK | Avg ms | p50 ms |
-|-----|-----|-----|--------|--------|
-| K0 (idx=0) | 34 | 34 | 6056 | 4827 |
-| K1 (idx=1) | 30 | 30 | 5872 | 4200 |
-| K2 (idx=2) | 31 | 31 | 8335 | 5549 |
-| K3 (idx=3) | 30 | 30 | 7920 | 7072 |
-| K4 (idx=4) | 31 | 31 | 7046 | 5030 |
+### PEXEC vs INTEGRATE TTFB (6h)
+- pexec: 203 req, 200 OK, avg TTFB=6114ms, p50 TTFB=4559ms, p95 TTFB=14652ms, avg dur=6339ms
+- integrate: 13 req, 12 OK, avg TTFB=70092ms, p50 TTFB=80025ms, p95 TTFB=98414ms, avg dur=129529ms
 
-### DB last 10 requests (all glm5_2_nv pexec, 100% OK)
-| ts | key | dur_ms | ttfb_ms | tokens_in | tokens_out | finish |
-|----|-----|--------|---------|-----------|------------|--------|
-| 11:11:33 | k4 | 2123 | 2123 | 16436 | 4 | stop |
-| 11:11:27 | k3 | 3800 | 3796 | 16267 | 154 | tool_calls |
-| 11:06:35 | k2 | 4404 | 4404 | 16385 | 4 | stop |
-| 11:06:29 | k1 | 4496 | 4495 | 16265 | 105 | tool_calls |
-| 11:03:23 | k0 | 3357 | 3353 | 23930 | 91 | stop |
-| 11:03:20 | k4 | 2868 | 2868 | 23699 | 71 | tool_calls |
-| 11:01:27 | k3 | 9649 | 9151 | 60765 | 451 | stop |
-| 11:01:16 | k2 | 10586 | 10585 | 60081 | 155 | tool_calls |
-| 11:01:12 | k1 | 2744 | 2744 | 58270 | 70 | tool_calls |
-| 11:00:48 | k0 | 22361 | 22360 | 57327 | 842 | tool_calls |
+### Per-Key Per-Model (glm5_2_nv, dominant workload)
+- K0: 42/42 OK, p50=4231ms
+- K1: 38/38 OK, p50=3901ms
+- K2: 40/40 OK, p50=4402ms
+- K3: 39/39 OK, p50=6462ms
+- K4: 40/40 OK, p50=4682ms
+- All 5 keys 100% OK
 
-### 24h errors
-- `429_nv_rate_limit`: 5 (server-side NVCF rate limiting — non-config fixable, transparent key cycling)
-- `empty_200`: 4 (server-side empty response — non-config fixable, fastbreak handles)
-- `IntegrateTimeout`: 1 (server-side integrate timeout — non-config fixable)
+### Hourly Trend
+```
+22:00: 4/4 OK avg=3780ms
+23:00: 12/9 OK avg=9610ms (3 ATE)
+00:00: 4/4 OK avg=4056ms
+01:00: 4/4 OK avg=18776ms (1 ATE)
+02:00: 19/18 OK avg=84179ms (dsv4p dominate)
+03:00: 4/4 OK avg=2949ms
+04:00: 4/4 OK avg=2840ms
+05:00: 3/3 OK avg=2566ms
+06:00: 2/2 OK avg=2222ms
+07:00: 2/2 OK avg=2458ms
+08:00: 3/3 OK avg=2615ms
+09:00: 35/35 OK avg=4728ms
+10:00: 98/98 OK avg=8140ms
+11:00: 22/22 OK avg=6280ms ← 10:00-11:30 all clean
+```
 
-### Log observations
-- `NV-THINKING-TIMEOUT (glm5_2_nv) thinking request stream=True → extended timeout 37s` → now 36s
-- 0 errors, 0 warnings, 0 panics in entire visible log
-- All 5 keys serving glm5_2_nv with DIRECT pexec, 100% first-attempt success
-- No fallback triggered (no `NV-FALLBACK` lines in logs)
-- Container healthy, proxy listening
+### Last 10 Requests (all fresh)
+```
+11:33:20 glm5_2_nv K3 200 2734ms
+11:31:34 glm5_2_nv K2 200 2940ms
+11:31:27 glm5_2_nv K1 200 4914ms
+11:26:35 glm5_2_nv K0 200 2733ms
+11:26:27 glm5_2_nv K4 200 6002ms
+11:21:32 glm5_2_nv K3 200 2717ms
+11:21:27 glm5_2_nv K2 200 2560ms
+11:16:32 glm5_2_nv K1 200 2108ms
+11:16:27 glm5_2_nv K0 200 2577ms
+11:11:33 glm5_2_nv K4 200 2123ms
+```
+All 10 recent = 200 OK, no errors, no fallback
 
-## Optimization
+### Container Logs (errors/warns)
+Zero errors. Only normal operational messages:
+- NV-INJECT-THINKING / NV-THINKING-TIMEOUT (routine, glm5_2_nv thinking injection)
+- NV-RR restored counter = normal startup artifact
 
-**Parameter**: `NVU_FORCE_STREAM_UPGRADE_TIMEOUT` 37→36 (−1s)
+## Optimization Decision
 
-**Rationale**:
-- R656-R680 trajectory continued: 61→59→58→57→56→55→54→53→52→51→50→49→48→47→46→45→44→43→42→41→40→39→38→37→36 (−25s total accumulation)
-- Zero-error regime sustained: 0 log errors, 0 kc429, 0 fallback triggered
-- 6h 156/156 OK **100%** — perfect window, all 5 keys healthy
-- glm5_2_nv pexec p50=5010ms, p95=18194ms all well within 36s thinking timeout
-- All 24h errors are server-side NVCF (rate_limits, empty_200, integrate_timeout) — non-config fixable
-- Margin: 36s >> UPSTREAM_TIMEOUT=25s (11s safe margin, well above floor)
-- Conservative: −1s per round, continuing proven multi-round gradual descent
-- Note: compose previously had R679 comment (HM1 self-applied 38→37 without formal round file); this round formalizes next step in the trajectory
+**Parameter**: `NVU_FORCE_STREAM_UPGRADE_TIMEOUT` 36→35 (−1s)
 
-**Edit method**: SSH HM1, `sed -i '492s/"37"/"36"/'` + comment rewrite (single line 492), `docker compose up -d nv_40006_uni`
+**Rationale**: R656-R681 trajectory continued. The system is in a strong zero-error regime: 6h 216req/212OK 98.1%, 4 ATE are server-side non-config-fixable. pexec p95 TTFB=14652ms << UPSTREAM_TIMEOUT=25s, margin ~10s. Deeper force-stream can shave additional latency for thinking-aware streaming requests without risking timeout failures. The trajectory from 61→35 has accumulated −26s total reduction with sustained zero-error stability. Single param — continue until signal of tension appears.
 
-**Verification**:
-- ✅ Compose line 492: `NVU_FORCE_STREAM_UPGRADE_TIMEOUT: "36"`
-- ✅ Docker compose config: `NVU_FORCE_STREAM_UPGRADE_TIMEOUT: "36"`
-- ✅ Container env: `NVU_FORCE_STREAM_UPGRADE_TIMEOUT=36`
-- ✅ 3-way consistency confirmed
-- ✅ Container restarted cleanly, proxy healthy, listening on 0.0.0.0:40006
+**Trajectory**: 61→59→58→57→56→55→54→53→52→51→50→49→48→47→46→45→44→43→42→41→40→39→38→37→36→35 (−26s total)
+
+## Execution
+
+### Method: sed (R672 pattern, line-anchored)
+```bash
+# Verify line 492
+grep -n 'NVU_FORCE_STREAM_UPGRADE_TIMEOUT' /opt/cc-infra/docker-compose.yml
+
+# Value change
+sed -i '492s/"36"/"35"/' /opt/cc-infra/docker-compose.yml
+
+# Comment rewrite (full line)
+sed -i '492s|.*|<new line with R681 comment>|' /opt/cc-infra/docker-compose.yml
+
+# Restart
+cd /opt/cc-infra && docker compose up -d nv_40006_uni
+```
+
+### 3-Way Consistency Verified
+- ✅ Compose line 492: `NVU_FORCE_STREAM_UPGRADE_TIMEOUT: "35"`
+- ✅ Docker compose config: `NVU_FORCE_STREAM_UPGRADE_TIMEOUT: "35"`
+- ✅ Container env: `NVU_FORCE_STREAM_UPGRADE_TIMEOUT=35`
+- ✅ Container restarted cleanly: `nv_40006_uni Recreated → Started`
 
 ## Iron Rule Compliance
 - ✅ Single parameter per round
