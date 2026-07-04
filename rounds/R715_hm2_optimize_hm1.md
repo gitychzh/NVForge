@@ -188,6 +188,12 @@ docker logs nv_gw --tail 100
 
 **最终决策**：零变更。Post-restart 100% SR，NVCF 上游已恢复，所有参数处于合理位置。当前 regime 无任何可优化信号。
 
+**下轮关注**：
+1. Post-restart dsv4p_nv 直接成功率（当前 8/11 = 73%，含 fallback 后 100%）
+2. 33-36s 直接成功比例是否稳定增长（R713 边缘救回验证）
+3. NVCFPexecTimeout 在 36s 的绑定是否持续（若 avg 上升需 +3s→39）
+4. 若出现 empty_200 事件，重新评估 FASTBREAK 2→1
+
 ---
 
 ## 五、参数历史
