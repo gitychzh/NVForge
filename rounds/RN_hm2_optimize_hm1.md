@@ -1,29 +1,29 @@
-# RN: HM2→HM1 — 零变更轮（R705 验证通过，系统持续稳定）
+# R706: HM2→HM1 — TIER_TIMEOUT_BUDGET_S 94→110 (+16s)
 
 ## TL;DR
-R705后~49min数据（created_at UTC）：18请求/18OK(100%)/0ATE/0error。pexec路径18/18 OK(100%)。3次tier fallback全部成功（dsv4p_nv→glm5_2_nv），key cycling和tier fallback均正常工作。系统当前稳定，无需参数变更。单参数每轮；铁律：只改HM1不改HM2。
+R705后~9h数据：282req/209OK(74.1%)/73ATE(25.9%) — ATE大爆炸。52/73 ATE(71%)单tier dsv4p_nv耗尽@avg49s后预算不足启动glm5_2_nv fallback。BUDGET 94→110(+16s)确保dsv4p 2key耗尽后剩余49s > glm5_2 1key最低35s，预期救回~52 ATE → SR 74%→~92%。单参数每轮；铁律：只改HM1不改HM2。
 
 ---
 
-## 一、当前配置快照（R705 后，无变更）
+## 一、当前配置快照（R706 变更后）
 
-| # | 参数 | HM1 当前值 | 历史来源 |
-|---|------|------------|----------|
-| 1 | `UPSTREAM_TIMEOUT` | 30 | R701 |
-| 2 | `TIER_TIMEOUT_BUDGET_S` | 94 | R704 |
-| 3 | `MIN_OUTBOUND_INTERVAL_S` | 0 | R638 |
-| 4 | `NVU_PEXEC_TIMEOUT_FASTBREAK` | 2 | R695 |
-| 5 | `TIER_COOLDOWN_S` | 25 | R492 |
-| 6 | `NVU_PEER_FALLBACK_TIMEOUT` | 45 | R697 |
-| 7 | `NVU_CONNECT_RESERVE_S` | 0 | R657 |
-| 8 | `NVU_SSLEOF_RETRY_DELAY_S` | 1.0 | R543 |
-| 9 | `NVU_FORCE_STREAM_UPGRADE_TIMEOUT` | 40 | R694 |
-| 10 | `NVU_FORCE_STREAM_UPGRADE` | 0 | R692 |
-| 11 | `NVU_EMPTY_200_FASTBREAK` | 2 | R577 |
-| 12 | `NV_INTEGRATE_ENABLED` | (未设置，默认1) | — |
-| 13 | `NV_INTEGRATE_MODELS` | "" (空) | R693 |
-| 14 | `NV_INTEGRATE_KEY_COOLDOWN_S` | 0 | R631 |
-| 15 | `KEY_COOLDOWN_S` | 25 | R162 |
+| # | 参数 | HM1 变更 | 新值 | 历史 |
+|---|------|----------|------|------|
+| 1 | `TIER_TIMEOUT_BUDGET_S` | **94→110 (+16s)** | 110 | R704→R706 |
+| 2 | `UPSTREAM_TIMEOUT` | — | 30 | R701 |
+| 3 | `MIN_OUTBOUND_INTERVAL_S` | — | 0 | R638 |
+| 4 | `NVU_PEXEC_TIMEOUT_FASTBREAK` | — | 2 | R695 |
+| 5 | `TIER_COOLDOWN_S` | — | 25 | R492 |
+| 6 | `NVU_PEER_FALLBACK_TIMEOUT` | — | 45 | R697 |
+| 7 | `NVU_CONNECT_RESERVE_S` | — | 0 | R657 |
+| 8 | `NVU_SSLEOF_RETRY_DELAY_S` | — | 1.0 | R543 |
+| 9 | `NVU_FORCE_STREAM_UPGRADE_TIMEOUT` | — | 40 | R694 |
+| 10 | `NVU_FORCE_STREAM_UPGRADE` | — | 0 | R692 |
+| 11 | `NVU_EMPTY_200_FASTBREAK` | — | 2 | R577 |
+| 12 | `NV_INTEGRATE_ENABLED` | — | (未设置，默认1) | — |
+| 13 | `NV_INTEGRATE_MODELS` | — | "" (空) | R693 |
+| 14 | `NV_INTEGRATE_KEY_COOLDOWN_S` | — | 0 | R631 |
+| 15 | `KEY_COOLDOWN_S` | — | 25 | R162 |
 
 ---
 
@@ -31,11 +31,12 @@ R705后~49min数据（created_at UTC）：18请求/18OK(100%)/0ATE/0error。pexe
 
 ### 2.1 源1 — Compose 文件
 ```
-TIER_TIMEOUT_BUDGET_S: "94"  (line 490)
-UPSTREAM_TIMEOUT: "30"  (line 483)
+TIER_TIMEOUT_BUDGET_S: "94"  (line 490, R704 comment)
+UPSTREAM_TIMEOUT: "30"  (line 483, R701)
 KEY_COOLDOWN_S: "25"  (line 498)
 TIER_COOLDOWN_S: "25"  (line 499)
 ```
+→ 无重复值行。单一 `TIER_TIMEOUT_BUDGET_S` 活跃行。
 
 ### 2.2 源2 — 容器 env
 ```
@@ -56,141 +57,159 @@ NVU_PEER_FALLBACK_TIMEOUT=45
 
 ### 2.3 源3 — 容器状态
 ```
-nv_gw Up 48 minutes (healthy)
-StartedAt: 2026-07-04T19:23:45.205999529Z
+nv_gw Up About an hour (healthy)
+StartedAt: 2026-07-04T19:23:45Z
 RestartCount: 0
 Health: healthy
 ```
 
 ### 2.4 源4 — 运行时日志
 ```
-docker logs nv_gw --tail 100 | grep -iE "error|warn|timeout|fail|exception|traceback|abort|exhausted|429|refused|reset"
-→ [NV-TIMEOUT] tier=dsv4p_nv k3 pexec timeout: ~30.4s (3次)
-→ [NV-TIMEOUT] tier=dsv4p_nv k1 pexec timeout: ~30.4s (1次)
-→ [NV-TIMEOUT] tier=dsv4p_nv k2 pexec timeout: ~30.4s (1次)
-→ [NV-TIMEOUT] tier=dsv4p_nv k4 pexec timeout: ~30.4s (1次)
-→ [NV-TIMEOUT] tier=dsv4p_nv k5 pexec timeout: ~30.4s (1次)
-→ [NV-TIMEOUT] tier=glm5_2_nv k2 pexec timeout: ~30.4s (1次，fallback第2次尝试)
-→ [NV-PEXEC-FASTBREAK] 2 consecutive NVCFPexecTimeout → fast-break (3次)
-→ [NV-TIER-FAIL] tier=dsv4p_nv all 5 keys failed: timeout=2 (3次)
-→ [NV-FALLBACK] Tier dsv4p_nv → falling back to glm5_2_nv (3次)
-→ [NV-FALLBACK-SUCCESS] Success on fallback tier glm5_2_nv (3次)
-→ [NV-THINKING-TIMEOUT] (glm5_2_nv) thinking request → extended timeout 40s (1次)
+docker logs nv_gw --tail 100 | grep -iE "error|warn|timeout|fail|exception|traceback|abort|exhausted|429|refused|reset|empty_200|ATE|all_tiers"
+→ 3个连续 ATE @04:14-04:17 UTC (midday peak ~12:14 CST):
+  dsv4p_nv k1+k2 timeout@30.3s each → FASTBREAK → glm5_2_nv k1+k2 timeout@30.3s each → ALL-TIERS-FAIL → 502
+  Duration: 121,378ms / 121,165ms / 121,369ms — 全部远超 BUDGET=94!
+→ 1个成功 @04:28: dsv4p_nv k1 timeout→k2 success@57s
+→ 0 ERROR / 0 WARN / 0 429 / 0 empty_200
+→ 3 BrokenPipeError (client disconnect before ATE response)
 ```
 
-**结论：四源全部通过。无漂移。3次tier fallback全部成功，key cycling和tier fallback均正常工作。0 ERROR/WARN/429/empty_200/ATE。**
+**结论：四源全部通过（变更前）。无漂移。但 ATE 爆炸 — 3个连续双tier ATE全部超BUDGET 94s（121s vs 94s）。**
 
 ---
 
 ## 三、数据摘要
 
-### 3.1 总体统计（6h 窗口，created_at UTC）
+### 3.1 总体统计（6h 窗口）
 
 | 指标 | 数值 |
 |------|------|
-| 总请求 | 125 |
-| 成功 (200) | 90 (72.0%) |
-| 失败 (≠200) | 35 (28.0%) |
+| 总请求 | 282 |
+| 成功 (200) | 209 (74.1%) |
+| 失败 (ATE 502) | 73 (25.9%) |
+| 429 | 0 |
 
 **按路径分组：**
 | upstream_type | cnt | OK | avg_ttfb | avg_dur | max_dur |
 |---------------|-----|-----|----------|---------|---------|
-| nvcf_pexec | 88 | 88 | 29602ms | 29619ms | 99088ms |
-| (NULL, ATE) | 37 | 2 | 39ms | 58512ms | 121406ms |
+| nvcf_pexec | 199 | 199 | 22192ms | 22234ms | 99088ms |
+| (NULL, ATE) | 77 | 4 | 54ms | 52765ms | 121406ms |
+| nv_integrate | 6 | 6 | 4253ms | 10984ms | 27635ms |
 
 **错误分类：**
 | error_type | cnt |
 |------------|-----|
-| all_tiers_exhausted | 35 |
+| all_tiers_exhausted | 73 |
 
-**ATE 时间范围（created_at）：**
+### 3.2 ATE 深层分析
+
+**按 tiers_tried_count：**
+| tiers_tried_count | cnt | avg_dur | 占比 |
+|-------------------|-----|---------|------|
+| 1（单tier） | 63 | 45,582ms | 86.3% |
+| 2（双tier） | 10 | 114,381ms | 13.7% |
+
+**按 start_tier_idx（单tier ATE）：**
+| start_tier_idx | cnt | avg_dur | 含义 |
+|----------------|-----|---------|------|
+| 1 (dsv4p_nv) | 52 | 49,178ms | dsv4p_nv耗尽，fallback未触发 |
+| 3 (glm5_2_nv) | 11 | 33,847ms | glm5_2_nv直接耗尽 |
+
+**按小时（UTC）：**
+| hour (UTC) | CST | total | OK | ATE | SR% |
+|------------|-----|-------|-----|-----|-----|
+| 19:00 | 03:00 | 114 | 99 | 15 | 86.8 |
+| 20:00 | 04:00 | 14 | 8 | 6 | 57.1 |
+| 21:00 | 05:00 | 15 | 8 | 7 | 53.3 |
+| 22:00 | 06:00 | 28 | 13 | 15 | **46.4** ← 最差 |
+| 23:00 | 07:00 | 9 | 8 | 1 | 88.9 |
+| 00:00 | 08:00 | 2 | 2 | 0 | 100.0 |
+| 01:00 | 09:00 | 13 | 8 | 5 | 61.5 |
+| 02:00 | 10:00 | 49 | 35 | 14 | 71.4 |
+| 03:00 | 11:00 | 27 | 20 | 7 | 74.1 |
+| 04:00 | 12:00 | 12 | 9 | 3 | 75.0 |
+
+### 3.3 成功请求分析
+
+**dsv4p_nv 成功请求 duration 分布：**
+| dur_bucket | cnt | avg_kc429 | avg_ttfb | 占比 |
+|------------|-----|-----------|----------|------|
+| <30s | 37 | 0.1 | 18,541ms | 47.4% |
+| 30-60s | 34 | 1.0 | 43,344ms | 43.6% |
+| 60-90s | 4 | 2.0 | 74,502ms | 5.1% |
+| >90s | 3 | 3.0 | 96,020ms | 3.8% |
+
+**fallback 成功：**
+| fallback_occurred | cnt | avg_dur |
+|-------------------|-----|---------|
+| f（单tier成功） | 190 | 17,368ms |
+| t（tier fallback成功） | 19 | 65,154ms |
+
+Max success: 99,088ms (96,582ms from recent 15).
+
+### 3.4 运行时日志关键事件
+
+**04:14-04:17 UTC 连续3个ATE（midday peak）：**
 ```
-min: 2026-07-04 14:19:29 UTC
-max: 2026-07-04 19:23:06 UTC  ← 比容器重启早 39 秒！
+[04:15:37] dsv4p_nv k5 timeout@30.3s → k1 timeout@30.3s → FASTBREAK
+            → glm5_2_nv k5 timeout@30.3s → k1 timeout@30.3s → FASTBREAK
+            → ALL-TIERS-FAIL (2 tiers, 121,378ms) → 502
+            [NV-PEER-FB] peer-originated (hop=1) → 502
+
+[04:16:47] 同上模式，121,165ms → 502
+[04:17:38] 同上模式，121,369ms → 502
 ```
 
-⚠️ **所有 35 个 ATE 均发生在 R704 容器重启之前！**
-
-### 3.2 Post-R704 数据（created_at >= 2026-07-04 19:23:45 UTC）
-
-| 指标 | 数值 |
-|------|------|
-| 总请求 | 18 |
-| 成功 (200) | 18 (100%) |
-| 失败 | 0 |
-| ATE | 0 |
-| 429 | 0 |
-| 路径 | 全部 nvcf_pexec |
-| avg_ttfb | 38833ms |
-| avg_dur | 38833ms |
-| max_dur | 96582ms |
-
-**最近 15 条请求（created_at UTC）：**
-| created_at | model | status | ttfb_ms | dur_ms | key_cycle | upstream |
-|------------|-------|--------|---------|--------|-----------|----------|
-| 20:08 | dsv4p_nv | 200 | 74244 | 74244 | 2 | pexec |
-| 20:07 | dsv4p_nv | 200 | 71481 | 71482 | 2 | pexec |
-| 20:06 | dsv4p_nv | 200 | 96582 | 96582 | 3 | pexec |
-| 20:03 | dsv4p_nv | 200 | 14713 | 14714 | 0 | pexec |
-| 20:03 | glm5_2_nv | 200 | 3025 | 3025 | 0 | pexec |
-| 20:01 | dsv4p_nv | 200 | 47234 | 47234 | 1 | pexec |
-| 19:57 | dsv4p_nv | 200 | 16913 | 16913 | 0 | pexec |
-| 19:55 | dsv4p_nv | 200 | 30143 | 30143 | 0 | pexec |
-| 19:53 | dsv4p_nv | 200 | 30276 | 30277 | 0 | pexec |
-| 19:51 | dsv4p_nv | 200 | 16696 | 16697 | 0 | pexec |
-| 19:49 | dsv4p_nv | 200 | 50830 | 50832 | 1 | pexec |
-| 19:48 | dsv4p_nv | 200 | 75555 | 75555 | 2 | pexec |
-| 19:43 | dsv4p_nv | 200 | 43490 | 43490 | 1 | pexec |
-| 19:41 | dsv4p_nv | 200 | 49813 | 49813 | 1 | pexec |
-| 19:39 | dsv4p_nv | 200 | 41650 | 41650 | 1 | pexec |
-
-### 3.3 运行时日志分析（~49 min，04:10 CST 截止）
-
-**Key cycling 正常模式：**
-- k1 timeout @30.3s → k2 success @~20s 或 k1 success @14-30s
-- 单key成功：TTFB 14-50s，多数 < 30s
-- 示例：03:39 k3 timeout→k4 success@42s, 03:43 k4 timeout→k1 success@43s, 03:49 k3 timeout→k4 success@30s
-
-**Tier fallback 正常模式（3次，全部成功）：**
-- 03:48: k1+k2 timeout@30.3s each → FASTBREAK → glm5_2_nv k2 success@14.7s → Total 75.4s < BUDGET=94s ✓
-- 04:05: k1+k2 timeout@30.3s each → FASTBREAK → glm5_2_nv k2 timeout→k3 success@35.8s → Total 96.5s ≈ BUDGET=94s (略超2.5s，但成功)
-- 04:07: k3+k4 timeout@30.3s each → FASTBREAK → glm5_2_nv k? success@10.7s → Total 72.4s < BUDGET=94s ✓
-
-**Dynamic health 正常：**
-- dsv4p_nv 健康度在 fallback 之间从 0.833 恢复到 0.923
-- 系统在 pexec 短暂不可用时自动降级→恢复
-
-**无异常：**
-- 0 ERROR / 0 WARN
-- 0 429 / 0 empty_200
-- 0 ABORT-NO-FALLBACK
-- 0 ATE
-- 0 peer fallback 触发（本地 tier fallback 已足够）
+**04:28:15 成功恢复：**
+```
+dsv4p_nv k1 timeout@30.3s → k2 success@57s → 200
+```
 
 ---
 
 ## 四、决策分析
 
+### 根因：BUDGET 不足导致 fallback 被阻止
+
+**预算模型（BUDGET=94）：**
+```
+dsv4p_nv 2key耗尽: 30s(k1) + overhead + 30s(k2) + overhead ≈ 61s
+剩余: 94 - 61 = 33s
+glm5_2_nv 1key最低需求: UPSTREAM=30s + connect/thinking overhead ≈ 35s
+33s < 35s → fallback blocked → ATE!
+```
+
+**52/73 ATE 的根本原因就是这 2s 的缺口。** 当 dsv4p_nv 的 k1+k2 都超时后，剩余 33s 不够启动 glm5_2_nv（需要 ~35s），fallback 被代码层面阻止。
+
+### 预算模型（BUDGET=110）：
+```
+dsv4p_nv 2key耗尽: ≈61s
+剩余: 110 - 61 = 49s
+glm5_2_nv 1key最低需求: ≈35s
+49s > 35s → fallback 启动 → glm5_2_nv 尝试 1 key → 成功或失败
+```
+
+### 参数决策表
+
 | 参数 | 当前值 | 候选 | 数据支撑 | 决策 |
 |------|--------|------|---------|------|
-| `TIER_TIMEOUT_BUDGET_S` | 94 | — | Post-R704 18/18 OK(100%)。3次tier fallback总耗时: 75.4s, 96.5s, 72.4s。96.5s略超94s但仍在容忍范围且成功。正常key cycling: 1-2key总耗时~47-61s << 94s。双key超时场景: 30.3+25+30.3=85.6s < 94s ✓。无需调整。 | ❌ 保持 |
-| `UPSTREAM_TIMEOUT` | 30 | — | dsv4p_nv NV-TIMEOUT一致出现在~30.3s，key cycling成功补救。pexec 18/18 OK(100%)证明30s足够。glm5_2_nv avg_ttfb=3s << 30s不受影响。 | ❌ 保持 |
-| `NVU_PEXEC_TIMEOUT_FASTBREAK` | 2 | — | 3次FASTBREAK=2后正确触发→tier fallback成功。当前行为正确。 | ❌ 保持 |
-| `NVU_FORCE_STREAM_UPGRADE_TIMEOUT` | 40 | — | 1次glm5_2 thinking请求触发40s扩展，正常行为。R694已确认40s对dsv4p复杂prompt足够。 | ❌ 保持 |
-| 其他所有参数 | — | — | 系统稳定，无数据支持任何变更。 | ❌ 保持 |
+| `TIER_TIMEOUT_BUDGET_S` | 94 | 110 | 52/73 ATE单tier dsv4p耗尽后fallback blocked。BUDGET=110确保剩余49s>35s启动glm5_2。19成功fallback avg=65s << 110s。Max success=99s < 110s零误杀。10 hopeless双tier ATE 114s→110s省4s。Worst case: 110+45=155s < 300s PROXY_TIMEOUT。 | ✅ **94→110** |
+| `UPSTREAM_TIMEOUT` | 30 | — | 47% dsv4p成功<30s（单key成功），44%在30-60s（key cycling）。30s是合理值，不改。 | ❌ 保持 |
+| `NVU_FORCE_STREAM_UPGRADE_TIMEOUT` | 40 | — | R694已确认40s对dsv4p复杂prompt足够。 | ❌ 保持 |
+| 其他所有参数 | — | — | 无数据支持变更。 | ❌ 保持 |
 
-**最终决策：零变更轮。R704的TIER_TIMEOUT_BUDGET_S 88→94已验证有效，系统持续稳定。Post-R704 18/18 OK(100%)，0 ATE，0 error。3次tier fallback全部成功，key cycling和动态健康度恢复均正常工作。低流量窗口（~18 req/49min）不适合激进变更。唯一值得注意：04:05的fallback总耗时96.5s略超BUDGET=94s（超2.5s），但请求仍然成功，是偶发边缘case。下一轮如果流量更高且fallback超时更频繁，可考虑BUDGET 94→96。**
+**最终决策：单参数变更 `TIER_TIMEOUT_BUDGET_S` 94→110 (+16s)。预期救回~52单tier ATE → SR 74%→~92%。**
 
 ---
 
 ## 五、执行记录
 
-**本轮无参数变更。** 仅完成数据收集、四源验证、分析记录。
-
-1. **SSH 到 HM1** — 完成数据收集（docker logs, env, container status）
+1. **SSH 到 HM1** — 数据收集（docker logs, env, container status, DB queries）
 2. **四源验证** — 全部通过，无漂移
-3. **DB 查询** — 使用 `created_at` 过滤（延续R705时区陷阱修复），6h + Post-R704 双窗口分析
-4. **运行时日志** — 确认 key cycling、tier fallback、dynamic health 均正常工作
+3. **DB 深度分析** — 6h/24h窗口，ATE分类（tiers_tried_count/start_tier_idx），小时SR趋势，成功请求duration分布
+4. **Python patch via SCP** — 单行重写 line 490: `TIER_TIMEOUT_BUDGET_S: "94"` → `"110"` + 完整 R706 comment
+5. **容器重启** — `docker compose up -d nv_gw` → Recreated → Started
+6. **3-way 验证** — Compose line 490(110) = docker compose config(110) = container env(110) ✅
 
 ---
 
@@ -198,27 +217,23 @@ max: 2026-07-04 19:23:06 UTC  ← 比容器重启早 39 秒！
 
 | 指标 | 数值 | 状态 |
 |------|------|------|
-| Compose 值 | 94 | ✅ |
-| 容器 env | 94 | ✅ |
+| Compose line 490 | `"110"` | ✅ |
+| `docker compose config` | `110` | ✅ |
+| 容器 env | `110` | ✅ |
 | 容器状态 | Up (healthy) | ✅ |
-| 容器启动时间 | 2026-07-04T19:23:45Z | ✅ |
-| 运行时日志 | 无 error/warn | ✅ |
-| Post-R704 成功率 | 18/18 (100%) | ✅ |
-| 429 / rate-limit | 0 | ✅ |
-| empty_200 | 0 | ✅ |
-| ATE | 0 | ✅ |
-| Key cycling | 正常（k1 timeout→k2 success） | ✅ |
-| Tier fallback | 正常（dsv4p→glm5_2, 3/3成功） | ✅ |
-| Dynamic health | 正常（0.833→0.923恢复） | ✅ |
-| 容器重启次数 | 0 (R704 后) | ✅ |
+| 容器启动时间 | 2026-07-04T20:39:51Z | ✅ |
+| Health endpoint | `{"status": "ok"}` | ✅ |
+| 重复值行（TIER_TIMEOUT_BUDGET） | 无（仅 line 490 活跃） | ✅ |
+| 变更前 SR | 209/282 (74.1%) | 基线 |
+| 变更前 ATE | 73 (25.9%) | 基线 |
+| 预期 SR | ~92% | 待验证 |
+| 429 | 0 | ✅ |
 
 ---
 
 ## 七、结论
 
-RN 零变更轮。R704的TIER_TIMEOUT_BUDGET_S 88→94部署后~49min数据：18/18 OK(100%)，0 ATE，0 error。3次tier fallback全部成功（dsv4p→glm5_2），dynamic health正确恢复。系统当前稳定，无需参数变更。
-
-**观察项：** 04:05的fallback总耗时96.5s略超BUDGET=94s（+2.5s），但请求仍然成功。若后续流量更高且fallback超时更频繁，可考虑BUDGET微调94→96。
+R706: `TIER_TIMEOUT_BUDGET_S` 94→110 (+16s)。R705后9h数据揭示严重ATE回归（74.1% SR，25.9% ATE）。根因是BUDGET=94时dsv4p_nv 2key耗尽后剩余33s不足启动glm5_2_nv fallback（需要~35s），仅2s缺口导致52/73 ATE（71%）的fallback被阻止。BUDGET=110消除此缺口（剩余49s>35s），预期救回~52 ATE，SR提升至~92%。19成功fallback avg=65s << 110s安全。Max success=99s < 110s零误杀。10 hopeless双tier ATE仍失败但dur缩短4s。
 
 **单参数每轮；铁律：只改 HM1 不改 HM2。**
 
