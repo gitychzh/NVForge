@@ -1,25 +1,24 @@
-# R713: HM2→HM1 — UPSTREAM_TIMEOUT 33→36 (+3s，NVCFPexecTimeout 边缘救回)
+# R714: HM2→HM1 — 零变更轮（R713 UPSTREAM_TIMEOUT=36 刚部署 ~15min，post-restart 100% SR）
 
 ## TL;DR
-Post-restart NVCFPexecTimeout 精确绑定 UPSTREAM_TIMEOUT=33（avg=33,400ms, min=33,235ms, max=33,636ms），+3s 到 36 捕获 33-36s 边缘。6h: 347req/250OK(72.0%)/97ATE(28.0%)。Post-restart: 21req/17OK(81.0%)/4ATE(全双 tier 耗尽)。Fallback 正常（tier_chain dsv4p_nv+glm5_2_nv），dsv4p_nv health 0.25-0.5 波动，glm5_2_nv health 0.5-0.7 救回。BUDGET=110 >> 36+36=72s 安全。FASTBREAK=1 不变。单参数每轮；铁律：只改 HM1 不改 HM2。
+R713 UPSTREAM_TIMEOUT=36 部署仅 15min，post-restart 10req/10OK(100.0%)/0ATE。NVCFPexecTimeout 绑定 UPSTREAM=36（avg 34,153ms, max 36,351ms），fallback 全部救回。dsv4p_nv health 0.75-1.0，glm5_2_nv health 1.0。零变更。单参数每轮；铁律：只改 HM1 不改 HM2。
 
 ---
 
 ## 数据
 
 ### 容器状态
-- 容器：`nv_gw`，Up 30 minutes (healthy) → 重启后 5 seconds
+- 容器：`nv_gw`，Up 9 minutes (healthy) → 重启时间 ~07:18 UTC（R713 部署）
 - DB：`logs_db`，Up 16 hours (healthy)
-- 重启时间：~2026-07-05 06:30 UTC（R711 部署）
 
-### 环境变量（改前）
+### 环境变量（改前=改后，零变更）
 ```
-UPSTREAM_TIMEOUT=33          ← R711: 30→33
-TIER_TIMEOUT_BUDGET_S=110    ← R706: 94→110
+UPSTREAM_TIMEOUT=36              ← R713: 33→36
+TIER_TIMEOUT_BUDGET_S=110        ← R706: 94→110
 MIN_OUTBOUND_INTERVAL_S=0
 KEY_COOLDOWN_S=25
 TIER_COOLDOWN_S=25
-NVU_PEXEC_TIMEOUT_FASTBREAK=1 ← R709: 2→1
+NVU_PEXEC_TIMEOUT_FASTBREAK=1    ← R709: 2→1
 NVU_PEER_FALLBACK_TIMEOUT=45
 NVU_EMPTY_200_FASTBREAK=2
 NVU_CONNECT_RESERVE_S=0
@@ -27,18 +26,53 @@ NVU_SSLEOF_RETRY_DELAY_S=1.0
 NVU_FORCE_STREAM_UPGRADE=0
 NVU_FORCE_STREAM_UPGRADE_TIMEOUT=40
 FALLBACK_HEALTH_THRESHOLD=0.10
+PROXY_TIMEOUT=300
 ```
 
-### DB 摘要（6h）
+### DB 摘要（6h，含 pre-restart）
 | 指标 | 值 |
 |------|-----|
-| 总量 | 347 req |
-| OK | 250 (72.0%) |
-| ATE | 97 (28.0%) |
-| avg_dur | 33,585ms |
+| 总量 | 349 req |
+| OK | 252 (72.2%) |
+| ATE | 97 (27.8%) |
+| avg_dur | 33,511ms |
 | max_dur | 122,312ms |
 
-### 按小时 SR
+### Post-restart（~07:18+ UTC，15 min）
+| 指标 | 值 |
+|------|-----|
+| 总量 | 10 req |
+| OK | 10 (100.0%) |
+| ATE | 0 (0.0%) |
+| avg_dur | 29,124ms |
+| max_dur | 67,531ms |
+
+### Post-restart 成功延迟分桶（dsv4p_nv）
+| bucket | cnt |
+|--------|-----|
+| 15-20s | 1 |
+| 20-25s | 1 |
+| **33-36s** | **1** (直接成功，R713 边缘救回确认) |
+| 40-50s | 3 |
+| >60s | 1 |
+
+### Post-restart fallback 统计
+| fallback_occurred | cnt | avg_dur | max_dur |
+|-------------------|-----|---------|---------|
+| f（直接成功） | 6 | 14,302ms | 35,655ms |
+| t（fallback 救回） | 4 | 51,357ms | 67,531ms |
+
+### Post-restart NVCFPexecTimeout（nv_tier_attempts）
+| 指标 | 值 |
+|------|-----|
+| 总量 | 4 |
+| avg_ms | 34,153ms |
+| min_ms | 33,235ms |
+| max_ms | **36,351ms** |
+
+**精确定位**：Post-restart NVCFPexecTimeout max=36,351ms，avg=34,153ms。UPSTREAM_TIMEOUT=36 是新的绑定约束——NVCF 端 function 响应被代理侧在 36s 截断，误差 ~350ms。33-36s 桶已有 1 个直接成功（R713 边缘救回确认）。
+
+### 按小时 SR（6h）
 | hour | total | ok | ate | sr_pct |
 |------|-------|-----|-----|--------|
 | 19:00 | 114 | 99 | 15 | 86.8% |
@@ -53,141 +87,87 @@ FALLBACK_HEALTH_THRESHOLD=0.10
 | 04:00 | 21 | 14 | 7 | 66.7% |
 | 05:00 | 20 | 7 | 13 | 35.0% |
 | 06:00 | 29 | 22 | 7 | 75.9% |
-| 07:00 | 6 | 6 | 0 | 100.0% |
+| **07:00** | **8** | **8** | **0** | **100.0%** |
 
-### Post-restart（~06:30+ UTC，35 min）
-| 指标 | 值 |
-|------|-----|
-| 总量 | 21 req |
-| OK | 17 (81.0%) |
-| ATE | 4 (19.0%) |
-| avg_dur | 34,663ms |
-
-**Post-restart ATE 全部为双 tier 耗尽（tiers_tried_count=2）**，fallback 正常工作（零单 tier ATE）。
-
-### ATE 分层（6h）
+### ATE 分层（6h，含 pre-restart）
 | tiers_tried_count | cnt | avg_dur | fallback_attempted |
 |-------------------|-----|---------|-------------------|
 | 1 | 70 | 47,103ms | f（全未尝试） |
 | 2 | 27 | 104,169ms | — |
 
-单 tier ATE 分布：start_tier_idx=1 (dsv4p_nv): 58, avg 50,383ms；start_tier_idx=3 (glm5_2_nv): 11, avg 33,847ms；start_tier_idx=0: 1, avg 2,682ms。
+单 tier ATE 分布：start_tier_idx=1 (dsv4p_nv): 58, avg 50,383ms；start_tier_idx=3 (glm5_2_nv): 11, avg 33,847ms。全为 pre-restart 时段。
 
-### NVCFPexecTimeout 分布（6h）
-| 指标 | 值 |
-|------|-----|
-| 总量 | 65 |
-| avg_ms | 29,636ms |
-| max_ms | 40,492ms |
+### 6h 错误类型
+| error_type | cnt |
+|------------|-----|
+| all_tiers_exhausted | 97 |
 
-**Post-restart NVCFPexecTimeout（关键发现）**：
-| 指标 | 值 |
-|------|-----|
-| 总量 | 7 |
-| avg_ms | 33,400ms |
-| min_ms | 33,235ms |
-| max_ms | 33,636ms |
+### 6h 按 upstream_type
+| upstream_type | cnt | ok | avg_ttfb | avg_dur |
+|---------------|-----|-----|----------|---------|
+| nvcf_pexec | 244 | 244 | 22,816ms | 22,851ms |
+| (NULL/ATE) | 101 | 4 | 54ms | 60,962ms |
+| nv_integrate | 6 | 6 | 4,253ms | 10,984ms |
 
-**精确定位**：所有 7 个 post-restart NVCFPexecTimeout 均落在 33,235-33,636ms，avg=33,400ms。这是 UPSTREAM_TIMEOUT=33 的绑定约束——NVCF 端 function 返回时间 >33s 被代理侧截断，并非 NVCF 端真正的超时。
-
-### dsv4p_nv 成功延迟分桶（6h）
-| bucket | cnt |
-|--------|-----|
-| <=5s | 3 |
-| 5-10s | 9 |
-| 10-15s | 4 |
-| 15-20s | 12 |
-| 20-25s | 13 |
-| 25-30s | 8 |
-| **30-33s** | **6** (all direct success, no fallback) |
-| 33-35s | 3 |
-| 35-40s | 9 |
-| 40-50s | 18 |
-| 50-60s | 12 |
-| >60s | 9 |
-
-**30-33s 桶 6 个全部直接成功（无 fallback）**——说明 dsv4p_nv 在 30-33s 区间确有成功窗口。33-35s 桶 3 个成功（可能通过 fallback 或 rare 直接成功）。UPSTREAM_TIMEOUT=33 截断了 33-36s 窗口。
-
-### Post-restart 成功延迟分桶（dsv4p_nv）
-| bucket | cnt |
-|--------|-----|
-| <=5s | 1 |
-| 5-10s | 2 |
-| 30-33s | 1 |
-| 35-40s | 2 |
-| 40-50s | 5 |
-
-### Fallback 统计（post-restart OK）
-| fallback_occurred | cnt | avg_dur | max_dur |
-|-------------------|-----|---------|---------|
-| f（直接成功） | 10 | 6,878ms | 30,896ms |
-| t（fallback 救回） | 7 | 42,280ms | 47,235ms |
-
-### 日志分析（改前，post-restart）
+### 日志分析（post-restart）
 ```
-tier_chain=['dsv4p_nv', 'glm5_2_nv'] (dynamic fallback) — 所有请求
-dsv4p_nv health: 0.25-0.5 (波动)
-glm5_2_nv health: 0.5-0.7 (稳定救回)
-
-典型失败路径：
-[06:36:27] NV-KEY dsv4p_nv k5 → NVCFPexecTimeout @33,810ms
-[06:36:27] NV-PEXEC-FASTBREAK dsv4p_nv → FASTBREAK=1 saved remaining keys
-[06:37:00] NV-FALLBACK → glm5_2_nv
-[06:37:00] NV-KEY glm5_2_nv k1 → NVCFPexecTimeout @33,742ms
-[06:37:34] NV-ALL-TIERS-FAIL (67,595ms) — 双 tier 耗尽
+tier_chain=['dsv4p_nv', 'glm5_2_nv'] (dynamic fallback) — 所有请求正常
+dsv4p_nv health: 0.75-1.0 (post-restart warmup)
+glm5_2_nv health: 1.0 (稳定)
 
 典型成功路径（fallback）：
-[06:48:28] NV-KEY dsv4p_nv k4 → NVCFPexecTimeout @33,342ms
-[06:48:28] NV-FALLBACK → glm5_2_nv
-[06:48:33] NV-SUCCESS glm5_2_nv k5 (5.5s)
-[06:48:33] NV-FALLBACK-SUCCESS
+[07:22:38] NV-PEXEC-FASTBREAK tier=dsv4p_nv → NVCFPexecTimeout @36,369ms
+[07:22:38] NV-FALLBACK → glm5_2_nv
+[07:23:09] NV-SUCCESS glm5_2_nv k3 (31s)
+[07:23:09] NV-FALLBACK-SUCCESS
 
 典型成功路径（直接）：
-[06:44:46] NV-KEY dsv4p_nv k2 → NV-SUCCESS @3.4s
-[06:50:14] NV-KEY dsv4p_nv k3 → NV-SUCCESS @9.9s
+[07:17:43] NV-SUCCESS dsv4p_nv k4 @17.8s
+[07:19:08] NV-SUCCESS dsv4p_nv k5 @23.6s
+[07:21:29] NV-SUCCESS dsv4p_nv k1 @35.6s ← 33-36s 直接成功
 ```
 
 ---
 
 ## 诊断
 
-### 根因：UPSTREAM_TIMEOUT=33 精确绑定 NVCFPexecTimeout
-Post-restart 7 个 NVCFPexecTimeout 全部落在 33,235-33,636ms（avg=33,400ms），这是 UPSTREAM_TIMEOUT=33 的绑定约束——NVCF 端 function 响应被代理侧在 33s 截断，超时误差仅 ~400ms。并非 NVCF 端真正的「无限超时」——如果给 +3s 窗口，部分请求可完成。
+### 系统状态：Post-restart 健康
+Post-restart 15min 内 10 req 全部成功（100% SR），fallback 正常救回 4 个 NVCFPexecTimeout。tier_chain 完整（dsv4p_nv+glm5_2_nv），health 值健康（dsv4p_nv 0.75-1.0, glm5_2_nv 1.0）。
 
-### 30-33s 成功桶证明边缘存在
-6h 窗口内 30-33s 桶有 6 个直接成功（无 fallback），说明 dsv4p_nv pexec 在 30-33s 区间确实有成功窗口。当前 UPSTREAM=33 刚好截断此窗口上限。33-36s 窗口（+3s）可捕获目前被截断的请求。
+### UPSTREAM_TIMEOUT=36 绑定约束确认
+Post-restart NVCFPexecTimeout max=36,351ms，avg=34,153ms。UPSTREAM_TIMEOUT=36 是新的绑定约束，NVCF 端 function 响应被代理侧在 36s 截断。33-36s 桶已有 1 个直接成功——R713 的 +3s 边缘救回已确认生效。
 
-### BUDGET 安全验证
-- 单 tier 最坏：36s (pexec timeout) + 36s (fallback pexec timeout) = 72s
-- BUDGET=110 per tier >> 72s，零误杀风险
-- FASTBREAK=1：每 tier 仅 1 key 尝试，33s→36s 仅增加 3s 失败路径等待
-- 最坏 total：36s (dsv4p) + 36s (glm5_2) + 45s (peer fallback) = 117s << PROXY_TIMEOUT=300s
+### 样本过小，零变更决策
+Post-restart 仅 15min，10 req 样本过小，无法得出进一步优化方向的结论。当前 100% SR 且 fallback 正常救回所有 dsv4p_nv 超时请求。需要更长时间窗口（至少 6h）积累数据，才能判断：
+1. 33-36s 直接成功比例是否稳定 >0
+2. dsv4p_nv 直接成功率是否提升（vs R713 pre-restart）
+3. 是否仍有 NVCFPexecTimeout 绑定在 36s（需进一步 +3s 到 39？）
 
-### 预重启 ATE 说明
-6h 窗口内 70 个单 tier ATE 主要来自 pre-restart 时段（20:00-05:00 UTC），此时 NVCF 双 function 健康度同时下降（dsv4p 0.25-0.33, glm5_2 0.5-0.6）。Post-restart 后 fallback 正常，ATE 率从 28.5% 降至 19.0%（虽样本小）。
+### 6h 窗口 ATE 说明
+6h 窗口内 97 ATE 主要来自 pre-restart 时段（19:00-06:00 UTC），此时运行的是 UPSTREAM_TIMEOUT=33（R711）配置。Post-restart（07:00+）零 ATE。需要在更长窗口内观察 UPSTREAM=36 的效果。
 
 ---
 
-## 决策：UPSTREAM_TIMEOUT 33→36 (+3s)
+## 决策：零变更
 
 **理由**：
-1. NVCFPexecTimeout 精确绑定 UPSTREAM=33（avg 33,400ms），非 NVCF 端真实超时
-2. 30-33s 成功桶 6 个证明边缘存在，+3s 捕获 33-36s 窗口
-3. BUDGET=110 per tier >> 36+36=72s，零误杀
-4. FASTBREAK=1 确保失败成本 bounded（仅 +3s/ATE）
-5. Post-restart fallback 正常，但减少 fallback 次数可降低延迟（fallback 成功 avg 42s vs 直接成功 avg 7s）
+1. R713 UPSTREAM=36 部署仅 15min，post-restart 样本过小（10 req）
+2. Post-restart 100% SR，fallback 正常救回全部 dsv4p_nv 超时
+3. 33-36s 直接成功已确认（1 个），R713 边缘救回生效
+4. NVCFPexecTimeout 绑定 36s 是新的约束，但需要更多数据判断是否 +3s→39
+5. dsv4p_nv health 0.75-1.0，glm5_2_nv health 1.0，双 tier 健康
 
-**预期效果**：
-- 33-36s 窗口内请求从「截断→fallback」转为「直接成功」
-- dsv4p_nv 直接成功率提升，减少 glm5_2_nv fallback 负载
-- 极端情况（双 tier 同时超时）仍为 ATE，但窗口从 33s→36s 给 NVCF 更多完成时间
+**下轮关注**：
+- Post-restart dsv4p_nv 直接成功率（排除 fallback 救回）
+- 33-36s 直接成功比例（R713 验证）
+- NVCFPexecTimeout 在 36s 的绑定是否持续
 
 ---
 
 ## 参数历史
 | 参数 | 当前值 | 上轮 | 变化 |
 |------|--------|------|------|
-| UPSTREAM_TIMEOUT | **36** | 33 (R711) | **+3s** |
+| UPSTREAM_TIMEOUT | 36 | 36 (R713) | — |
 | NVU_PEXEC_TIMEOUT_FASTBREAK | 1 | 1 (R709) | — |
 | TIER_TIMEOUT_BUDGET_S | 110 | 110 (R706) | — |
 | NVU_PEER_FALLBACK_TIMEOUT | 45 | 45 | — |
