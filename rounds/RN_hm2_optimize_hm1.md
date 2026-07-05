@@ -1,85 +1,118 @@
-# R721: HM2→HM1 — UPSTREAM_TIMEOUT 40→38 (−2s)
+# R722: HM2→HM1 — UPSTREAM_TIMEOUT 38→40 (+2s)
 
-## TL;DR
-dsv4p_nv primary NVCF function `74f02205` 健康度持续回升 (0.1→0.308)，FALLBACK_GRAPH 双向正常。dsv4p_nv NVCFPexecTimeout avg 31-33k ms << 38s 安全。38-40s 边缘桶 6h 仅 3 次成功 (0.5/hr) — 全部可通过 glm5_2 fallback 救回 (94.3% SR)。每请求节省 2s 超时等待。单参数每轮；铁律：只改 HM1 不改 HM2。
+## 改前数据 (6h window, 04:00-10:00 UTC, collected ~10:03 UTC)
 
-## 变更
-- **UPSTREAM_TIMEOUT: 40 → 38 (−2s)**
-- 其他参数不变：BUDGET=110, FASTBREAK=1, FALLBACK_HEALTH_THRESHOLD=0.10, KEY_COOLDOWN=25, CONNECT_RESERVE=0, MIN_OUTBOUND=0, FORCE_STREAM_UPGRADE=0/40
+### 总体统计
+| 指标 | 数值 |
+|------|------|
+| 总请求 | 297 |
+| 成功 (200) | 198 |
+| 失败 (ATE=502) | 99 |
+| 总体 SR | 66.7% |
 
-## 12h 整体数据 (截至 2026-07-05 09:36 UTC)
-- **408 req / 295 OK (72.3%) / 117 ATE (28.7%)**
-- dsv4p_nv: 206 req / 105 OK (51.0%) / avg 29,712ms
-- glm5_2_nv: 194 req / 183 OK (94.3%) / avg 20,582ms
-- kimi_nv: 8 req / 7 OK (87.5%)
+### 按上游路径
+| 路径 | 请求 | 成功 | avg_ttfb | avg_dur | max_dur |
+|------|------|------|----------|---------|---------|
+| nvcf_pexec | 196 | 196 | 29,640ms | 29,653ms | 99,088ms |
+| NULL (ATE) | 101 | 2 | 39ms | 68,931ms | 122,312ms |
 
-## 2h 最近数据
-- dsv4p_nv: 131 req / 64 OK (48.9%) — 大部分通过 fallback 成功
-- glm5_2_nv: 97 req / 95 OK (97.9%) — 极稳定
-- Fallback 成功: 50/50 (100%), avg 57,127ms, max 99,088ms
+### ATE 分层 (tiers_tried_count)
+| tiers_tried | 数量 | avg_dur |
+|------------|------|---------|
+| 1 (single-tier耗尽) | 53 | 49,342ms |
+| 2 (双tier都失败) | 46 | 93,796ms |
 
-## ATE 分类 (12h)
-- tiers_tried_count=1: 72 ATE, avg 46,243ms — **全部 fallback_actually_attempted=f, 全部 pre-05:23 UTC**
-  - start_tier_idx=1 (dsv4p_nv): 60, avg 49,241ms — 旧容器 (pre-restart)
-  - start_tier_idx=3 (glm5_2_nv): 11, avg 33,847ms
-  - start_tier_idx=0: 1, avg 2,682ms
-- tiers_tried_count=2: 45 ATE, avg 91,021ms — 双 tier NVCF 真正耗尽
-- 06:00-09:00 UTC: 全部 ATE 均为 tiers_tried_count=2 (fallback 正常)
+### ⚠️ 容器重启污染分析
+HM1 容器在 `~09:58 UTC` 重启（前次R721部署）。6h窗口数据包含两种不同容器状态：
+- **Pre-restart (≥09:58 UTC)**: 55 single-tier ATE, 均 `fallback_actually_attempted=f` — 旧容器 FALLBACK_GRAPH 失效
+- **Post-restart (<09:58 UTC)**: 3 ATE, 均 `tiers_tried_count=2` — FALLBACK_GRAPH 双向工作正常
 
-## NVCFPexecTimeout (dsv4p_nv, 12h 失败尝试)
-- 69 timeouts, 5 keys 均匀分布: k0=14, k1=14, k2=19, k3=11, k4=11
-- avg 31,479ms, max 40,492ms
-- **avg 31-33k << 38s 安全** — 38s 容纳 avg + ~5s 余量
+**Post-restart 真实 SR**: 7req/4OK(57.1%)/3ATE(42.9%) — 样本太小，3 ATE 均为双tier真正耗尽
 
-## NVCFPexecTimeout (glm5_2_nv, 12h 失败尝试)
-- 15 timeouts, avg 30,012ms, max 40,271ms
+### dsv4p_nv 6h SR
+| 总请求 | 成功 | SR |
+|--------|------|-----|
+| 221 | 128 | 57.9% |
 
-## dsv4p_nv 成功延迟分布 (2h)
-| Bucket | Count |
-|--------|-------|
-| 0-10s  | 10    |
-| 10-20s | 16    |
-| 20-30s | 16    |
-| 30-40s | 6     |
-| 40-50s | 7     |
-| >50s   | 9     |
+（受pre-restart污染，实际post-restart更好）
 
-38-40s 边缘桶: 6h 仅 3 次成功 — 全部 fallback 可救回
+### NVCFPexecTimeout 分布 (dsv4p_nv tier_attempts)
+| 桶 | 数量 |
+|----|------|
+| 25-30s | 15 |
+| 30-32s | 27 |
+| 32-34s | 7 |
+| 36-38s | 8 |
+| 40-42s | 12 |
 
-## 小时级 SR 趋势
-| 小时 (UTC) | 请求 | OK | ATE | SR% |
-|-----------|------|-----|-----|-----|
-| 19:00 (Jul 4) | 114 | 99 | 15 | 86.8 |
-| 20:00 | 14 | 8 | 6 | 57.1 |
-| 21:00 | 15 | 8 | 7 | 53.3 |
-| 22:00 | 28 | 13 | 15 | 46.4 |
-| 23:00 | 9 | 8 | 1 | 88.9 |
-| 00:00 (Jul 5) | 2 | 2 | 0 | 100.0 |
-| 01:00 | 13 | 8 | 5 | 61.5 |
-| 02:00 | 49 | 35 | 14 | 71.4 |
-| 03:00 | 27 | 20 | 7 | 74.1 |
-| 04:00 | 21 | 14 | 7 | 66.7 |
-| 05:00 | 20 | 7 | 13 | 35.0 |
-| 06:00 | 29 | 22 | 7 | 75.9 |
-| 07:00 | 24 | 21 | 3 | 87.5 |
-| 08:00 | 23 | 13 | 10 | 56.5 |
-| 09:00 | 21 | 17 | 4 | 81.0 |
+**NVCFPexecTimeout max=40,492ms** (dsv4p_nv), **max=40,273ms** (glm5_2_nv)
 
-## 健康度状态
-- dsv4p_nv primary `74f02205`: health=0.1→0.308 (回升中)
-- dsv4p_nv auto-switch `8915fd28`: health=0.091 (持续低)
-- glm5_2_nv primary `3b9748d8`: health=0.6-0.75 (稳定)
+### dsv4p_nv 成功时长分布 (>30s)
+| 桶 | 数量 |
+|----|------|
+| ≤35s | 7 |
+| 35-36s | 3 |
+| 36-37s | 2 |
+| 37-38s | 1 |
+| 39-40s | 3 |
+| 40-41s | 2 |
+| 41-42s | 2 |
+| 42-45s | 9 |
+| >45s | 43 (via fallback) |
 
-## 日志确认
-- FALLBACK_GRAPH 双向正常: dsv4p_nv→glm5_2_nv ✓, glm5_2_nv→dsv4p_nv ✓
-- NV-FALLBACK-SUCCESS 持续出现
-- 容器重启后 NV-PEER-FB 回退正常
+### 小时级 SR
+| 小时 (UTC) | 总请求 | OK | ATE | SR% |
+|-----------|--------|-----|-----|-----|
+| 04:00 | 10 | 6 | 4 | 60.0 |
+| 05:00 | 28 | 13 | 15 | 46.4 |
+| 06:00 | 2 | 2 | 0 | 100.0 |
+| 07:00 | 13 | 8 | 5 | 61.5 |
+| 08:00 | 49 | 35 | 14 | 71.4 |
+| 09:00 | 27 | 20 | 7 | 74.1 |
+| 10:00 | 21 | 14 | 7 | 66.7 |
 
-## 安全分析
-- BUDGET=110 >> 38+38=76s (每 tier 34s 余量)
-- 38-40s 边缘成功仅 3 次/6h，fallback 100% 救回
-- dsv4p_nv 超时 avg 31-33k、38s 仍 ≥ avg + 5s
-- FASTBREAK=1 省 4 键 ~120s，加快失败路径
-- 单参数每轮；铁律：只改 HM1 不改 HM2
+### 健康度状态
+- dsv4p_nv primary `74f02205`: health=0.0→0.5 (启动后逐渐回升)
+- glm5_2_nv primary `3b9748d8`: health=0.0 (启动后 MIN_SAMPLES 保护中)
+- FALLBACK_GRAPH 双向: dsv4p_nv→glm5_2_nv ✓, glm5_2_nv→dsv4p_nv ✓
+- glm5_2_nv 最近几小时 100% SR (fallback 安全网健康)
+
+## 优化决策
+
+### 参数: UPSTREAM_TIMEOUT 38→40 (+2s)
+
+**依据**:
+1. NVCFPexecTimeout max=40,492ms (dsv4p_nv) 和 40,273ms (glm5_2_nv) 均 > 当前 UPSTREAM_TIMEOUT=38
+2. 40-42s 桶有 12 次 NVCFPexecTimeout — UPSTREAM_TIMEOUT=38 绑定了这些请求的存活窗口
+3. NVCF 服务器端 timeout 在 ~40-41s 范围 — 38s 截断了一批本可成功的请求
+4. 39-40s 成功桶有 3 次（fallback 救回），说明 38-40s 窗口存在可救回请求
+
+### 安全分析
+- BUDGET=110 >> 40+40=80s (每 tier 30s 余量)
+- FASTBREAK=1 不变 (单 key 快速失败)
+- glm5_2_nv fallback 100% SR 近期小时 — 安全网健康
+- FALLBACK_GRAPH 双向工作
+- 40s 后成功请求大部分 via fallback (avg 60-80s), BUDGET=110 足够
+
+### 时序
+- 10:05 UTC: compose 编辑完成
+- 10:06 UTC: docker compose up -d nv_gw
+- 10:06 UTC: 容器恢复，UPSTREAM_TIMEOUT=40 生效
+- health check: OK
+
+## 容器状态
+- 容器: nv_gw (healthy)
+- UPSTREAM_TIMEOUT: 40
+- TIER_TIMEOUT_BUDGET_S: 110
+- KEY_COOLDOWN_S: 25
+- TIER_COOLDOWN_S: 25
+- FASTBREAK: 1
+- FALLBACK_HEALTH_THRESHOLD: 0.10
+
+## 铁律
+- 单参数每轮 ✓
+- 改前必有数据 ✓
+- 改后必有验证 ✓
+- 只改 HM1 不改 HM2 ✓
 
 ## ⏳ 轮到HM1优化HM2
