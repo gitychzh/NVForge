@@ -188,8 +188,10 @@ def chat_to_responses(oai_response, request_model, fallback_notice=None):
 
         if text_content:
             msg_content.append({"type": "output_text", "text": text_content})
-        if reasoning_content:
-            msg_content.append({"type": "output_text", "text": reasoning_content})
+        # R760: reasoning_content 不再作为 output_text 追加 (会把思考过程当正文显示给 agent,
+        # 且 reasoning 在多 chunk 重复会导致内容重复/乱码). codex catalog 设了
+        # supports_reasoning_summaries=false, 不期望 reasoning, 故直接丢弃.
+        # 若未来 agent 需要 reasoning, 应走单独��� reasoning summary item, 不混入 content.
         if not msg_content:
             msg_content.append({"type": "output_text", "text": ""})
 
@@ -296,16 +298,28 @@ class StreamConverter:
         delta = choices[0].get("delta", {})
         fr = choices[0].get("finish_reason")
 
-        # content delta → output_text.delta (reasoning_content + content 合并, codex 需要)
+        # R760: content delta → output_text.delta; reasoning_content 单独走 reasoning.delta.
+        # 之前把 reasoning+content 合并成一个 output_text.delta 是错的:
+        #   1) 思考过程被当成正文显示给 agent
+        #   2) reasoning 在多 chunk 重复 → 内容重复
+        #   3) 字符串拼接切到多字节字符中段 → 乱码 (如 'total patients totalexecsql...')
+        # codex catalog 设 supports_reasoning_summaries=false 会忽略 reasoning 事件,
+        # 故 reasoning 不再污染正文. text_buffer 只累加真实 content.
         text_delta = delta.get("content") or ""
         reasoning_delta = delta.get("reasoning_content") or ""
-        merged = reasoning_delta + text_delta
-        if merged:
-            self.text_buffer += merged
+        if reasoning_delta:
+            # 单独的 reasoning summary item (output_index 独立, 不混入 message content)
+            yield ("response.reasoning.delta", {
+                "type": "response.reasoning.delta",
+                "output_index": self.output_index, "summary_index": 0,
+                "delta": reasoning_delta,
+            })
+        if text_delta:
+            self.text_buffer += text_delta
             yield ("response.output_text.delta", {
                 "type": "response.output_text.delta",
                 "output_index": self.output_index, "content_index": self.content_index,
-                "delta": merged,
+                "delta": text_delta,
             })
 
         # tool_calls → function_call output items
