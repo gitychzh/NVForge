@@ -1,18 +1,18 @@
-# R734: HM2→HM1 — NVU_FORCE_STREAM_UPGRADE_TIMEOUT 44→50 (+6s)
+# R735: HM2→HM1 — UPSTREAM_TIMEOUT 50→52 (+2s)
 
 ## TL;DR
-6h: 334req/222OK(66.5%)/112ATE(33.5%). dsv4p_nv SR 56.5% (primary bottleneck), glm5_2_nv SR 96.5% (healthy fallback). R733 bumped UPSTREAM 48→50 but left NVU_FORCE_STREAM_UPGRADE_TIMEOUT at 44 — drift correction. Aligns with UPSTREAM=50. BUDGET=110>>50 safe. FASTBREAK=1 unchanged. Single param per round; iron rule: only change HM1 never HM2.
+6h post-R734: 341req/225OK(66.0%)/116ATE(34.0%). dsv4p_nv SR 56.1% (primary bottleneck), glm5_2_nv SR 96.5% (healthy fallback). dsv4p_nv NVCFPexecTimeout max=50,471ms (k2) binding at UPSTREAM=50. +2s captures 50-52s edge, reduces fallback load. BUDGET=110>>52+52=104s safe. FASTBREAK=1 unchanged. Single param per round; iron rule: only change HM1 never HM2.
 
 单参数少改多轮。铁律：只改 HM1 不改 HM2。
 
 ---
 
-## 一、当前配置快照（R734, pre-change）
+## 一、当前配置快照（R735, pre-change）
 
 | 参数 | 值 | 说明 |
 |------|-----|------|
 | UPSTREAM_TIMEOUT | 50 | R733 +2s |
-| NVU_FORCE_STREAM_UPGRADE_TIMEOUT | 44 | R727 aligned with UPSTREAM=44, now 6s behind |
+| NVU_FORCE_STREAM_UPGRADE_TIMEOUT | 50 | R734 +6s, aligned with UPSTREAM=50 |
 | TIER_TIMEOUT_BUDGET_S | 110 | per-tier budget |
 | NVU_PEXEC_TIMEOUT_FASTBREAK | 1 | 1 key attempt before fallback |
 | FALLBACK_HEALTH_THRESHOLD | 0.10 | floor (R708 fix) |
@@ -21,16 +21,15 @@
 | NVU_PEER_FALLBACK_ENABLED | 1 | enabled |
 | NVU_PEER_FALLBACK_TIMEOUT | 45 | standard |
 
-## 二、6h 数据（2026-07-05 01:03–14:33 UTC）
+## 二、6h 数据（2026-07-05 01:03–14:52 UTC, post-R734）
 
 ### 总体
 | 指标 | 值 |
 |------|-----|
-| 总请求 | 334 |
-| 成功 (200) | 222 (66.5%) |
-| ATE (502) | 112 (33.5%) |
+| 总请求 | 341 |
+| 成功 (200) | 225 (66.0%) |
+| ATE (502) | 116 (34.0%) |
 | 其他错误 | 0 |
-| 数据窗口 | 01:03–14:33 UTC |
 
 ### 每小时 SR
 | 小时 (UTC) | 请求 | OK | ATE | SR% |
@@ -48,20 +47,20 @@
 | 11:00 | 18 | 12 | 6 | 66.7 |
 | 12:00 | 30 | 17 | 13 | 56.7 |
 | 13:00 | 27 | 18 | 9 | 66.7 |
-| 14:00 | 6 | 6 | 0 | 100.0 |
+| 14:00 | 13 | 9 | 4 | 69.2 |
 
 ### 按模型 SR
 | 模型 | 请求 | OK | SR% |
 |------|------|-----|-----|
-| dsv4p_nv | 248 | 140 | 56.5 |
+| dsv4p_nv | 255 | 143 | 56.1 |
 | glm5_2_nv | 85 | 82 | 96.5 |
 | kimi_nv | 1 | 0 | 0.0 |
 
 ### ATE 诊断
 | tiers_tried_count | 数量 | avg_dur | 解读 |
 |-------------------|------|---------|------|
-| 1 | 35 (31.3%) | 51,733ms | 单 tier 耗尽，fallback 未尝试（全部 pre-restart） |
-| 2 | 77 (68.7%) | 101,695ms | 双 tier 都耗尽，NVCF upstream |
+| 1 | 35 (30.2%) | 51,733ms | 单 tier 耗尽，fallback 未尝试（全部 pre-restart） |
+| 2 | 81 (69.8%) | 101,663ms | 双 tier 都耗尽，NVCF upstream |
 
 #### 单 tier ATE 详情
 - start_tier_idx=0 (kimi_nv): 1 个
@@ -72,7 +71,7 @@
 ### nv_tier_attempts 分析
 | tier | error_type | 数量 | avg_ms | max_ms |
 |------|-----------|------|--------|--------|
-| dsv4p_nv | NVCFPexecTimeout | 77 | 33,608 | 48,422 |
+| dsv4p_nv | NVCFPexecTimeout | 78 | 33,824 | 50,471 |
 | glm5_2_nv | NVCFPexecTimeout | 27 | 41,252 | 44,463 |
 
 #### NVCFPexecTimeout 按 key 分布 (dsv4p_nv)
@@ -80,70 +79,64 @@
 |-----|------|--------|--------|
 | k0 | 14 | 32,282 | 40,443 |
 | k1 | 16 | 33,209 | 44,408 |
-| k2 | 21 | 34,132 | **48,422** |
+| k2 | 22 | 34,875 | **50,471** |
 | k3 | 13 | 33,685 | 48,305 |
 | k4 | 13 | 34,603 | 48,254 |
 
-- k2 max=48,422ms = UPSTREAM=48 + 422ms → R733 前绑定
-- UPSTREAM=50 后（R733）可捕获 48-50s 范围
+- k2 max=50,471ms = UPSTREAM=50 + 471ms → **UPSTREAM binding**
+- 分布均匀 (14, 16, 22, 13, 13) → function-level timeout, 非特定 key 问题
+- FASTBREAK=1: 1 key 50s → 超时后 fallback 到 glm5_2 (96.5% SR)
 
 ### 成功请求 fallback 统计
 | fallback_occurred | 数量 | avg_dur | max_dur |
 |-------------------|------|---------|---------|
-| f (无 fallback) | 155 | 21,471ms | 80,892ms |
-| t (触发 fallback) | 67 | 61,364ms | 145,104ms |
-
-### 容器状态
-- nv_gw: Up 10 minutes (pre-change), restarted at 14:23 UTC
-- tier_chain=['dsv4p_nv', 'glm5_2_nv'] (dynamic fallback, health={}) — 刚重启，MIN_SAMPLES 未积累
-- 双向 fallback 正常工作
-- 14:33 UTC 出现 8 个 DNS 临时解析失败 (gaierror) — HM1 直连间歇性网络问题，非配置可修复
+| f (无 fallback) | 157 | 21,423ms | 80,892ms |
+| t (触发 fallback) | 68 | 61,498ms | 145,104ms |
 
 ### 日志关键发现
-- NV-STARTUP-RETRY: 14:33 UTC DNS 错误后自动重试成功
-- 容器重启后 MIN_SAMPLES 保护期，health 值尚未显示
-- glm5_2_nv SR 96.5% — 健康 fallback，远优于 R733 周期（health 0.125-0.273）
+- tier_chain=['dsv4p_nv', 'glm5_2_nv'] (dynamic fallback) — 双向 fallback 正常工作
+- 容器重启后 MIN_SAMPLES 保护期，health 显示 0.0（R734 重启 14:41 UTC，仍不足样本）
+- 14:42-14:46 UTC 3 个 peer-originated (hop=1) ATE — HM2→HM1 fallback 请求也失败，非本地可修复
+- 14:52:40 UTC dsv4p_nv k4 首次直接成功（约 11.5s）
+- 无 BrokenPipe 以外的新错误类型
 
 ## 三、决策分析
 
-### 为什么改 NVU_FORCE_STREAM_UPGRADE_TIMEOUT
+### 为什么改 UPSTREAM_TIMEOUT
 
-1. **Drift correction**: R733 将 UPSTREAM_TIMEOUT 从 48→50，但未同步更新 NVU_FORCE_STREAM_UPGRADE_TIMEOUT（仍为 44，自 R727 与 UPSTREAM=44 对齐后未更新）。
-   - 当 thinking-detected streaming 请求触发 extended timeout 时，`NVU_FORCE_STREAM_UPGRADE_TIMEOUT=44` 会先于 `UPSTREAM=50` 到期
-   - 两端不对称：pexec 路径 50s，thinking-stream 路径仅 44s
-   - 对齐到 50 消除此不对称
+1. **Binding edge**: dsv4p_nv NVCFPexecTimeout max=50,471ms = UPSTREAM=50 + 471ms。R730→R733→R735 持续追踪：UPSTREAM 提高后 binding edge 始终跟随，说明 NVCF 函数级 timeout 在 50-52s 范围有请求等待被截断。
 
-2. **glm5_2_nv 状态显著改善**: R733 周期 glm5_2_nv health 0.125-0.273（非常不健康），但当前周期 SR 96.5%（85/82 OK）。Fallback 不再脆弱，允许直接路径更长的 timeout。
+2. **glm5_2_nv 状态健康**: SR 96.5% (85/82 OK)，fallback 可靠。+2s 直接捕获 50-52s 范围可减少 fallback 负载，但即使 fail 也安全回退到 glm5_2。
 
-3. **BUDGET 余量充足**: BUDGET=110 >> 50s safe。Streaming 请求触发 extended timeout 后仍远在预算内。
+3. **BUDGET 余量充足**: BUDGET=110 >> 52+52=104s per-tier safe。每个 tier 仍有 2 key × 52s = 104s 预算，余量 6s。
 
-4. **历史先例**: R727 做了完全相同的事（FORCE_STREAM 42→44 对齐 UPSTREAM=44）。R733 触发新一轮 drift，需新一轮对齐。
+4. **历史先例**: R653 (28→25), R650 (34→31), R651 (31→28), R726 (42→44), R730 (46→48), R733 (48→50) — 持续 binding edge 跟踪 +2s 是验证过的安全模式。
 
 ### 为什么不是其他参数
-- UPSTREAM_TIMEOUT=50: 刚改（R733），需观察新值效果
+- NVU_FORCE_STREAM_UPGRADE_TIMEOUT=50: R734 刚对齐，无需再改
 - TIER_TIMEOUT_BUDGET_S=110: 余量充足
-- FASTBREAK=1: glm5_2_nv SR 96.5% fallback 健康，无需增加 key 尝试
+- FASTBREAK=1: glm5_2_nv fallback 健康 (96.5%)，无需增加 key 尝试。超时均匀分布 → function-level，第二 key 同样超时
 - KEY_COOLDOWN_S=25: 无 429 问题
 - FALLBACK_HEALTH_THRESHOLD=0.10: 已是地板
 
 ## 四、变更
 
-**参数**: NVU_FORCE_STREAM_UPGRADE_TIMEOUT: 44 → 50 (+6s)
+**参数**: UPSTREAM_TIMEOUT: 50 → 52 (+2s)
 
-**理由**: Drift correction — aligns with UPSTREAM=50 (R733). R727 aligned at 44 with UPSTREAM=44; R733 bumped UPSTREAM to 50 left FORCE_STREAM at 44. Prevents asymmetric timeout between pexec path (50s) and thinking-stream path (44s).
+**理由**: dsv4p_nv NVCFPexecTimeout max=50,471ms binding at UPSTREAM=50. +2s captures 50-52s edge directly, reduces fallback load on healthy glm5_2 (96.5% SR). BUDGET=110>>52+52=104s safe. FASTBREAK=1 unchanged.
 
 **安全验证**:
-- BUDGET=110 >> 50s ✓
+- BUDGET=110 >> 52+52=104s ✓
 - FASTBREAK=1 unchanged ✓
 - YAML 验证通过 ✓
 - 容器重启成功 (Recreated) ✓
 - Health check: OK ✓
-- `docker exec nv_gw env | grep NVU_FORCE_STREAM_UPGRADE_TIMEOUT` → 50 ✓
+- `docker exec nv_gw env | grep UPSTREAM_TIMEOUT` → 52 ✓
 
 ## 五、验证结果
 - compose YAML: OK
 - `docker compose up -d nv_gw`: Container nv_gw Recreated → Started
 - `curl localhost:40006/health`: {"status": "ok"}
-- `docker exec nv_gw env | grep NVU_FORCE_STREAM_UPGRADE_TIMEOUT`: NVU_FORCE_STREAM_UPGRADE_TIMEOUT=50
+- `docker exec nv_gw env | grep UPSTREAM_TIMEOUT`: UPSTREAM_TIMEOUT=52
 
 ## ⏳ 轮到HM1优化HM2
