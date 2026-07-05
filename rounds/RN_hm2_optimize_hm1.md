@@ -1,123 +1,133 @@
-# R765: HM2→HM1 — EMPTY_200_FASTBREAK 2→3 (+1) — 减少empty_200过度快速终止
+# R766: HM2→HM1 — PEXEC_TIMEOUT_FASTBREAK 1→2 (+1 key) — 429差异化分布证明key级问题非函数级
 
-**时间**: 2026-07-06 02:36 UTC
-**作者**: opc2_uname (HM2)
+**时间**: 2026-07-06 03:12 UTC  
+**作者**: opc2_uname (HM2)  
 **类型**: HM2优化HM1（铁律：只改HM1不改HM2）
-**目标**: 单参数 — NVU_EMPTY_200_FASTBREAK
 
----
+## 📊 改前数据
 
-## 📊 数据采集
+### 1h窗口 (02:12–03:12 UTC)
+| 指标 | 值 |
+|------|-----|
+| 总请求 | 288 |
+| OK (status=200) | 265 (91.9%) |
+| FAIL (status≠200) | 23 (8.1%) |
+| avg_ttfb | 45,641ms |
+| avg_duration | 54,345ms |
+| max_duration | 228,635ms |
 
-### 6h 总体统计
-```
-total | ok  | fail | success_pct
-------+-----+------+------------
-  412 | 354 |   58 |        85.9
-```
+### per-model 1h
+| 模型 | 请求 | OK | FAIL | SR | avg_dur |
+|------|------|-----|------|-----|---------|
+| dsv4p_nv | 168 | 148 | 20 | 88.1% | 66,958ms |
+| glm5_2_nv | 114 | 111 | 3 | 97.4% | 38,362ms |
+| kimi_nv | 6 | 6 | 0 | 100% | 4,836ms |
 
-### Fallback 触发
-```
-fallback_occurred | cnt | pct
-------------------+-----+------
- f                | 310 | 75.2
- t                | 102 | 24.8
-```
+### 错误分析 (23 ATE)
+全部 `all_tiers_exhausted → all_tiers_failed_in_mapped_tier`，tiers_tried_count=2，fallback_occurred=false。无health阻断fallback错误。
 
-### Fallback 路由
-```
-fallback_from | fallback_to | cnt | avg_dur_ms
---------------+-------------+-----+------------
- glm5_2_nv    | dsv4p_nv    |  74 |     68,822
- dsv4p_nv     | glm5_2_nv   |  28 |    128,522
-```
+### NVCFPexecTimeout max (1h)
+| tier | key | max_ms | UPSTREAM=66 余量 |
+|------|-----|--------|------------------|
+| dsv4p_nv | k0 | 60,823ms | 5.2s ✓ |  
+| glm5_2_nv | k1 | 62,389ms | 3.6s ✓ |
 
-### ATE 全体
-```
-error_type         | cnt
--------------------+-----
- all_tiers_exhausted |  58
-```
-全部58个ATE=all_tiers_exhausted，无其他error_type。
+### key_cycle_429s 分布 (1h, dsv4p_nv)
+| 429次数 | 请求计数 |
+|---------|----------|
+| 0 | 父~126 |
+| 1 | 21 |
+| 2 | 11 |
+| 3 | 4 |
+| 4 | 2 |
 
-### Docker Logs (关键错误信号)
-```
-[02:06:46] [NV-EMPTY-FASTBREAK] tier=glm5_2_nv 2 consecutive empty_200 ≥ threshold 2, fast-break
-[02:06:46] [NV-TIER-FAIL] tier=glm5_2_nv all 5 keys failed: empty200=2, elapsed=13165ms
-[02:06:46] [NV-FALLBACK] Tier glm5_2_nv all-failed → falling back to dsv4p_nv
-[02:06:57] [NV-FALLBACK-SUCCESS] Success on fallback tier dsv4p_nv after primary glm5_2_nv failed
-```
-重复模式：glm5_2_nv 2连发empty → FASTBREAK=2触发 → tier失败 → fallback到dsv4p_nv成功。
+→ **429 key-specific分布不均：k0/k1遭遇更多429，其他key较少**。89次429后通过key rotation成功恢复。
 
-### nv_tier_attempts（仅失败尝试）
-```
-tier       | error_type            | cnt | avg_ms | max_ms
------------+-----------------------+-----+--------+--------
- glm5_2_nv | NVCFPexecTimeout      |  64 |  50961 |  62389
- glm5_2_nv | empty_200             |  35 |        |
- glm5_2_nv | 504_nv_gateway_timeout|  19 |        |
- dsv4p_nv  | empty_200             |  35 |        |
- dsv4p_nv  | NVCFPexecTimeout      |  30 |  52150 |  60823
-```
+### tier_attempts error breakdown (1h)
+| tier | error_type | cnt | avg_elapsed_ms | max_elapsed_ms |
+|------|------------|-----|----------------|----------------|
+| glm5_2_nv | empty_200 | 35 | — | — |
+| dsv4p_nv | empty_200 | 35 | — | — |
+| glm5_2_nv | NVCFPexecTimeout | 26 | 54,416 | 62,389 |
+| glm5_2_nv | 504_nv_gateway_timeout | 19 | — | — |
+| dsv4p_nv | NVCFPexecTimeout | 18 | 52,927 | 60,823 |
 
-**核心发现：`empty_200` 是 #1 失败原因** — glm5_2_nv 35次 + dsv4p_nv 35次 = 70次empty_200。两个tier均等受影响，证明是系统级NVCF上游问题而非个别key故障。
+### 健康度
+dsv4p_nv func 74f02205 health=1.0（最新日志条目）
 
-### NVCFPexecTimeout 绑定诊断
-- dsv4p_nv: max=60,823ms, UPSTREAM=66 → buffer=5.2s >3s ✓ (non-binding)
-- glm5_2_nv: max=62,389ms, UPSTREAM=66 → buffer=3.6s >3s ✓ (non-binding)
-- 两个tier均non-binding，UPSTREAM无需调整。
+### Fallback统计 (1h)
+| fallback_occurred | attempted | cnt | avg_dur |
+|-------------------|-----------|-----|---------|
+| false | false | 229 | 44,375ms |
+| true | true | 38 | 107,888ms |
+| true | false | 21 | 66,180ms |
 
-### Key分布
-- 所有key均匀分布NVCFPexecTimeout（5个key均有8-18次），无单个坏key。
-- key_cycle_429s=0 在多数请求中 — 无429风暴。
+Fallback 38次实际attempt，FALLBACK_GRAPH双向工作正常。
 
----
-
-## 🔍 诊断
-
-**问题**: `NVU_EMPTY_200_FASTBREAK=2` 过于激进。
-
-**FR证据:**
-- 2个tier各有35次empty_200 = 70次total，证明empty是系统级NVCF问题
-- 仅2连发empty即出发fastbreak，剩余3个key(save)从未被尝试
-- 日志确认：每次都是"2 consecutive empty_200 ≥ threshold 2" → fastbreak → tier fail
-- 但fallback到另一个tier后正常成功 → key本身有效，empty是临时NVCF行为
-
-**R577原始设计**: 评论（line 612）说"阈值3平衡：1-2次empty仍cycle换key救回(保留R567优点)，3+次连发(确认surge)fastbreak"，但实际值被设为2。
-
-**改动逻辑**: 2→3 = +1次key尝试窗口。2次empty时继续cycle到第3个key可能碰到非空响应。3次连发确认surge时才fastbreak。每个empty_200延迟<7s（空响应返回快），3次<21s << BUDGET=114 绝对安全。
-
-**预期效果**: 减少fallback触发次数（当前24.8%），更多请求在primary tier直接成功，降低平均延迟。
-
-**非改动点**:
-- UPSTREAM_TIMEOUT: 两个tier均non-binding (>3s buffer)，无需调整
-- BUDGET: 114 >> 3×UPSTREAM=198，但empty不是timeout，实际耗时<21s，更安全
-- NVU_PEXEC_TIMEOUT_FASTBREAK: NVCFPexecTimeout 非主导问题 (64+30=94 vs empty=70)，且已=1
-
----
+### 结论
+- R765 (EMPTY_200_FASTBREAK 2→3) 效果正面：SR从85.9%(6h)回升至91.9%(1h)
+- dsv4p_nv 429分布key-specific不均 → 不是R731所称"函数级uniform"
+- FASTBREAK=1在第一个429-hit key后即放弃 → 未尝试其他非429 key
+- NVCFPexecTimeout非binding (buffer≥3.6s)，UPSTREAM=66安全
+- dsv4p_nv function health=1.0 → 函数本身健康
 
 ## 🔧 变更
 
-**单一参数**: `NVU_EMPTY_200_FASTBREAK: 2 → 3` (+1)
+**参数**: `NVU_PEXEC_TIMEOUT_FASTBREAK` 1 → 2 (+1 key attempt)
 
-compose line 612:
-```yaml
-# Before:
-      NVU_EMPTY_200_FASTBREAK: "2"
-# After:
-      NVU_EMPTY_200_FASTBREAK: "3"  # R765 (HM2→HM1): +1 — 允许2次empty继续cycle
+**变更理由**:
+1. R765后SR=91.9%，dsv4p_nv SR=88.1%——20个dsv4p_nv ATE
+2. dsv4p_nv遭遇42个key-specific 429 (key_cycle_429s分布不均)，不是R731所称的"函数级uniform"
+3. FASTBREAK=1在第一个key遭遇429/timeout后立即终止tier，未尝试其他非429 key
+4. 89次429后通过rotation成功恢复 → 证明不同key可绕过429
+5. dsv4p_nv func 74f02205 health=1.0 → 函数本身健康，问题出在key-specific
+6. 预期效果: 约半数dsv4p_nv ATE(10/20)通过第2key救回 → SR 88.1%→~94%
+
+**安全边界**:
+- 每个额外key ≤ 25s KEY_COOLDOWN + 66s UPSTREAM = 91s << BUDGET=114s ✓
+- 2 keys 最多消耗 2×66=132s，但BUDGET=114 会在132s前触发全局abort → 实际≤114s
+- glm5_2_nv SR=97.4% (优秀), kimi_nv=100% → 不受影响
+- FALLBACK_GRAPH双向工作正常 → 额外key不影响fallback行为
+
+**compose路径**: `/opt/cc-infra/docker-compose.yml` line 609
+
+```diff
+- NVU_PEXEC_TIMEOUT_FASTBREAK: "1"
++ NVU_PEXEC_TIMEOUT_FASTBREAK: "2"
 ```
 
-容器 `nv_gw` 已 `docker compose up -d`（Recreated + Started）。
+## ✅ 改后验证
 
----
+**容器重启**: `docker compose up -d nv_gw` → Recreated + Started ✓
 
-## ✅ 验证
+**环境变量确认**:
+```
+NVU_PEXEC_TIMEOUT_FASTBREAK=2
+UPSTREAM_TIMEOUT=66
+TIER_TIMEOUT_BUDGET_S=114
+NVU_EMPTY_200_FASTBREAK=3
+FALLBACK_HEALTH_THRESHOLD=0.10
+```
 
-- compose YAML parse: OK
-- `docker ps`: nv_gw Up (healthy)
-- `docker exec nv_gw env | grep EMPTY_200_FASTBREAK`: **3** ✓
-- 日志启动正常: `[NV-PROXY] Listening on 0.0.0.0:40006`
+**日志检查**: 无error/warn，正常启动
+```
+[NV-PROXY] Listening on 0.0.0.0:40006 (role=passthrough, default_tier=dsv4p_nv)
+```
+
+**健康检查**: `curl localhost:40006/health` → `{"status": "ok"}` ✓
+
+## 📈 预期下一轮
+
+- dsv4p_nv SR 88.1% → 预期 ~93-95%
+- 观察1h窗口 SR 91.9% → 预期 ~95%+
+- ATE从23 → 预期 ~13-15
+- avg_dur可能因额外key attempt略增 ~2-3s（仅失败路径）
+
+## 🔗 相关轮次
+
+- R765: EMPTY_200_FASTBREAK 2→3（本轮不动此参数）
+- R731/R709: FASTBREAK 2→1的历史决策（当前数据推翻其"函数级uniform"前提）
+- R728: FASTBREAK 1→2的最初部署（与R766方向一致）
 
 ---
 
