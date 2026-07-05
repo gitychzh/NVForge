@@ -1,4 +1,4 @@
-# R749: HM2 cx4102 codex 适配器 (Responses↔ChatCompletions 互转 + fallback)
+# R750: HM2 cx4102 codex 适配器 (Responses↔ChatCompletions 互转 + fallback)
 
 > 日期: 2026-07-05  机器: HM2 (实验床)  链路: codex → cx4102(4102) → nv_gw(40006)/glm5_2_nv → fallback ms_gw(40007)/glm5_2_ms
 > **HM1 全程未动** (本地生产冻结, 待 HM2 观察窗口后用户拍板才同步)
