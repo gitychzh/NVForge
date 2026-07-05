@@ -21,17 +21,21 @@
 | dsv4p_nv | 60 | 38,200 | **59,596** |
 | glm5_2_nv | 49 | 46,486 | 57,797 |
 
-dsv4p_nv max=59,596ms → UPSTREAM=60 binding (+~400ms overhead). Uniform across 5 keys: [10,11,17,12,10] → function-level timeout.
+dsv4p_nv max=59,596ms → UPSTREAM=60 binding (+~400ms overhead). Uniform across 5 keys: [10,11,17,12,10] → function-level timeout, not key-specific.
 
 ### Success Duration Buckets (dsv4p_nv, status=200)
 - ≤30s: 52, 30-35s: 4, 35-40s: 8, 40-45s: 9, 45-50s: 12, 50-55s: 9, 55-60s: 9, **60-65s: 6**, 65-70s: 4, >70s: 15
 - 6 successes in 60-65s bucket via fallback (avg 64,018ms). R741 captures 60-62s; +2s to 64 captures 62-64s.
 
 ### Fallback Health
-- Log: `tier_chain=['dsv4p_nv', 'glm5_2_nv'] (dynamic fallback, health={'f966661c': 0.0})`
+- Log: `tier_chain=['dsv4p_nv', 'glm5_2_nv'] (dynamic fallback, health={'f966661c-790d-4f71-b973-c525fb8eafd4': 0.0})`
 - glm5_2 function f966661c health=0.0 (dead) → FALLBACK_HEALTH_THRESHOLD=0.10 blocks it
 - dsv4p_nv primary function 74f02205 health=1.0 (healthy)
 - FALLBACK_GRAPH bidirectional working when glm5_2 health > 0.10
+
+### BUDGET Safety
+- BUDGET=114. Per-tier: 64s << 114s for single attempt. Two-tier: 64+64=128s > 114, but per-tier BUDGET=114 means each tier gets 114s → 64s per tier is safe.
+- FASTBREAK=1: single key per tier, 64s max per tier.
 
 ## Decision: UPSTREAM_TIMEOUT 62→64 (+2s)
 
