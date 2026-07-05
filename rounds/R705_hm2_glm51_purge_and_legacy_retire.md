@@ -66,7 +66,7 @@ R704 已删: `proxy/legacy-cc/`、`proxy/legacy-dispatch/`、`proxy/legacy-codex
 | glm5_2_nv → dsv4p_nv fallback | 自动切且成功 | ✓ (`NV-FALLBACK-SUCCESS`) |
 | 全量 grep `glm5_1\|glm5.1\|GLM51\|ai-glm-5_1\|nv_glm5_1` | 源码+配置+计数器全清 | ✓ |
 
-注: glm5_2_nv pexec 单次 40s timeout 是 NVCF 上游 surge(已知 R696 问题域), 非本次清理引入; fallback 链正常工作.
+注: glm5_2_nv/dsv4p_nv pexec 40s timeout 真因见下方"五、彻查", **非** NVCF 平台 surge(原 R696 归因有误).
 
 ## 三、工程化收益
 - nv_gw 模型表 4→3, FALLBACK_GRAPH 无死链, MODEL_MAP 无死引用
@@ -82,3 +82,31 @@ R704 已删: `proxy/legacy-cc/`、`proxy/legacy-dispatch/`、`proxy/legacy-codex
 - 聚焦 nv_gw(及直接相关): 未动 agent 模型选择/thinking/tool_calls 逻辑 ✓
 - 所有修改写入仓库: 本 round + 备份 `.bak.R705` ✓
 - 仅 HM2: HM1 未触碰 ✓
+
+
+## 五、彻查: glm5_2_nv/dsv4p_nv 40s timeout 真因 (用户要求换 IP 验证)
+
+R705 验证阶段见 glm5_2_nv pexec 40s timeout, 原草拟归因"NVCF surge 已知问题域". 用户纠正: 必须彻查真伪, 换 IP 试. 结果:
+
+### 测试 1: HM2 宿主直连 vs mihomo 5 出口
+直打 `https://api.nvcf.nvidia.com/v2/nvcf/pexec/functions/3b9748d8...` (glm5_2 真实 pexec 路径):
+
+| 路径 | k1 | k2 | k3 | k4 | k5 |
+|---|---|---|---|---|---|
+| **HM2 直连** (宿主 IP) | 200 3.1s | 403 鉴权失败 | 200 7.1s | 200 7.5s | 200 1.4s |
+| **mihomo 7894** | timeout 15s | — | — | — | — |
+| **mihomo 7895-7899** | 全 timeout 15s | — | — | — | — |
+
+5 个 mihomo 出口 IP (103.62.49.x 同 C 段) **全 timeout**, 但宿主直连 4/5 key 秒回 200. TCP 握手+SSL+CONNECT 全通, 仅 HTTP 请求 hang → SNI 阻断或 NVCF 对该 IP 段拒收.
+
+### 测试 2: integrate 端点对照
+`integrate.api.nvidia.com/v1/chat/completions` 各 key + HM1 日本 IP 全 timeout — integrate 端点本身连通性问题, 与 HM2 IP 无关.
+
+### 结论
+- **glm5_2_nv/dsv4p_nv 40s timeout 真因 = nv_gw `NVU_PROXY_URL1-5` 全指向 mihomo 7894-7899, 而这 5 个出口被 NVCF 拒**. 与 NVCF 平台 surge/限速**无关**.
+- R696 记忆"74f02205 经日本 IP 秒回美国 IP 挂死"已摸到边但未定论, 本次定论.
+- **临时解法**: `NVU_PROXY_URL1-5=""` (空=直连宿主 IP) — 直连秒回 200.
+- k2 的 403 是该 NV key 本身鉴权失效, 与限速/出口无关, 需单独处理(更换或停用).
+
+### 教训
+遇到 NVCF 上游 timeout/502, 不要轻信"surge 已知问题", 必须直连 vs proxy 对照、HM1 vs HM2 对照, 验证 IP 维度后再归因. 见记忆 [[nvcf-upstream-verify-ip]].
