@@ -1,6 +1,9 @@
 # R748: HM2 — NVCF DNS region 路由真因修复 (容器 8.8.8.8 返亚太挂死 → 223.5.5.5 返美国稳定)
 
-> 仅 HM2。HM1 不动 (HM1 是日本 IP, R696 记录的 region 偏好可能相反, 需独立验证).
+> HM2 + HM1 同步修复 (两机容器都走 8.8.8.8 返亚太挂死节点, 同病同治).
+> R696 记录的 "dsv4p 经日本 IP 秒回美国 IP 挂死" 是 dsv4p 单 model 现象 (现已不存在),
+> 与 glm5_2 思考在亚太节点挂死是两个独立问题。glm5_2 思考在亚太节点对两台机器都挂死,
+> 与客户机 IP 无关, 是 NVCF 侧 region 问题。
 
 ## TL;DR
 HM2 nv_gw glm5_2_nv 思考请求 62s 后 NVCF 返 504/202 cl=0 挂死, 长期被 R745-R747 误判为
@@ -97,8 +100,14 @@ recovery"。
   ~/hm_ps/hermes_improve_self 的 upstream_current.py 待同步) ✓
 
 ## 后续
-- HM1 (日本 IP) 的 nv_gw 是否也有 DNS region 问题需独立验证 (R696 记录 dsv4p 经日本 IP 秒回
-  美国 IP 挂死, 方向可能相反; 若 HM1 容器也走 8.8.8.8 返亚太, 而 HM1 日本到亚太反而正常,
-  可能不需要改。待 HM1 单独验证)。
 - 偶发 empty200 (流式 cl=0) 仍存在 1/5 概率, 已被 cycle 机制救回, 暂不深究 (NVCF 侧思考
   超时返回空流)。
+
+## HM1 同步应用 (2026-07-05 续)
+HM1 容器同样走 8.8.8.8 → 解析到亚太节点 (35.75.174.113), glm5_2_nv 思考 56s fallback dsv4p。
+HM1 宿主走 systemd-resolved → 127.0.0.53 (上游也是公共 DNS) → 同样亚太。
+强制美国节点测试 HM1 容器: 3/3 成功 (15.8s/21.7s/17.2s)。
+应用同样修复 (compose dns:[223.5.5.5,223.6.6.6] + upstream.py should_cycle 504/503/202)。
+改后 HM1 容器解析到 52.87.56.15 (美国), glm5_2_nv 思考 try2=3.9s / try3=9.9s 成功 (GLM 真回复,
+含 reasoning_content), 不再 fallback dsv4p。
+HM1 备份: `docker-compose.yml.bak.R705_dns`, `upstream.py.bak.R705_cycle`。
