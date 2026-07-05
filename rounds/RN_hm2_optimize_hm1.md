@@ -1,9 +1,9 @@
-# R756: HM2→HM1 — Zero-Change (系统正在自我恢复)
+# R765: HM2→HM1 — EMPTY_200_FASTBREAK 2→3 (+1) — 减少empty_200过度快速终止
 
-**时间**: 2026-07-05 22:36 UTC
+**时间**: 2026-07-06 02:36 UTC
 **作者**: opc2_uname (HM2)
 **类型**: HM2优化HM1（铁律：只改HM1不改HM2）
-**目标**: 单参数调优
+**目标**: 单参数 — NVU_EMPTY_200_FASTBREAK
 
 ---
 
@@ -11,90 +11,113 @@
 
 ### 6h 总体统计
 ```
-total | ok  | ate | sr_pct
-------+-----+-----+-------
-  356 | 267 |  89 |   75.0
+total | ok  | fail | success_pct
+------+-----+------+------------
+  412 | 354 |   58 |        85.9
 ```
 
-### 按模型 SR
+### Fallback 触发
 ```
-request_model | total | ok  | ate | sr_pct
---------------+-------+-----+-----+--------
- dsv4p_nv     |   224 | 144 |  80 |   64.3
- glm5_2_nv    |   134 | 126 |   8 |   94.0
- kimi_nv      |     2 |   1 |   1 |   50.0
-```
-
-### 按小时 SR（趋势）
-```
-hour          | total | ok | ate | sr_pct
---------------+-------+----+-----+--------
- 21:00        |    34 | 32 |   2 |   94.1  ← 转折点
- 22:00        |    34 | 33 |   1 |   97.1  ← 持续向好
+fallback_occurred | cnt | pct
+------------------+-----+------
+ f                | 310 | 75.2
+ t                | 102 | 24.8
 ```
 
-**趋势**: 最后2小时 SR 94.1% → 97.1%，系统正在自我恢复。
-
-### ATE 结构
+### Fallback 路由
 ```
-tiers_tried_count | cnt | avg_dur
-------------------+-----+---------
-                1 |  23 |   64417  (glm5_2 dead 期间 fallback 被阻断)
-                2 |  66 |  119738  (NVCF 双 function 耗尽，非配置可修复)
+fallback_from | fallback_to | cnt | avg_dur_ms
+--------------+-------------+-----+------------
+ glm5_2_nv    | dsv4p_nv    |  74 |     68,822
+ dsv4p_nv     | glm5_2_nv   |  28 |    128,522
 ```
 
-### NVCFPexecTimeout
-- dsv4p_nv: max=60,823ms, buffer=66-60.823=5.2s >3s ✓ (non-binding)
-- glm5_2_nv: max=62,389ms, buffer=66-62.389=3.6s >3s ✓ (non-binding)
+### ATE 全体
+```
+error_type         | cnt
+-------------------+-----
+ all_tiers_exhausted |  58
+```
+全部58个ATE=all_tiers_exhausted，无其他error_type。
 
-### FALLBACK_GRAPH
-- 双向工作：`dsv4p_nv ↔ glm5_2_nv` fallback 激活
-- glm5_2 健康度 0.8-0.833（从 0.0 恢复中）
-- 日志确认 fallback 正常工作
+### Docker Logs (关键错误信号)
+```
+[02:06:46] [NV-EMPTY-FASTBREAK] tier=glm5_2_nv 2 consecutive empty_200 ≥ threshold 2, fast-break
+[02:06:46] [NV-TIER-FAIL] tier=glm5_2_nv all 5 keys failed: empty200=2, elapsed=13165ms
+[02:06:46] [NV-FALLBACK] Tier glm5_2_nv all-failed → falling back to dsv4p_nv
+[02:06:57] [NV-FALLBACK-SUCCESS] Success on fallback tier dsv4p_nv after primary glm5_2_nv failed
+```
+重复模式：glm5_2_nv 2连发empty → FASTBREAK=2触发 → tier失败 → fallback到dsv4p_nv成功。
+
+### nv_tier_attempts（仅失败尝试）
+```
+tier       | error_type            | cnt | avg_ms | max_ms
+-----------+-----------------------+-----+--------+--------
+ glm5_2_nv | NVCFPexecTimeout      |  64 |  50961 |  62389
+ glm5_2_nv | empty_200             |  35 |        |
+ glm5_2_nv | 504_nv_gateway_timeout|  19 |        |
+ dsv4p_nv  | empty_200             |  35 |        |
+ dsv4p_nv  | NVCFPexecTimeout      |  30 |  52150 |  60823
+```
+
+**核心发现：`empty_200` 是 #1 失败原因** — glm5_2_nv 35次 + dsv4p_nv 35次 = 70次empty_200。两个tier均等受影响，证明是系统级NVCF上游问题而非个别key故障。
+
+### NVCFPexecTimeout 绑定诊断
+- dsv4p_nv: max=60,823ms, UPSTREAM=66 → buffer=5.2s >3s ✓ (non-binding)
+- glm5_2_nv: max=62,389ms, UPSTREAM=66 → buffer=3.6s >3s ✓ (non-binding)
+- 两个tier均non-binding，UPSTREAM无需调整。
+
+### Key分布
+- 所有key均匀分布NVCFPexecTimeout（5个key均有8-18次），无单个坏key。
+- key_cycle_429s=0 在多数请求中 — 无429风暴。
 
 ---
 
 ## 🔍 诊断
 
-**结论: Zero-Change（零变更）**
+**问题**: `NVU_EMPTY_200_FASTBREAK=2` 过于激进。
 
-1. UPSTREAM_TIMEOUT=66: 两个 tier 均 non-binding（buffer >3s），无需调整
-2. TIER_TIMEOUT_BUDGET_S=114: per-tier 预算充裕（114 >> 66），无需调整
-3. NVU_FORCE_STREAM_UPGRADE_TIMEOUT=66: 已与 UPSTREAM 对齐（R755 修复），无需调整
-4. 23 单 tier ATE: glm5_2 健康度=0.0 期间的历史遗留，健康度已恢复至 0.8-0.833
-5. 66 双 tier ATE: NVCF 上游问题，非配置可修复
-6. 趋势: 94.1% → 97.1%，系统正在自我恢复
+**FR证据:**
+- 2个tier各有35次empty_200 = 70次total，证明empty是系统级NVCF问题
+- 仅2连发empty即出发fastbreak，剩余3个key(save)从未被尝试
+- 日志确认：每次都是"2 consecutive empty_200 ≥ threshold 2" → fastbreak → tier fail
+- 但fallback到另一个tier后正常成功 → key本身有效，empty是临时NVCF行为
 
-**所有参数均处于安全区间，无需修改。**
+**R577原始设计**: 评论（line 612）说"阈值3平衡：1-2次empty仍cycle换key救回(保留R567优点)，3+次连发(确认surge)fastbreak"，但实际值被设为2。
+
+**改动逻辑**: 2→3 = +1次key尝试窗口。2次empty时继续cycle到第3个key可能碰到非空响应。3次连发确认surge时才fastbreak。每个empty_200延迟<7s（空响应返回快），3次<21s << BUDGET=114 绝对安全。
+
+**预期效果**: 减少fallback触发次数（当前24.8%），更多请求在primary tier直接成功，降低平均延迟。
+
+**非改动点**:
+- UPSTREAM_TIMEOUT: 两个tier均non-binding (>3s buffer)，无需调整
+- BUDGET: 114 >> 3×UPSTREAM=198，但empty不是timeout，实际耗时<21s，更安全
+- NVU_PEXEC_TIMEOUT_FASTBREAK: NVCFPexecTimeout 非主导问题 (64+30=94 vs empty=70)，且已=1
 
 ---
 
 ## 🔧 变更
 
-**无变更。** 系统已处于稳定恢复状态，所有参数均在安全边界内。
+**单一参数**: `NVU_EMPTY_200_FASTBREAK: 2 → 3` (+1)
 
-当前参数（nv_gw 容器）：
+compose line 612:
+```yaml
+# Before:
+      NVU_EMPTY_200_FASTBREAK: "2"
+# After:
+      NVU_EMPTY_200_FASTBREAK: "3"  # R765 (HM2→HM1): +1 — 允许2次empty继续cycle
 ```
-UPSTREAM_TIMEOUT=66
-TIER_TIMEOUT_BUDGET_S=114
-NVU_FORCE_STREAM_UPGRADE_TIMEOUT=66
-NVU_PEXEC_TIMEOUT_FASTBREAK=1
-NVU_EMPTY_200_FASTBREAK=2
-FALLBACK_HEALTH_THRESHOLD=0.10
-KEY_COOLDOWN_S=25
-TIER_COOLDOWN_S=25
-NVU_PEER_FALLBACK_TIMEOUT=45
-NVU_CONNECT_RESERVE_S=0
-MIN_OUTBOUND_INTERVAL_S=0
-NV_INTEGRATE_KEY_COOLDOWN_S=0
-```
+
+容器 `nv_gw` 已 `docker compose up -d`（Recreated + Started）。
 
 ---
 
 ## ✅ 验证
 
-- 无需重启容器，无需修改 compose
-- 容器运行正常，/health → `{"status": "ok"}`
+- compose YAML parse: OK
+- `docker ps`: nv_gw Up (healthy)
+- `docker exec nv_gw env | grep EMPTY_200_FASTBREAK`: **3** ✓
+- 日志启动正常: `[NV-PROXY] Listening on 0.0.0.0:40006`
 
 ---
 
