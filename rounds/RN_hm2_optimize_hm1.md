@@ -1,56 +1,113 @@
-# R754: HM2→HM1 — UPSTREAM_TIMEOUT 64→66 (+2s)
+# R755: HM2→HM1 — NVU_FORCE_STREAM_UPGRADE_TIMEOUT 62→66 (+4s)
 
-## 变更
-**参数**: `UPSTREAM_TIMEOUT` 64 → 66 (+2s)
+**时间**: 2026-07-05 22:15 UTC
+**作者**: opc2_uname (HM2)
+**类型**: HM2优化HM1（铁律：只改HM1不改HM2）
+**目标**: 单参数调优
 
-**类型**: Safety buffer restoration (preventative, per R751 pitfall rule)
+---
 
-## 数据依据
-- **6h**: 346req/248OK (71.7%) / 98 ATE (28.3%)
-- **dsv4p_nv**: 263req/174OK (66.2%), NVCFPexecTimeout max=60,823ms (k0) at UPSTREAM=64 — buffer=3.2s (adequate)
-- **glm5_2_nv**: 81req/73OK (90.1%), NVCFPexecTimeout max=62,389ms (k1) at UPSTREAM=64 — buffer=1.6s **<3s minimum**
-- **kimi_nv**: 2req/1OK (50.0%), negligible
-- **glm5_2 func 3b9748d8**: health fluctuating 0.0-0.5 (recovering post-restart)
-- **dsv4p_nv func 74f02205**: health=1.0 (healthy)
-- **FALLBACK_GRAPH**: bidirectional working — logs show tier_chain=['dsv4p_nv', 'glm5_2_nv'] and ['glm5_2_nv', 'dsv4p_nv'] with dynamic fallback
-- 23 single-tier ATE (all fallback_actually_attempted=f, glm5_2 health=0.0 during some periods), 75 double-tier (NVCF dual-function exhaustion)
-- glm5_2_nv: 10 empty_200 fallback events, 68 NVCFPexecTimeout failures — key1 max=62,389ms worst
-- dsv4p_nv success latency percentiles: P25=23.7s, P50=44.9s, P75=61.3s, P90=91.6s, P95=104.4s, P99=120.0s
-- Container restarted at 13:41 UTC (~8h ago), MIN_SAMPLES protection expired
-- Hourly SR trend: improving from 46.2% (10:00) → 93.8% (21:00) — system recovering
+## 📊 数据采集
 
-## 安全分析
-- **R751 pitfall rule**: post-reduction buffer (UPSTREAM - NVCFPexecTimeout_max) must be ≥3s
-- **glm5_2_nv** buffer: 64,000 - 62,389 = 1,611ms (1.6s) — **violates 3s minimum** (this is the trigger)
-- **dsv4p_nv** buffer: 64,000 - 60,823 = 3,177ms (3.2s) — meets 3s minimum
-- +2s to 66 creates: 66,000 - 62,389 = 3,611ms (3.6s) buffer for glm5_2_nv — **meets 3s minimum**
-- +2s to 66 creates: 66,000 - 60,823 = 5,177ms (5.2s) buffer for dsv4p_nv — safer
-- BUDGET=114 >> 66s per-tier safe
-- FASTBREAK=1 unchanged — 1 key × 66s = 66s << 114s budget
-- Fallback rescue: glm5_2_nv 90.1% SR (healthy fallback), bidirectional working
-- No risk of false-abort: max success duration via fallback = 203s (extreme outlier), 96 fallback successes avg=69s
-- 6 successes in 60-70s bucket (via fallback) — +2s captures 64-66s range directly, reduces fallback load
+### 6h 总体统计
+```
+total | ok  | ate | sr_pct
+------+-----+-----+-------
+  353 | 260 |  93 |   73.7
+```
 
-## 容器状态
-- Container: `nv_gw` (R680 rename), started 2026-07-05 13:41 UTC (pre-R754 restart)
-- **R754 restart**: `Recreated` + `Started`, health check passing
+### ATE 结构
+```
+tiers_tried_count | cnt | avg_dur
+------------------+-----+--------
+                1 |  23 |   64417
+                2 |  70 |  115400
+```
+- 70/93 (75.3%) 双 tier 全部耗尽 → NVCF 上游问题，非配置可修复
+- 23/93 (24.7%) 单 tier 耗尽，fallback_actually_attempted=f 全部 → MIN_SAMPLES 过期后 dead tier 排除（R744 正常行为）
 
-## 验证
-- YAML: OK ✓
-- Container recreated + started ✓
-- Health: OK ✓
-- `UPSTREAM_TIMEOUT=66` ✓
-- `NVU_FORCE_STREAM_UPGRADE_TIMEOUT=62` (unchanged) ✓
-- `FALLBACK_HEALTH_THRESHOLD=0.10` ✓
-- `NVU_PEXEC_TIMEOUT_FASTBREAK=1` ✓
-- `TIER_TIMEOUT_BUDGET_S=114` ✓
+### NVCFPexecTimeout 分布
+```
+tier       | nv_key_idx | cnt | avg_ms | max_ms
+-----------+------------+-----+--------+--------
+ dsv4p_nv  |          0 |   6 |  48183 |  60823
+ dsv4p_nv  |          1 |   8 |  45437 |  59596
+ dsv4p_nv  |          2 |   9 |  45813 |  53082
+ dsv4p_nv  |          3 |   6 |  53501 |  60401
+ dsv4p_nv  |          4 |   2 |  46302 |  48254
+ glm5_2_nv |          0 |   9 |  49078 |  51596
+ glm5_2_nv |          1 |  15 |  49278 |  62389
+ glm5_2_nv |          2 |  12 |  47448 |  62306
+ glm5_2_nv |          3 |  16 |  48259 |  62354
+ glm5_2_nv |          4 |  20 |  50986 |  62368
+```
 
-## 下一轮提示
-- glm5_2 func 3b9748d8 health recovering (0.0→0.333→0.5) — positive trend, wait for stability
-- dsv4p_nv NVCFPexecTimeout max=60,823ms at UPSTREAM=66 — 5.2s buffer now, safe
-- glm5_2_nv NVCFPexecTimeout max=62,389ms at UPSTREAM=66 — 3.6s buffer now, meets 3s minimum
-- NVU_FORCE_STREAM_UPGRADE_TIMEOUT=62 still drifted from UPSTREAM=66 — next round candidate
-- 75 double-tier ATEs = NVCF dual-function exhaustion, not config-fixable
-- Peer fallback to HM2 won't rescue local ATEs (R744 code-level defect) — zero-change correct response
+- dsv4p_nv: max=60,823ms, buffer=66-60.823=5.2s >3s ✓ (R751 rule, non-binding)
+- glm5_2_nv: max=62,389ms, buffer=66-62.389=3.6s >3s ✓ (R751 rule, non-binding)
+- 分布均匀 → 函数级超时，非 key 级
+
+### FALLBACK_GRAPH
+- 双向工作：`dsv4p_nv ↔ glm5_2_nv` 双向 fallback 激活
+- dsv4p_nv 健康度 1.0，glm5_2_nv 健康度 0.0（NVCF 函数 3b9748d8 死亡）
+- glm5_2→dsv4p fallback 正常：`[NV-FALLBACK-SUCCESS] Success on fallback tier dsv4p_nv`
+
+### 按小时 SR
+```
+hour          | total | ok | ate | sr_pct
+--------------+-------+----+-----+--------
+ 08:00        |    13 |  8 |   5 |   61.5
+ 09:00        |    21 | 17 |   4 |   81.0
+ 10:00        |    26 | 12 |  14 |   46.2
+ 11:00        |    18 | 12 |   6 |   66.7
+ 12:00        |    30 | 17 |  13 |   56.7
+ 13:00        |    27 | 18 |   9 |   66.7
+ 14:00        |    17 | 12 |   5 |   70.6
+ 15:00        |    13 | 10 |   3 |   76.9
+ 16:00        |    16 | 13 |   3 |   81.3
+ 17:00        |    43 | 32 |  11 |   74.4
+ 18:00        |    31 | 23 |   8 |   74.2
+ 19:00        |    22 | 18 |   4 |   81.8
+ 20:00        |    27 | 21 |   6 |   77.8
+ 21:00        |    34 | 32 |   2 |   94.1
+ 22:00        |    13 | 13 |   0 |  100.0
+```
+
+趋势向好：最后2小时 94.1% + 100% SR。
+
+### 日志确认
+- `[NV-THINKING-TIMEOUT] (glm5_2_nv) thinking request stream=True → extended timeout 62s`
+- 实际使用 62s，但 UPSTREAM=66 → 4s 漂移
+
+---
+
+## 🔍 诊断
+
+**发现**: NVU_FORCE_STREAM_UPGRADE_TIMEOUT=62 与 UPSTREAM_TIMEOUT=66 存在 4s 漂移。
+
+**根因**: R752 将 FORCE_STREAM 对齐到 UPSTREAM=62。R754 将 UPSTREAM 提升至 66 但未同步更新 FORCE_STREAM。
+
+**影响**: thinking 请求（glm5_2_nv 流式推理）在 62s 被强制流升级，但上游仍在 66s 等待。这 4s 窗口内如果上游恰好在 62-66s 之间返回，会被过早切断 → 不必要的 fallback 或 ATE。
+
+---
+
+## 🔧 变更
+
+**NVU_FORCE_STREAM_UPGRADE_TIMEOUT: 62 → 66 (+4s)**
+
+- 对齐 UPSTREAM_TIMEOUT=66
+- 消除 4s 漂移
+- BUDGET=114 >> 66 安全
+- 无其他参数变更
+
+---
+
+## ✅ 验证
+
+- YAML 语法检查通过
+- 容器重启成功（Recreated）
+- `docker exec nv_gw env | grep NVU_FORCE_STREAM_UPGRADE_TIMEOUT` → `66`
+- `/health` → `{"status": "ok"}`
+
+---
 
 ## ⏳ 轮到HM1优化HM2
