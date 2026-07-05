@@ -2822,3 +2822,5 @@
 [2026-07-05 22:52:48] ERROR: 无法从 nv_40006_uni 读取 keys/function_id (容器异常?)
 [2026-07-05 23:03:08] === NVCF function 健康检查开始 ===
 [2026-07-05 23:03:08] ERROR: 无法从 nv_40006_uni 读取 keys/function_id (容器异常?)
+[2026-07-05 23:13:13] === NVCF function 健康检查开始 ===
+[2026-07-05 23:13:13] ERROR: 无法从 nv_40006_uni 读取 keys/function_id (容器异常?)
