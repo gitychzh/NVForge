@@ -1,41 +1,50 @@
-# R752: HM2→HM1 — NVU_FORCE_STREAM_UPGRADE_TIMEOUT 64→62 (-2s)
+# R753: HM2→HM1 — UPSTREAM_TIMEOUT 62→64 (+2s)
 
 ## 变更
-**参数**: `NVU_FORCE_STREAM_UPGRADE_TIMEOUT` 64 → 62 (-2s)
+**参数**: `UPSTREAM_TIMEOUT` 62 → 64 (+2s)
 
-**类型**: Drift correction (R751 follow-through)
+**类型**: Safety buffer restoration (preventative, per R751 pitfall rule)
 
 ## 数据依据
-- **6h**: 337req/236OK (70.0%) / 101 ATE (30.0%)
-- **Post-restart** (13:06 UTC): 198req/149OK (75.3%) — improving trajectory
+- **6h**: 341req/240OK (70.4%) / 101 ATE (29.6%)
 - **dsv4p_nv**: 227req/135OK (59.5%), NVCFPexecTimeout max=60,823ms (k0) at UPSTREAM=62 binding
-- **glm5_2_nv**: 108req/100OK (92.6%), NVCFPexecTimeout max=57,797ms (k4) — healthy fallback
-- **glm5_2 func 3b9748d8**: health=0.0 (dead), but still in tier_chain via MIN_SAMPLES protection
-- **FALLBACK_GRAPH**: bidirectional working — logs show dsv4p_nv↔glm5_2_nv tier_chain on both models
-- 23 single-tier ATE (dsv4p_nv exhausted, MIN_SAMPLES still protecting glm5_2), 78 double-tier (NVCF dual-function)
-- R751 noted: "NVU_FORCE_STREAM_UPGRADE_TIMEOUT=64 drifted from UPSTREAM=62 — next round candidate"
+- **glm5_2_nv**: 112req/104OK (92.9%), NVCFPexecTimeout max=62,251ms (k4) — healthy fallback
+- **kimi_nv**: 2req/1OK (50.0%), negligible
+- **glm5_2 func 3b9748d8**: health=0.0 (dead), but in tier_chain via MIN_SAMPLES protection
+- **FALLBACK_GRAPH**: bidirectional working — logs show tier_chain=['dsv4p_nv', 'glm5_2_nv'] and ['glm5_2_nv', 'dsv4p_nv'] with dynamic fallback
+- 22 single-tier ATE (dsv4p_nv exhausted, all pre-restart), 70 double-tier (dsv4p_nv→glm5_2), 8 double-tier (glm5_2→dsv4p_nv)
+- **ALL 101 ATEs are pre-restart** (container restarted at 21:20 UTC, 6 min ago)
+- Success 60-62s bucket: 1 request (via fallback); 62-64s: 1 request (via fallback) — minimal edge rescue
+- NVCFPexecTimeout dsv4p_nv: 36 failures, 5-key uniform distribution (6/7/12/6/5), max=60,823ms
 
 ## 安全分析
-- BUDGET=114 >> 62s per-tier safe
-- `NVU_FORCE_STREAM_UPGRADE=0` — only affects thinking requests (NV-THINKING-TIMEOUT log tag)
-- -2s aligns FORCE_STREAM with UPSTREAM=62, removing 2s dead headroom on thinking request timeouts
-- Logs confirm: `NV-THINKING-TIMEOUT extended timeout 64s` — now 62s, matching UPSTREAM
+- **R751 pitfall rule**: post-reduction buffer (UPSTREAM - NVCFPexecTimeout_max) must be ≥3s
+- Current buffer: 62,000 - 60,823 = 1,177ms (1.2s) — **violates 3s minimum**
+- Between R750→R751, NVCFPexecTimeout max drifted +1.2s (59,596→60,823ms)
+- +2s to 64 creates buffer: 64,000 - 60,823 = 3,177ms (3.2s) — **meets 3s minimum**
+- BUDGET=114 >> 64s per-tier safe
+- FASTBREAK=1 unchanged — 1 key × 64s = 64s << 114s budget
+- Fallback rescue: glm5_2_nv 92.9% SR (healthy), 64s key1 + 64s fallback = 128s > 114s BUDGET per-tier (but per-tier budget resets for fallback per R707)
+- No risk of false-abort: max success duration via fallback = 203s (extreme outlier), typical fallback success avg = 68s
 
 ## 容器状态
-- Container: `nv_gw` (R680 rename), started 2026-07-05 13:06 UTC (R751 restart)
-- **R752 restart**: `Recreated` + `Started`, health check passing
+- Container: `nv_gw` (R680 rename), started 2026-07-05 21:20 UTC (pre-R753 restart)
+- **R753 restart**: `Recreated` + `Started`, health check passing
 
 ## 验证
 - YAML: OK ✓
 - Container recreated + started ✓
 - Health: OK ✓
-- `NVU_FORCE_STREAM_UPGRADE_TIMEOUT=62` ✓
-- `UPSTREAM_TIMEOUT=62` matched ✓
+- `UPSTREAM_TIMEOUT=64` ✓
+- `NVU_FORCE_STREAM_UPGRADE_TIMEOUT=62` (unchanged) ✓
+- `FALLBACK_HEALTH_THRESHOLD=0.10` ✓
+- `NVU_PEXEC_TIMEOUT_FASTBREAK=1` ✓
+- `TIER_TIMEOUT_BUDGET_S=114` ✓
 
 ## 下一轮提示
-- UPSTREAM=62 与 dsv4p_nv NVCFPexecTimeout max=60,823ms 绑定 — 观察是否继续漂移
-- dsv4p_nv SR 59.5% 持续偏低，glm5_2_nv 92.6% SR 健康
-- 23 single-tier ATE 随着 MIN_SAMPLES 过期可能会增加（glm5_2 health=0.0 将被排除）
-- NVCF dsv4p_nv function 74f02205 当前 health=1.0 (post-restart)，但历史不稳定
+- glm5_2 func 3b9748d8 health=0.0 dead — MIN_SAMPLES will expire, removing glm5_2 from tier_chain → single-tier ATE may increase
+- dsv4p_nv NVCFPexecTimeout max=60,823ms at UPSTREAM=64 — 3.2s buffer now, monitor drift
+- NVU_FORCE_STREAM_UPGRADE_TIMEOUT=62 drifted from UPSTREAM=64 — next round candidate (drift correction)
+- Peer fallback to HM2 won't rescue local ATEs (R744 code-level defect) — zero-change correct response
 
 ## ⏳ 轮到HM1优化HM2
