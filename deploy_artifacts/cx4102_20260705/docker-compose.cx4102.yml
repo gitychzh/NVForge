@@ -1,0 +1,218 @@
+# cc-infra docker-compose — HM2 (opc2sname)
+# 重构 R705: 4 容器精简栈 (nv_gw / ms_gw / cc4101 / logs_db) + cx4102 (codex Responses 互转, R710 新增)
+# 全部自写代码, 无 litellm 依赖. bind-mount gateway/ 源码, 改 .py 只需 docker restart <svc>.
+
+services:
+  logs_db:
+    image: postgres:16-alpine
+    container_name: logs_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: litellm_pg_pass
+      POSTGRES_USER: litellm
+      POSTGRES_DB: litellm
+      POSTGRES_MULTIPLE_DATABASES: "litellm_nv_hm hermes_logs"
+      TZ: Asia/Shanghai
+    volumes:
+      - cc_pgdata:/var/lib/postgresql/data
+      - ./postgres/init-db.sh:/docker-entrypoint-initdb.sh:ro
+      - ./postgres/hermes-logs-schema.sql:/docker-entrypoint-initdb.d/20-hermes-logs-schema.sql:ro
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - cc-net
+    mem_limit: 1g
+
+  nv_gw:
+    build: ./proxy/nv-gw
+    image: cc-infra-nv_gw
+    container_name: nv_gw
+    restart: unless-stopped
+    ports:
+      - "40006:40006"
+    environment:
+      - LISTEN_PORT=40006
+      - PROXY_ROLE=passthrough
+      - PROXY_TIMEOUT=300
+      - UPSTREAM_TIMEOUT=40
+      - TIER_TIMEOUT_BUDGET_S=110
+      - MIN_OUTBOUND_INTERVAL_S=0
+      - KEY_COOLDOWN_S=25
+      - TIER_COOLDOWN_S=25
+      - NVU_CONNECT_RESERVE_S=0
+      - NVU_FORCE_STREAM_UPGRADE=0
+      - NVU_FORCE_STREAM_UPGRADE_TIMEOUT=90
+      - NVU_EMPTY_200_FASTBREAK=2
+      - NVU_PEXEC_TIMEOUT_FASTBREAK=1
+      - NVU_SSLEOF_RETRY_DELAY_S=1.0
+      - NVU_PEER_FALLBACK_ENABLED=1
+      - NVU_PEER_FALLBACK_URL=http://100.109.153.83:40006
+      - NVU_PEER_FALLBACK_TIMEOUT=25
+      - NVU_HOST_MACHINE=opc2sname
+      - NVCF_BASE_URL=api.nvcf.nvidia.com
+      - NVCF_DEEPSEEK_FUNCTION_ID=74f02205-c7ba-438f-b81a-2537955bd7ec
+      - NVCF_GLM52_FUNCTION_ID=3b9748d8-1d85-40e8-8573-0eeaa63a4b63
+      - NVCF_KIMI_FUNCTION_ID=f966661c-790d-4f71-b973-c525fb8eafd4
+      - NV_INTEGRATE_MODELS=
+      - NV_INTEGRATE_KEY_COOLDOWN_S=0
+      - NVU_KEY1=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
+      - NVU_KEY2=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
+      - NVU_KEY3=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
+      - NVU_KEY4=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
+      - NVU_KEY5=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
+      - NVU_PROXY_URL1=
+      - NVU_PROXY_URL2=
+      - NVU_PROXY_URL3=
+      - NVU_PROXY_URL4=
+      - NVU_PROXY_URL5=
+      - NVU_GATEWAY_API_KEY=nv-gw-token
+      - NVU_DB_ENABLED=1
+      - NVU_DB_HOST=logs_db
+      - NVU_DB_PORT=5432
+      - NVU_DB_USER=litellm
+      - NVU_DB_PASSWORD=litellm_pg_pass
+      - NVU_DB_NAME=hermes_logs
+      - CHARS_PER_TOKEN_ESTIMATE=3.0
+      - LOG_RETENTION_DAYS=7
+      - LOG_DIR=/app/logs
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./proxy/nv-gw/gateway:/app/gateway
+      - ./logs/nv_gw:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      - logs_db
+    networks:
+      - cc-net
+    mem_limit: 1g
+
+  ms_gw:
+    build: ./proxy/ms-gw
+    image: cc-infra-ms_gw
+    container_name: ms_gw
+    restart: unless-stopped
+    ports:
+      - "40007:40007"
+    environment:
+      - LISTEN_PORT=40007
+      - PROXY_ROLE=ms_uni
+      - PROXY_TIMEOUT=600
+      - UPSTREAM_TIMEOUT=300
+      - MIN_OUTBOUND_INTERVAL_S=1.0
+      - KEY_COOLDOWN_S=60
+      - VARIANT_COOLDOWN_S=30
+      - EMPTY_200_FASTBREAK_THRESHOLD=5
+      - ALL_EXHAUSTED_COOLDOWN_S=30
+      - NUM_KEYS=7
+      - NUM_VARIANTS=10
+      - DEFAULT_MODEL=glm5_2_ms
+      - MS_BASEURL=https://api-inference.modelscope.cn/v1
+      - MS_KEY1=ms-bb4e5bee-ca0e-49be-8de3-2347a57752f5
+      - MS_KEY2=ms-b836c297-9cb3-45f7-86b3-a33e1b76f48f
+      - MS_KEY3=ms-202e8dc3-b2f0-4aa3-9b56-0fa6798ac5b9
+      - MS_KEY4=ms-ed773f9d-9ca1-4fd9-87e4-b6acd0e545ae
+      - MS_KEY5=ms-69d3fbc6-6938-4fb1-b403-dfa44a05fb0c
+      - MS_KEY6=ms-e392cb51-9637-4766-80aa-490a6044294c
+      - MS_KEY7=ms-20761627-ec32-497c-a11a-7ff580617f0b
+      - MSU_GATEWAY_API_KEY=ms-gw-token
+      - MSU_DB_ENABLED=1
+      - MSU_DB_HOST=logs_db
+      - MSU_DB_PORT=5432
+      - MSU_DB_USER=litellm
+      - MSU_DB_PASSWORD=litellm_pg_pass
+      - MSU_DB_NAME=hermes_logs
+      - MSU_HOST_MACHINE=opc2sname
+      - LOG_RETENTION_DAYS=7
+      - LOG_DIR=/app/logs
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./proxy/ms-gw/gateway:/app/gateway
+      - ./logs/ms_gw:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      - logs_db
+    networks:
+      - cc-net
+    mem_limit: 1g
+
+  cc4101:
+    build: ./proxy/cc4101
+    image: cc-infra-cc4101
+    container_name: cc4101
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4101:4101"
+    environment:
+      - LISTEN_PORT=4101
+      - PROXY_ROLE=cc4101
+      - AUTH_ENABLED=1
+      - UPSTREAM_TIMEOUT=120
+      - PRIMARY_UPSTREAM_URL=http://nv_gw:40006/v1/chat/completions
+      - PRIMARY_UPSTREAM_TOKEN=nv-gw-token
+      - PRIMARY_UPSTREAM_MODEL=glm5_2_nv
+      - FALLBACK_UPSTREAM_URL=http://ms_gw:40007/v1/chat/completions
+      - FALLBACK_UPSTREAM_TOKEN=ms-gw-token
+      - FALLBACK_UPSTREAM_MODEL=dsv4p_ms
+      - CC4101_GATEWAY_API_KEY=cc4101-token
+      - CC4101_DB_ENABLED=1
+      - CC4101_DB_HOST=logs_db
+      - CC4101_DB_PORT=5432
+      - CC4101_DB_USER=litellm
+      - CC4101_DB_PASSWORD=litellm_pg_pass
+      - CC4101_DB_NAME=hermes_logs
+      - CC4101_HOST_MACHINE=opc2sname
+      - LOG_RETENTION_DAYS=14
+      - LOG_DIR=/app/logs
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./proxy/cc4101/gateway:/app/gateway
+      - ./logs/cc4101:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      - nv_gw
+      - ms_gw
+      - logs_db
+    networks:
+      - cc-net
+    mem_limit: 1g
+
+  cx4102:
+    build: ./proxy/cx-gw
+    image: cc-infra-cx4102
+    container_name: cx4102
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4102:4102"
+    environment:
+      - LISTEN_PORT=4102
+      - AUTH_ENABLED=1
+      - PROXY_TIMEOUT=300
+      - PRIMARY_URL=http://nv_gw:40006/v1
+      - PRIMARY_MODEL=glm5_2_nv
+      - FALLBACK_URL=http://ms_gw:40007/v1
+      - FALLBACK_MODEL=glm5_2_ms
+      - FALLBACK_TIMEOUT_S=300
+      - CIRCUIT_FAILURE_THRESHOLD=3
+      - CIRCUIT_OPEN_S=60
+      - FALLBACK_RECOVER_S=30
+      - NV_GW_API_KEY=nv-gw-token
+      - MS_GW_API_KEY=ms-gw-token
+      - CX_GATEWAY_API_KEY=cx-gw-token
+      - LOG_DIR=/app/logs
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./proxy/cx-gw/gateway:/app/gateway
+      - ./logs/cx4102:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      - nv_gw
+      - ms_gw
+    networks:
+      - cc-net
+    mem_limit: 512m
+
+networks:
+  cc-net:
+    driver: bridge
+
+volumes:
+  cc_pgdata:
