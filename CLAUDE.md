@@ -2,23 +2,31 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **Note:** This directory is a working base, not the code itself. The actual artifacts live in
-> two places — see "Repository layout" below. This file documents the `nv_gw` (formerly
-> hm-40006--nv) optimization effort so any future instance can be productive without
-> re-deriving it. Naming was fully disambiguated in R680; litellm was fully removed in R681.
+> **Project name: NVForge** (R787 rename of `hermes_improve_self`). GitHub repo is now
+> `gitychzh/NVForge`; the local clone directory is still `~/hm_ps/hermes_improve_self` (the
+> directory name was not renamed — only the repo was). GitHub auto-redirects the old URL, so
+> old clones keep working, but `git remote set-url` has been applied on both hosts.
+>
+> **This working base** (`/home/opc_uname/cc_ps/cc_repair_hm`) is scratch, not the code. The
+> actual artifacts live in two places — see "Repository layout" below. This file documents the
+> `nv_gw` optimization effort so any future instance can be productive without re-deriving it.
+> Naming was fully disambiguated in R680; litellm was fully removed in R681.
 
 ## What this is
+
+**NVForge** is dual-host, symmetric LLM-gateway infrastructure focused on tuning a single
+link: `nv_gw` (port 40006, the NV gateway → NVCF pexec/integrate).
 
 Three independent agents — **hermes**, **openclaw**, **opencode** — run on two hosts as equal
 peers (none belongs to another, none belongs to CC). Each has its own model chain. CC is
 **infrastructure side**: it builds/tunes the gateways the agents point at, but does not own
 the agents or their model-selection logic.
 
-The optimization target is a single link: **`nv_gw`** (port 40006, the NV gateway → NVCF
-pexec/integrate). CC itself runs on a *separate* legacy glm5.1 chain (40000–40005); that chain
-is **not** the optimization target and must not be broken. R569 cancelled the dual-machine
-alternating-optimization ritual; CC now edits both machines directly (still data-backed, still
-verified, still committed).
+The optimization target is the `nv_gw` link above. CC itself runs on a *separate* legacy
+glm5.1 chain (40000–40005); that chain is **not** the optimization target and must not be
+broken — it serves CC itself. R569 cancelled the dual-machine alternating-optimization
+ritual; CC now edits both machines directly (still data-backed, still verified, still
+committed).
 
 **Containers (R680 names, both machines symmetric):**
 
@@ -56,7 +64,7 @@ removed in R569. Only an `@reboot` bootstrap remains.
 
 | Path | What |
 |---|---|
-| `/home/opc_uname/hm_ps/hermes_improve_self` | **the shared git repo** (remote `git@github.com:gitychzh/hermes_improve_self.git`, branch `main`). Round files (`rounds/R<N>_*.md`), scripts, deploy artifacts, `upstream_*.py`. All optimization work is recorded here. |
+| `/home/opc_uname/hm_ps/hermes_improve_self` | **the shared git repo** (remote `git@github.com:gitychzh/NVForge.git`, branch `main`; R787 rename — local directory name kept as-is). Round files (`rounds/R<N>_*.md`), scripts, deploy artifacts, `upstream_*.py`. All optimization work is recorded here. |
 | `/opt/cc-infra` (on **both** hosts) | docker-compose stack running the 9 containers. `docker-compose.yml` is the live config; `proxy/nv-gw/gateway/` is the nv_gw source (`config.py`, `upstream.py`, `handlers.py`, `db.py`); `proxy/ms-gw/gateway/` is the ms_gw source; `logs/nv_gw/`, `logs/ms_gw/` have error JSONL. |
 | `/home/opc_uname/cc_ps/cc_repair_hm` | this working base (CLAUDE.md + scratch). |
 

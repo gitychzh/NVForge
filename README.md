@@ -1,28 +1,64 @@
-# Hermes 双机 hm-40006--nv 优化
+# NVForge
 
-> 维护模式(2026-07-02 起):取消"双机交替优化/只改对端"机制。
-> 现由 Claude Code 直接维护两机,不再互相改、不再轮转角色(执行者/质疑者)。
-> 自动轮询/执行脚本已归档,systemd timer/cron 在 R569 已停。
+> 双机对称的 LLM 网关基础设施，聚焦 `nv_gw → NVCF` 这一条链路的持续调优。
+> 三 agent（hermes / openclaw / opencode）作为对等独立 APP 跑在两台主机上，
+> CC 只做基础设施侧：构建并调优 agent 指向的本地网关，不干涉 agent 自身的模型选择。
 
-## 主机
-- **HM1**: `opc_uname` @ `100.109.153.83` (ssh -p 222)
-- **HM2**: `opc2_uname` @ `100.109.57.26` (ssh -p 222), hostname `opc2sname`
+**仓库**：`git@github.com:gitychzh/NVForge.git`（原名 `hermes_improve_self`，R787 起更名；
+GitHub 对旧 URL 自动重定向，旧 clone 仍可正常 pull/push）
 
-## 铁律 (见 `rule.md`)
-- 改前必有数据 / 改后必有验证
-- 聚焦 `hm-40006--nv` 链路(及其直接关联的 nv_40006_uni 网关)
-- **CC 直接改两机** — HM1/HM2 均由 CC 直接编辑部署,无需通过对方执行
-- 所有修改写入仓库
+## 主机（双机对称）
+
+| 角色 | 用户 | IP | ssh | hostname |
+|---|---|---|---|---|
+| **HM1**（本机） | `opc_uname` | `100.109.153.83` | `ssh -p 222` | `opcsname` |
+| **HM2**（对端） | `opc2_uname` | `100.109.57.26` | `ssh -p 222` | `opc2sname` |
+
+两机各自持有本仓库的 clone 与本地 `/opt/cc-infra` 的 docker-compose 栈。
+
+## 铁律（见 `rule.md`）
+
+1. **改前必有数据** — 日志/DB/metrics 支撑，不靠猜测
+2. **改后必有验证** — 端到端测试，日志/DB 确认
+3. **聚焦 `nv_gw`** — 只关心 40006 这条 NV 链路（legacy 40000–40005 cc 链路服务 CC 自身，不是目标但也不能破）
+4. **网络问题走 mihomo** — HM1 `socks5://127.0.0.1:9090` / HTTP `127.0.0.1:7880`；HM2 docker daemon 已在 7880 之后
+5. **所有修改写入仓库** — round 文件 + 源码归档，可追溯
+
+> R569 起取消"双机交替优化/只改对端"机制，CC 直接编辑两机（仍数据支撑、仍验证、仍 commit）。
+> 评判标准：更少报错、更快请求、超低延迟、稳定优先。
 
 ## 仓库结构
+
 ```
-hermes_improve_self/
-├── README.md
+NVForge/
+├── README.md                       # 本文件
 ├── rule.md                         # 优化铁律
-├── rounds/                         # 历史轮次记录(交替优化时期遗留, 命名 R<N>_hmX_optimize_hmY.md)
+├── CLAUDE.md                       # 给 Claude Code 的工作指南（最详尽）
+├── docs/
+│   └── agent_unified_nv.md         # 三 agent 统一接入 nv_gw 的历史设计
+├── rounds/                         # 历史轮次记录（R<N>_<summary>.md，约 435 份）
 ├── scripts/
-│   ├── nvcf_func_monitor.py        # NVCF function 健康监控(每 10min, 仍活跃)
-│   └── _archived_alt_optimize/     # 已停用的交替优化脚本(watch_and_next.sh / run_my_turn.sh)
+│   ├── nvcf_func_monitor.py        # NVCF function 健康监控（每 10min，活跃）
+│   ├── nv_proxy_selector.sh        # 每 key 出口 IP 选择/兜底
+│   └── _archived_alt_optimize/     # 已停用的交替优化脚本（R569 归档）
 ├── deploy_artifacts/               # 每轮源码快照
-└── docs/
+├── upstream_current.py             # 当前 live 代理源码（对照 upstream_original.py diff）
+└── logs/                           # 监控/运行日志
 ```
+
+## 实际部署位置
+
+| 路径 | 内容 |
+|---|---|
+| `~/hm_ps/hermes_improve_self`（两机） | 本仓库 clone（目录名保留历史，未随仓库更名而改） |
+| `/opt/cc-infra`（两机） | docker-compose 栈，9 个容器实跑 |
+
+## 快速验证
+
+```bash
+cd ~/hm_ps/hermes_improve_self && git pull --ff-only origin main
+curl -s http://localhost:40006/health
+docker ps --filter name=nv_gw
+```
+
+详见 `CLAUDE.md`。
