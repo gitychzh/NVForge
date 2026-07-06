@@ -1,0 +1,26 @@
+78,79c78
+<                                         "74f02205-c7ba-438f-b81a-2537955bd7ec"),
+<                          "8915fd28-fe8f-47d6-a35d-d745d78b35d5"],
+---
+>                                         "74f02205-c7ba-438f-b81a-2537955bd7ec")],
+---compose---
+1c1,325
+< 
+---
+> services:
+>   logs_db:
+>     image: postgres:16-alpine
+>     container_name: logs_db
+>     restart: unless-stopped
+>     environment:
+>       POSTGRES_PASSWORD: litellm_pg_pass
+>       POSTGRES_USER: litellm
+>       POSTGRES_DB: litellm
+>       POSTGRES_MULTIPLE_DATABASES: litellm_nv_hm hermes_logs
+>       TZ: Asia/Shanghai
+>     volumes:
+>     - cc_pgdata:/var/lib/postgresql/data
+>     - ./postgres/init-db.sh:/docker-entrypoint-initdb.sh:ro
+>     - ./postgres/hermes-logs-schema.sql:/docker-entrypoint-initdb.d/20-hermes-logs-schema.sql:ro
+>     - /etc/localtime:/etc/localtime:ro
+>     networks:
