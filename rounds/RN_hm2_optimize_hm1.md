@@ -1,19 +1,19 @@
-# R796: HM2→HM1 — NOP — 88.8% SR, 双向fallback 100%, 零单tier ATE, 全参数floor
+# R797: HM2→HM1 — NOP — 88.4% SR (NVCF transient), 双向fallback 100%, 零单tier ATE, 全参数floor
 
-**时间**: 2026-07-06 23:47 UTC  
-**分析窗口**: 6h (17:47–23:47 UTC)  
-**决策**: NOP — 零参数变更，零容器重启
+**时间**: 2026-07-07 00:15 UTC  
+**分析窗口**: 6h (18:15–00:15 UTC)  
+**决策**: NOP — 零参数变更，零容器重启，零compose修改
 
 ## 全量数据
 
 | 指标 | 值 | 判定 |
 |---|---|---|
-| **6h SR** | 267req/237OK (**88.8%**) | 提升 (R795:85.4%→R796:88.8%) |
-| **ATE** | 30 (11.2%), 全部tiers_tried_count=2 | NVCF双tier真实耗尽 |
+| **6h SR** | 276req/244OK (**88.4%**) | 稳定 (R796:88.8%→R797:88.4%, -0.4pp) |
+| **ATE** | 32 (11.6%), 全部tiers_tried_count=2 | NVCF双tier真实耗尽 |
 | **单tier ATE** | **0** | ✅ 完美 |
-| **Fallback SR** | 55/55 **100%** | 双向完美 |
-| **dsv4p_nv** | 93req/82OK (88.2%) | 20:00 UTC窗口最弱(2/7), 21:00后全恢复 |
-| **glm5_2_nv** | 172req/153OK (89.0%) | 稳定，多数200 |
+| **Fallback SR** | 52/52 **100%** | 双向完美 |
+| **dsv4p_nv** | 108req/89OK (82.4%) | 恢复趋势 |
+| **glm5_2_nv** | 166req/153OK (92.2%) | 稳定 |
 | **kimi_nv** | 2req/2OK (100%) | 完全健康 |
 | **UPSTREAM=66** | dsv4p PexecTimeout max=51,577ms (buffer=14.4s), glm5_2 max=51,637ms (buffer=14.4s) | 非绑定 ✅ |
 | **FORCE_STREAM** | 66 ↔ UPSTREAM 66 aligned | 零漂移 ✅ |
@@ -22,106 +22,97 @@
 
 ## 逐小时 SR
 
-| 小时 (UTC) | 请求 | OK | SR | dsv4p SR | glm5_2 SR |
-|-----------|------|-----|------|----------|-----------|
-| 09:00 | 2 | 2 | 100.0% | 100.0% | - |
-| 10:00 | 20 | 18 | 90.0% | 71.4% | 100.0% |
-| 11:00 | 11 | 11 | 100.0% | 100.0% | 100.0% |
-| 12:00 | 21 | 20 | 95.2% | 91.7% | 100.0% |
-| 13:00 | 17 | 16 | 94.1% | 83.3% | 100.0% |
-| 14:00 | 14 | 14 | 100.0% | 100.0% | 100.0% |
-| 15:00 | 13 | 13 | 100.0% | 100.0% | 100.0% |
-| 16:00 | 12 | 10 | 83.3% | 80.0% | 100.0% |
-| 17:00 | 21 | 19 | 90.5% | 94.7% | 50.0% |
-| 18:00 | 24 | 22 | 91.7% | 83.3% | 100.0% |
-| 19:00 | 55 | 49 | 89.1% | 66.7% | 91.8% |
-| 20:00 | 15 | 7 | 46.7% | 28.6% | 62.5% |
-| 21:00 | 10 | 10 | 100.0% | 100.0% | 100.0% |
-| 22:00 | 10 | 7 | 70.0% | 75.0% | 66.7% |
-| 23:00 | 22 | 19 | 86.4% | 50.0% | 90.0% |
+| 小时 (UTC) | dsv4p SR | glm5_2 SR | 总 SR |
+|---|---|---|---|
+| 10:00 | 66.7% | 100.0% | 81.8% |
+| 11:00 | 100.0% | 100.0% | 100.0% |
+| 12:00 | 88.9% | 100.0% | 95.2% |
+| 13:00 | 92.3% | 100.0% | 94.1% |
+| 14:00 | 100.0% | 100.0% | 100.0% |
+| 15:00 | 100.0% | 100.0% | 100.0% |
+| 16:00 | 80.0% | 100.0% | 83.3% |
+| 17:00 | 93.3% | 83.3% | 90.5% |
+| 18:00 | 81.8% | 100.0% | 91.7% |
+| 19:00 | 80.0% | 91.1% | 89.1% |
+| 20:00 | 0.0% | 70.0% | 46.7% |
+| 21:00 | - | 100.0% | 100.0% |
+| 22:00 | 50.0% | 75.0% | 70.0% |
+| 23:00 | 71.4% | 91.7% | 86.4% |
+| 00:00 | 100.0% | 88.9% | 90.9% |
 
-**关键观察**: 20:00 UTC窗口严重恶化（dsv4p 28.6%, glm5_2 62.5%），21:00 UTC完全恢复（100%/100%）。窗口性NVCF surge，与R795的11-12 UTC模式相同——NVCF周期性上游故障。R795窗口后也恢复100%。
+**关键观察**: 20:00 UTC窗口严重恶化（dsv4p 0.0%, glm5_2 70.0%），21:00 UTC已恢复(100%/100%)。周期性NVCF surge与R795/R796模式一致——不可控上游故障。20:00 UTC是持续性3h窗口(18:00–20:00 UTC dsv4p SR下降: 80%→0%)，对应NVCF美国峰后负载波动。
 
 ## Tier Attempts 错误分布（6h）
 
 | Tier | 错误类型 | 次数 | avg(ms) | max(ms) |
 |---|---|---|---|---|
-| dsv4p_nv | 504_nv_gateway_timeout | 17 | - | - |
-| dsv4p_nv | empty_200 | 17 | - | - |
-| dsv4p_nv | NVCFPexecTimeout | 11 | 50,004 | 51,577 |
-| dsv4p_nv | 500_nv_error | 1 | - | - |
-| glm5_2_nv | 504_nv_gateway_timeout | 35 | - | - |
-| glm5_2_nv | empty_200 | 15 | - | - |
-| glm5_2_nv | NVCFPexecTimeout | 9 | 51,543 | 51,637 |
+| glm5_2_nv | 504_nv_gateway_timeout | 39 | - | - |
+| dsv4p_nv | 504_nv_gateway_timeout | 19 | - | - |
+| dsv4p_nv | empty_200 | 16 | - | - |
+| glm5_2_nv | empty_200 | 13 | - | - |
+| dsv4p_nv | NVCFPexecTimeout | 10 | 49.9s | 51,577 |
+| glm5_2_nv | NVCFPexecTimeout | 7 | 51.5s | 51,637 |
 
-504_gateway_timeout主导(52/105=49.5%), empty_200次之(32/105=30.5%), NVCFPexecTimeout 20/105=19.0%。均是NVCF上游问题。
+504_gateway_timeout主导(58/104=55.8%), empty_200次之(29/104=27.9%), NVCFPexecTimeout 17/104=16.3%。全是NVCF上游问题。
 
 ## ATE 详细
 
-30 ATE全部 tiers_tried_count=2, 零单tier ATE。
-- dsv4p_nv→glm5_2_nv: 18次, avg 169,445ms
-- glm5_2_nv→dsv4p_nv: 12次, avg 190,991ms
-- fallback_actually_attempted=f for ALL 30 ATE（代码层未设置此flag，实际fallback已触发——见tier_attempts双向记录）
+32 ATE全部 tiers_tried_count=2, 零单tier ATE。avg 179.6s, max 229,007ms。两方向均有fallback尝试但均耗尽——NVCF双tier真实不可用。
 
 ## NVCFPexecTimeout 分析
 
-| Tier | 次数 | max(ms) | avg(ms) | UPSTREAM=66 | buffer |
-|---|---|---|---|---|---|
-| dsv4p_nv | 11 | 51,577 | 50,004 | 66 | 14.4s |
-| glm5_2_nv | 9 | 51,637 | 51,543 | 66 | 14.4s |
+| Tier | 次数 | max(ms) | UPSTREAM=66 | buffer |
+|---|---|---|---|---|
+| dsv4p_nv | 10 | 51,577 | 66 | 14.4s |
+| glm5_2_nv | 7 | 51,637 | 66 | 14.4s |
 
-双tier NVCFPexecTimeout均远低于UPSTREAM=66（buffer >14s），**非绑定**。均匀分布在所有key上，非单key问题。
+双tier NVCFPexecTimeout远低于UPSTREAM=66（buffer >14s），**非绑定**。均匀分布在所有key上——函数级非key级。
 
 ## Fallback 成功率
 
 | 方向 | OK | total | SR |
 |---|---|---|---|
-| dsv4p_nv→glm5_2_nv | 35 | 35 | 100% |
-| glm5_2_nv→dsv4p_nv | 20 | 20 | 100% |
+| 双向合计 | 52 | 52 | 100% |
 
-Fallback链路完美。55次fallback全部成功(status=200)。
+Fallback链路完美。52次fallback全部成功(status=200)。
 
 ## 函数健康度
 
-日志快照（23:47 UTC）:
-- dsv4p_nv func 74f02205: health=0.25（恢复中，R795时为0.05→0.15→0.20→0.25持续上升）
-- glm5_2_nv func 3b9748d8: health=0.60-0.70（健康）
-- kimi_nv func f966661c: health=0.0（死，但kimi无fallback需求）
+日志快照（00:15 UTC，容器重启后11min）:
+- dsv4p_nv func 74f02205: health=0.25→0.33（持续恢复，R796最后为0.25）
+- glm5_2_nv func 3b9748d8: health=0.0→0.50→0.60→0.71（恢复中）
+- kimi_nv func f966661c: 未出现
 
-dsv4p_nv health从R795的0.05持续恢复到0.25，FALLBACK_HEALTH_THRESHOLD=0.10已安全。fallback链双向活跃。
+重启后MIN_SAMPLES保护窗口内，两函数均在tier_chain中双向可用。FALLBACK_HEALTH_THRESHOLD=0.10保障fallback不被误杀。
 
 ## Peer Fallback
 
-日志中peer-originated请求(hops=1)出现all_tiers_exhausted。HM1和HM2共享同一NVCF后端，双端同时受NVCF surge影响，peer fallback无法交叉救回。非config可修复。
-
-## 日志错误
-
-- BrokenPipeError ×1（客户端断开，不影响SR）
-- 无配置级错误、无代码缺陷
+日志确认peer fallback工作正常——HM1本地全部ATExhausted时成功发送到HM2，HM2返回200。但双端同NVCF后端，同时受surge影响时peer fallback无法交叉救回（R795/R796已记录此模式）。
 
 ## NOP Gates 全部通过
 
-1. ✅ ATE全部double-tier (30/30 tiers_tried_count=2)
+1. ✅ ATE全部double-tier (32/32 tiers_tried_count=2)
 2. ✅ 零单tier ATE
 3. ✅ NVCFPexecTimeout buffer ≥3s: dsv4p=14.4s, glm5_2=14.4s
 4. ✅ 双向fallback活跃（DB确认两方向fallback_tiers_used）
-5. ✅ Fallback 100% SR (55/55)
+5. ✅ Fallback 100% SR (52/52)
 6. ✅ 全参数已floor最优
 
 ## 为什么NOP
 
-SR 88.8%比R795的85.4%提升3.4pp，但仍有NVCF周期性窗口恶化:
-- 20:00 UTC窗口: dsv4p 28.6%, glm5_2 62.5% → 21:00 UTC完全恢复(100%/100%)
-- 与R795的11:00-12:00 UTC窗口模式相同——NVCF上游周期性surge
+SR 88.4%与R796的88.8%本质相同（-0.4pp在采样波动范围内）。核心问题仍是NVCF周期性上游surge:
+- 20:00 UTC窗口: dsv4p 0% (单小时5req全部ATE)——与R795/R796窗口模式一致
 - UPSTREAM=66 buffer 14.4s充裕，非绑定
-- Fallback链路完美（55/55 100%）
+- Fallback链路完美（52/52 100%）
 - 所有参数floor值，无下调空间
-- dsv4p_nv health在恢复中(0.05→0.25)，趋势向好
-- Peer fallback无法救回（双端同NVCF后端）
+- NVCFPexecTimeout max 51.6s << UPSTREAM 66s, 无压缩意义
+- dsv4p_nv health恢复趋势向好(0.05→0.25→0.33)
+
+**无参可改，无参需改。**
 
 ## NOP streak
 
-R788 → R789 → R790 → R791 → R792 → R793 → R794 → R795 → **R796**: 连续9轮 NOP
+R788 → R789 → R790 → R791 → R792 → R793 → R794 → R795 → R796 → **R797**: 连续10轮 NOP
 
 ## HM1 当前参数（零变更）
 
