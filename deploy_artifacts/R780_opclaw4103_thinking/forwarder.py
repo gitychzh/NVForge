@@ -313,6 +313,22 @@ def _stream_from_upstream(resp, conn, notice, fallback_used):
         yield ("done", None)
     except Exception as e:
         _log("STREAM-UPSTREAM-ERR", f"上游流读取失败: {type(e).__name__}: {e}")
+        # R790: 流中途异常 (timeout 等) 时, 若已累积 reasoning 但未发 content,
+        # 补一个 content chunk = reasoning 全文, 避免客户端 (openclaw) 收空 content 卡死.
+        # 复用 supplement 语义 (仅 SUPPLEMENT_REASONING_AS_CONTENT 开启时生效).
+        if SUPPLEMENT_REASONING_AS_CONTENT and not content_seen and reasoning_buf:
+            full_reasoning = "".join(reasoning_buf)
+            _log("SUPPLEMENT-CONTENT-ON-ERR",
+                 f"流中途异常补 content: reasoning {len(full_reasoning)} chars, finish={last_finish_reason}")
+            tmpl = json.loads(json.dumps(last_chunk_template)) if last_chunk_template else {
+                "choices": [{"index": 0, "delta": {}, "finish_reason": None}]
+            }
+            ch = tmpl["choices"][0]
+            d = ch.setdefault("delta", {})
+            d.pop("reasoning_content", None)
+            d["content"] = full_reasoning
+            ch["finish_reason"] = "stop"
+            yield ("message", tmpl)
         yield ("done", None)
     finally:
         try:
