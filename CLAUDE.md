@@ -195,8 +195,8 @@ CC's own config (`~/.claude/settings.json`) points `ANTHROPIC_BASE_URL` at the l
   `docker compose build nv_gw && docker compose up -d nv_gw` only if not bind-mounted.
   Current setup bind-mounts `gateway/`, so most edits just need `docker compose up -d nv_gw`
   (or `docker restart nv_gw`).
-- `~/hm_ps/hermes_improve_self/upstream_current.py` vs `upstream_original.py` track the live
-  vs baseline proxy source for diffing across rounds.
+- `~/hm_ps/hermes_improve_self/upstream_current.py` is a snapshot of the live nv_gw
+  `upstream.py` for cross-round diffing (live source is in `/opt/cc-infra/proxy/nv-gw/gateway/`).
 - Hidden contracts (R680 cc2 red-team found these): `db.py` default `NVU_DB_HOST`,
   `config.py` default `NVU_GATEWAY_API_KEY`, `NO_PROXY` whitelist in compose must list all
   service names, `X-MS-Proxy` header value. When renaming, update all of them together.

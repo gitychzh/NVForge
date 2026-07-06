@@ -36,14 +36,13 @@ NVForge/
 ├── CLAUDE.md                       # 给 Claude Code 的工作指南（最详尽）
 ├── docs/
 │   └── agent_unified_nv.md         # 三 agent 统一接入 nv_gw 的历史设计
-├── rounds/                         # 历史轮次记录（R<N>_<summary>.md，约 435 份）
+├── rounds/                         # 轮次记录（R568+ 现行机制；R1–R567 见 _archive_pre_r568/）
 ├── scripts/
 │   ├── nvcf_func_monitor.py        # NVCF function 健康监控（每 10min，活跃）
-│   ├── nv_proxy_selector.sh        # 每 key 出口 IP 选择/兜底
-│   └── _archived_alt_optimize/     # 已停用的交替优化脚本（R569 归档）
-├── deploy_artifacts/               # 每轮源码快照
-├── upstream_current.py             # 当前 live 代理源码（对照 upstream_original.py diff）
-└── logs/                           # 监控/运行日志
+│   └── nv_proxy_selector.sh        # 每 key 出口 IP 选择/兜底
+├── deploy_artifacts/               # 现行机制源码快照（R699/R700/cx4102/R780/R782/R783）
+├── upstream_current.py             # live 代理源码快照（live 在 /opt/cc-infra/proxy/nv-gw/）
+└── logs/                           # 监控/运行日志（不入库）
 ```
 
 ## 实际部署位置
