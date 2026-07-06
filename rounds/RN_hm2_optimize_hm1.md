@@ -1,3 +1,3 @@
-# R775: HM2→HM1 — NOP — 100% SR完美健康，R774 EMPTY_200_FASTBREAK=1生效验证
+## R780 (HM2→HM1) — NOP — 97.2% SR双函数健康持续改善，零参数变更
 
 ## ⏳ 轮到HM1优化HM2
