@@ -1,17 +1,17 @@
-# R818: HM2→HM1 — func_health threshold 0.80→0.10, 恢复 glm5_2→dsv4p cross-model fallback
+# R819: HM2→HM1 — 移除 pexec/integrate 路径 400_nvcf_degraded 的 key cycle，遇 DEGRADED 立即 abort tier → fallback
 
-**时间**: 2026-07-08 02:30 UTC
+**时间**: 2026-07-08 03:30 UTC
 **作者**: opc2_uname (HM2)
 **类型**: HM2优化HM1（铁律：只改HM1不改HM2）
-**分析窗口**: 6h (20:30–02:30 UTC)
+**分析窗口**: 6h (20:30–03:00 UTC)
 
 ---
 
 ## TL;DR
 
-glm5_2_nv 的 NVCF function `3b9748d8-1d85` 处于 DEGRADING 状态，所有 5 key 均返回 `400_nvcf_degraded`。FALLBACK_GRAPH 配置了 `glm5_2_nv → dsv4p_nv` 跨模型 fallback，但 `func_health.py` 硬编码 `HEALTH_THRESHOLD = 0.80`，而 dsv4p function `74f02205` 健康度仅 ~0.25，被判定为 unhealthy，导致 fallback 链条被阻断。glm5_2 请求全部 ~7s 内 5 key 耗尽后直接 502（无 fallback 尝试），SR 崩至 10%。
+glm5_2_nv function `3b9748d8-1d85` 持续 NVCF DEGRADING，所有 5 key 均返回 `400_nvcf_degraded`。R818 修复了 func_health 阈值使 cross-model fallback 恢复，但 pexec/integrate 路径的 `should_cycle` 仍包含 `400`，导致每请求仍逐个 cycle 5 个 key（~7s 浪费），然后才 fallback 到 dsv4p_nv。R819 将 `400` 从 `should_cycle` 中移除，遇 `400_nvcf_degraded` 直接 non-cycling abort tier → fallback，节省 ~6s/request。
 
-**修复**: 将 `func_health.py` 的 `HEALTH_THRESHOLD` 从 `0.80` 硬编码改为 `float(os.environ.get("NVU_FALLBACK_HEALTH_THRESHOLD", "0.10"))`，与 `FALLBACK_HEALTH_THRESHOLD=0.10` 对齐。修复后 tier_chain 从 `['glm5_2_nv']` 恢复为 `['glm5_2_nv', 'dsv4p_nv']`，cross-model fallback 重新生效。
+**修复**: `upstream.py` 两个 `should_cycle` 集合（pexec L621 + integrate L238）移除 `400`。
 
 **单参数少改多轮。铁律：只改HM1不改HM2。**
 
@@ -19,148 +19,123 @@ glm5_2_nv 的 NVCF function `3b9748d8-1d85` 处于 DEGRADING 状态，所有 5 k
 
 ## 一、问题诊断
 
-### 1.1 glm5_2_nv — NVCF function DEGRADING
+### 1.1 R818 后状态
 
-```
-docker logs nv_gw --tail 200 | grep glm5_2
-```
+R818 修复了 `func_health.HEALTH_THRESHOLD` 硬编码 0.80 → 0.10，cross-model fallback 已恢复：
 
-所有 glm5_2_nv 请求均快速失败（~7s），全部 5 key 返回 `400_nvcf_degraded`：
-
-```
-[NV-CYCLE] tier=glm5_2_nv k1 → 400 (400_nvcf_degraded), cycling to next key
-[NV-CYCLE] tier=glm5_2_nv k2 → 400 (400_nvcf_degraded), cycling to next key
-... (all 5 keys, ~1s each)
-[NV-TIER-FAIL] tier=glm5_2_nv all 5 keys failed: 429=0, empty200=0, timeout=0, other=7, elapsed=7829ms
-```
-
-### 1.2 FALLBACK_GRAPH 被 func_health 阻断
-
-FALLBACK_GRAPH 正确配置了双向 fallback：
-```python
-FALLBACK_GRAPH = {
-    "dsv4p_nv": ["glm5_2_nv"],
-    "glm5_2_nv": ["dsv4p_nv"],
-}
-```
-
-但 `upstream.py` 的 fallback 构建逻辑检查 `func_health.is_healthy(alt_primary)`：
-```python
-if alt_primary and func_health.is_healthy(alt_primary):
-    tier_order.append(alt)
-```
-
-`func_health.py` 硬编码 `HEALTH_THRESHOLD = 0.80`，而 dsv4p function `74f02205` 健康度仅 ~0.25（R796 报告），远低于阈值 → fallback 被阻断。
-
-日志证据：
-```
-[NV-REQ] mapped_model=glm5_2_nv start_tier=glm5_2_nv stream=True tier_chain=['glm5_2_nv'] (no fallback, 3model)
-```
-
-`tier_chain` 只有单元素，无 dsv4p_nv fallback。
-
-### 1.3 Peer fallback 也被阻断
-
-`NVU_PEER_FB_SKIP_MODELS=glm5_2_nv`（R797 设置）阻止了 peer-fb，因为 HM2 同样使用 `3b9748d8`，peer 同样坏。这是正确的。
-
----
-
-## 二、DB 数据（6h，修复前）
-
-### 2.1 总体
-
-| 指标 | 值 |
-|------|-----|
-| Total | 51 |
-| OK (200) | 12 |
-| ATE (502) | 39 |
-| **SR** | **23.5%** |
-
-### 2.2 按模型
-
-| request_model | cnt | ok | ate | SR% | avg_ms | max_ms |
-|---------------|-----|-----|-----|------|--------|--------|
-| dsv4p_nv | 11 | 8 | 3 | 72.7 | 48,233 | 68,217 |
-| glm5_2_nv | 40 | 4 | 36 | **10.0** | 25,638 | 125,593 |
-
-### 2.3 按 tiers_tried
-
-| model | status | tiers_tried | cnt |
-|-------|--------|-------------|-----|
-| glm5_2_nv | 502 | 1 | 30 | ← 单 tier 耗尽，无 fallback
-| glm5_2_nv | 502 | 2 | 6 | ← 双 tier 也失败（dsv4p surge 时段）
-| glm5_2_nv | 200 | 2 | 4 | ← dsv4p fallback 成功
-| dsv4p_nv | 200 | 1 | 7 |
-| dsv4p_nv | 200 | 2 | 1 |
-| dsv4p_nv | 502 | 1 | 2 |
-| dsv4p_nv | 502 | 2 | 1 |
-
-**关键**: glm5_2_nv 的 30/36 ATE 是单 tier（tiers_tried_count=1），说明 fallback 链从未被构建。仅 6 次双 tier 502（dsv4p 也 surge 时），4 次双 tier 200（dsv4p fallback 成功）。
-
-### 2.4 CASCADE 效应
-
-glm5_2_nv 失败后，caller（ms_gw）重试 3 次，每次 ~7s，3 次重试 ~21s，然后 ms_gw 投给 glm5_2_ms 变体。但 ms_gw 的 ms_uni 变体也有空字节问题，导致整体请求延迟极高（max=125,593ms）。
-
----
-
-## 三、修复执行
-
-### 3.1 代码变更
-
-**文件**: `/opt/cc-infra/proxy/nv-gw/gateway/func_health.py`（bind mount，修改即生效）
-
-**变更 1**: 添加 `import os`
-```python
-import os
-```
-
-**变更 2**: 硬编码阈值 → env 可配置
-```diff
-- HEALTH_THRESHOLD = 0.80
-+ HEALTH_THRESHOLD = float(os.environ.get("NVU_FALLBACK_HEALTH_THRESHOLD", "0.10"))
-```
-
-**变更 3**: 重启容器加载新代码
-```bash
-docker restart nv_gw
-```
-
-### 3.2 验证
-
-修复后立即验证：
-```python
->>> func_health.HEALTH_THRESHOLD
-0.1
->>> func_health.is_healthy("74f02205-c7ba-438f-b81a-2537955bd7ec")
-True
->>> func_health.is_healthy("3b9748d8-1d85-40e8-8573-0eeaa63a4b63")
-True
-```
-
-日志验证 — tier_chain 恢复双向：
 ```
 [NV-REQ] mapped_model=glm5_2_nv start_tier=glm5_2_nv stream=True
          tier_chain=['glm5_2_nv', 'dsv4p_nv'] (dynamic fallback, health={...})
 ```
 
-FALLBACK_GRAPH 跨模型 fallback 已恢复。
+但 pexec 路径的 `should_cycle` 仍包含 `400`（L621），导致每个 key 返回 `400_nvcf_degraded` 后继续 cycle 到下一个 key：
+
+```
+[NV-CYCLE] tier=glm5_2_nv k1 → 400 (400_nvcf_degraded), cycling to next key
+[NV-CYCLE] tier=glm5_2_nv k2 → 400 (400_nvcf_degraded), cycling to next key
+... (all 5 keys, ~1s each)
+[NV-TIER-FAIL] tier=glm5_2_nv all 5 keys failed: other=7, elapsed=6931ms
+[NV-FALLBACK] Tier glm5_2_nv all-failed → falling back to dsv4p_nv
+```
+
+**浪费 ~7s/request** 在注定全部失败的 key cycle 上。
+
+### 1.2 DB 数据（6h，R818 前）
+
+| 指标 | 值 |
+|------|-----|
+| Total | 52 |
+| OK (200) | 13 |
+| ATE (502) | 39 |
+| **SR** | **25.0%** |
+
+| request_model | cnt | ok | fail | SR% | avg_ms | max_ms |
+|---------------|-----|-----|------|------|--------|--------|
+| dsv4p_nv | 11 | 8 | 3 | 72.7 | 48,233 | 68,217 |
+| glm5_2_nv | 41 | 5 | 36 | 12.2 | 26,934 | 125,593 |
+
+39 个 ATE 全部是 `all_tiers_exhausted`。
+
+### 1.3 为什么 400 不应该 cycle
+
+NVCF function DEGRADED 是**function-level** 状态——同一个 function 的所有 key 共享同一条 NVCF 部署，DEGRADED 时所有 key 均返回 400。逐个 cycle 5 个 key 注定全部失败，纯粹浪费时间和算力。正确做法：遇第一个 400 立即 abort tier → fallback 到 dsv4p_nv。
 
 ---
 
-## 四、为什么 0.10 是安全的
+## 二、修复执行
 
-1. **所有 3 模型均只有 1 个 function_id**（单候选列表），`select_healthy_function()` 在全部 unhealthy 时仍返回 `candidates[0]`（首选）。阈值只影响 FALLBACK_GRAPH 的跨模型 fallback 决策，不影响 pexec 选 function。
-2. **FALLBACK_HEALTH_THRESHOLD=0.10** 已在 env 存在（R708），语义一致。
-3. **func_health 冷启动**（容器重启）时所有 function 健康度=1.0，阈值 0.10 或 0.80 无差异。运行时健康度下降后，0.10 确保 fallback 链不被过早切断。
-4. **fallback 已有 TIER_TIMEOUT_BUDGET_S=114 保护**，即使 fallback 目标 function 也坏，不会无限等待。
+### 2.1 代码变更
+
+**文件**: `/opt/cc-infra/proxy/nv-gw/gateway/upstream.py`（bind mount，修改后 `docker restart nv_gw` 生效）
+
+**变更 1**: pexec 路径（L621）移除 `400`：
+
+```diff
+-                should_cycle = resp.status in (400, 401, 403, 429, 408, 500, 502, 503, 504, 202)
++                should_cycle = resp.status in (401, 403, 429, 408, 500, 502, 503, 504, 202)
+```
+
+**变更 2**: integrate 路径（L238）同样移除 `400`：
+
+```diff
+-                should_cycle = resp.status in (400, 401, 403, 429, 408, 500, 502, 503, 504, 202)
++                should_cycle = resp.status in (401, 403, 429, 408, 500, 502, 503, 504, 202)
+```
+
+`cycle_reason` 中的 `"400_nvcf_degraded"` / `"400_integrate_degraded"` 分支保留为 dead code（400 不再进入 `if should_cycle:` 块），无副作用。后续轮次可清理。
+
+**变更 3**: 重启容器加载新代码
+
+```bash
+docker restart nv_gw
+```
+
+### 2.2 验证
+
+**E2E 测试**（glm5_2_nv 请求）：
+
+```
+[NV-REQ] mapped_model=glm5_2_nv start_tier=glm5_2_nv stream=False
+         tier_chain=['glm5_2_nv', 'dsv4p_nv'] (dynamic fallback, health={...})
+[NV-TIER] Starting tier=glm5_2_nv model=z-ai/glm-5.2 func=3b9748d8-1d8...
+[NV-NONCYCLE-ERR] tier=glm5_2_nv k3 resp.status=400 non-cycling, aborting tier (no key cycle).
+                  body={"status": 400, "detail": "Function id '3b9748d8...': DEGRADED function cannot be invoked"}
+[NV-FALLBACK] Tier glm5_2_nv all-failed → falling back to dsv4p_nv
+[NV-TIER] Starting tier=dsv4p_nv model=deepseek-ai/deepseek-v4-pro func=74f02205-c7b...
+[NV-FALLBACK-SUCCESS] Success on fallback tier dsv4p_nv after primary glm5_2_nv failed
+```
+
+- ✅ 遇 400 立即 `NV-NONCYCLE-ERR`（不再 cycle 其余 4 key）
+- ✅ 仅耗时 ~1.1s 即 abort tier（vs 之前 ~7s）
+- ✅ fallback 到 dsv4p_nv 成功 → 200 OK
+
+**容器代码确认**：
+
+```
+$ docker exec nv_gw grep -n 'should_cycle' /app/gateway/upstream.py
+238: should_cycle = resp.status in (401, 403, 429, 408, 500, 502, 503, 504, 202)
+621: should_cycle = resp.status in (401, 403, 429, 408, 500, 502, 503, 504, 202)
+```
 
 ---
 
-## 五、HM1 当前参数（本次仅代码变更，无 env 变更）
+## 三、为什么这是安全的
+
+1. **NVCF function DEGRADED 是 function-level** — 所有 key 共享同一 function，一个 key 400 意味着全部 400，cycle 无意义。
+2. **Fallback 已工作** — R818 恢复 cross-model fallback（glm5_2_nv → dsv4p_nv），400 立即 abort 后 fallback 可用。
+3. **401/403/429/408/500/502/503/504/202 仍 cycle** — 这些是 per-key 瞬态错误，cycle 换 key 可能救回，保留原逻辑。
+4. **TIER_TIMEOUT_BUDGET_S=114 保护** — 即使 fallback 目标 dsv4p_nv 也 surge，不会无限等待。
+5. **无 env 变量变更** — 纯代码变更，仅 2 行 diff。
+
+---
+
+## 四、HM1 当前参数（本次仅代码变更，无 env 变更）
 
 | 参数 | 值 | 来源 |
 |------|-----|------|
-| **func_health HEALTH_THRESHOLD** | **0.10** (env: NVU_FALLBACK_HEALTH_THRESHOLD) | **R818 新** |
+| **pexec should_cycle 400** | **移除** | **R819 新** |
+| **integrate should_cycle 400** | **移除** | **R819 新** |
+| func_health HEALTH_THRESHOLD | 0.10 (env: NVU_FALLBACK_HEALTH_THRESHOLD) | R818 |
 | UPSTREAM_TIMEOUT | 66 | R754 |
 | TIER_TIMEOUT_BUDGET_S | 114 | R737 |
 | NVU_PEXEC_TIMEOUT_FASTBREAK | 1 | R768 floor |
@@ -179,24 +154,14 @@ FALLBACK_GRAPH 跨模型 fallback 已恢复。
 
 ---
 
-## 六、遗留观察
+## 五、结论
 
-1. **glm5_2_nv function 3b9748d8 持续 DEGRADING** — 所有 5 key 400_nvcf_degraded。这是 NVCF 上游问题，非配置可修复。cross-model fallback 恢复后，glm5_2 请求将 fallback 到 dsv4p_nv。
-2. **dsv4p_nv function 74f02205 也有间歇 surge** — 日志中 empty_200 和 504 仍存在，但频率较低。
-3. **NVU_PEER_FB_SKIP_MODELS=glm5_2_nv** 仍正确 — NVCF 同 function 坏时 peer-fb 无意义，跳过避免 ~180s 卡死。
-4. **env 无需变更** — NVU_FALLBACK_HEALTH_THRESHOLD 默认值 0.10 已足够，无需显式设置 env。
+R819 移除了 pexec/integrate 路径中对 `400_nvcf_degraded` 的 key cycle 行为。修复后：
 
----
-
-## 七、结论
-
-R818 修复了 `func_health.HEALTH_THRESHOLD` 硬编码 0.80 导致的 cross-model fallback 阻断问题。修复后：
-
-- glm5_2_nv 请求在 5 key 耗尽后自动 fallback 到 dsv4p_nv（tier_chain=['glm5_2_nv', 'dsv4p_nv']）
-- 阈值降至 0.10 与 FALLBACK_HEALTH_THRESHOLD 对齐，且现为 env 可配置
-- 无 env 变量变更，代码变更仅 3 行（+import os, +0.80→env）
-
-**NOP streak 终结**: R788→R796 连续 9 轮 NOP 后，本轮为首次非 NOP 变更。
+- glm5_2_nv 请求遇第一个 400 立即 abort tier（~1s vs 之前 ~7s）
+- 立即 fallback 到 dsv4p_nv（cross-model fallback 已由 R818 恢复）
+- 节省 ~6s/request 浪费在注定失败的 key cycle 上
+- 无 env 变更，仅 2 行代码 diff
 
 **单参数少改多轮。铁律：只改 HM1 不改 HM2。**
 
