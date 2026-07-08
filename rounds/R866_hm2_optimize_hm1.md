@@ -10,6 +10,9 @@
 
 ### 1. Docker 日志 (最近 100 行)
 - **零错误/告警**。2 次 key cycling: 14:34 k5→504→k1 和 15:04 k4→504→k5，均在 10s 内自愈。
+- `[NV-CYCLE] tier=glm5_2_nv → 504 (504_nv_gateway_timeout), cycling to next key` — 正常 key cycling
+- `[NV-SUCCESS] tier=glm5_2_nv succeeded after 1 cycle attempts` — 自愈正常
+- 零 fallback 触发，全部 first-key pexec success（除 2 条 rescued 504）
 - tier_chain: 双向 `['glm5_2_nv', 'dsv4p_nv']` (dynamic fallback) 持续正常
 - 所有请求均为 openclaw caller，glm5_2_nv 模型，stream=True
 - 3 条新请求在 R865 提交后进入 (07:03 UTC ×3)，全部成功
@@ -32,8 +35,8 @@ NVU_PEER_FALLBACK_ENABLED=1
 NVU_PEER_FALLBACK_TIMEOUT=45
 NVU_SSLEOF_RETRY_DELAY_S=1.0
 ```
-- 同步检查: FORCE_STREAM_TIMEOUT(66) == UPSTREAM_TIMEOUT(66) ✓
-- KEY_COOLDOWN_S(25) == TIER_COOLDOWN_S(25) ✓
+- 同步检查: `NVU_FORCE_STREAM_UPGRADE_TIMEOUT(66) == UPSTREAM_TIMEOUT(66)` ✓
+- `KEY_COOLDOWN_S(25) == TIER_COOLDOWN_S(25)` ✓
 - 零摩擦参数均已归零 ✓
 - 与 R865 完全一致，无变化
 
@@ -47,6 +50,7 @@ max_dur_ms:      72409
 ```
 - 仅 glm5_2_nv (nvcf_pexec) 有流量 (36 req) + 2 NULL upstream_type (health probe)
 - 全部 first-key success（除 2 条 key cycling rescued 504）
+- avg_dur 11724ms vs R865 10364ms，略有上升但仍在正常范围
 
 ### 4. DB 最近 10 条请求
 ```
@@ -61,7 +65,7 @@ max_dur_ms:      72409
 06:03 UTC  glm5_2_nv  200    7342ms   nvcf_pexec  key_cycle=0
 05:33 UTC  glm5_2_nv  200    4635ms   nvcf_pexec  key_cycle=0
 ```
-全部成功，2 条 key_cycle rescued 504。
+全部成功。2 条 key_cycle_429s=1（07:03 的 67,621ms 和 06:33 的 72,409ms — 均为 rescued 504）。延迟范围 1.9s-72.4s。
 
 ### 5. 新请求 (自 R865 提交后)
 ```
@@ -77,7 +81,8 @@ new_reqs since 06:35 UTC: 3
 tier        error_type               cnt
 glm5_2_nv   504_nv_gateway_timeout    2
 ```
-- 2 条 rescued 504，key cycling 自愈正常
+- 2 条 rescued 504（k5→k1 和 k4→k5），key cycling 自愈正常
+- R865 有 1 条，R866 有 2 条 — 仍在正常波动范围
 
 ### 7. DB tier_attempts (24h 窗口)
 ```
@@ -89,15 +94,17 @@ glm5_2_nv   400_nvcf_degraded         56       -        -  ← pre-R845/R846
 glm5_2_nv   504_nv_gateway_timeout     5       -        -
 glm5_2_nv   500_nv_error               1       -        -
 ```
-- NVCFPexecTimeout buffer: 66,000 - 51,227 = 14,773ms >> 3s ✓
-- dsv4p_nv empty_200: 3 (持平R865)
+- NVCFPexecTimeout max: dsv4p_nv=51,227ms
+- Buffer: UPSTREAM=66,000ms - 51,227ms = 14,773ms >> 3s minimum ✓
+- dsv4p_nv empty_200: 3 (R862=5→R865=3→R866=3，持平)
+- 24h 数据与 R865 完全一致（无新增 400_nvcf_degraded 在 6h 窗口，pre-R845/R846 的 56 条正逐步退出 24h 窗口）
 
 ### 8. DB ATE 分析 (6h 窗口)
 - 零 ATE
 
 ### 9. DB 错误分类 (6h 窗口)
 ```
-无错误行 — 零 400/429/504/empty_200/degraded/timeout
+无错误行 — 零 400/429/504/empty_200/degraded/timeout (仅 tier_attempts 级别有 2 条 rescued 504)
 ```
 
 ### 10. 按路径分组 (6h 窗口)
@@ -117,9 +124,9 @@ NULL:        2 req,  2 OK (100%), avg_dur=0ms (health probe)
 | avg_duration | 10364ms | 11724ms |
 | max_duration | 72409ms | 72409ms |
 | dsv4p_nv empty_200 (24h) | 3 | 3 |
-| 新请求 (post-prev) | 0 | 3 |
+| 新请求 (post-R865) | 0 | 3 |
 
-系统状态与 R865 **基本一致**，峰值健康持续。3 条新请求全部成功。
+系统状态与 R865 **基本一致**，峰值健康持续。3 条新请求全部成功，2 条 rescued 504 在正常范围。
 
 ---
 
