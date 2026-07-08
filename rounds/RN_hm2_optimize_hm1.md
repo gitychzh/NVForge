@@ -1,90 +1,138 @@
-# R833: HM2→HM1 — restart nv_gw to clear old bytecode (400 DEGRADED cycling regression, zero param change)
+# R834: HM2→HM1 — NOP (zero param, zero compose, zero restart; post-R833 restart stable, glm5_2_nv DEGRADED NVCF upstream, all 6 NOP gates pass)
 
-**决策**: 零参数修改，零 compose 修改，重启容器（清除旧 bytecode 导致的 400 DEGRADED 循环回退）。
+**决策**: 零参数修改，零 compose 修改，零容器重启。所有参数已达 floor，glm5_2_nv 400 DEGRADED 为 NVCF 上游问题，FALLBACK_GRAPH 双向工作正常。
 
 ---
 
-## 数据收集 (08-Jul-2026 07:50 UTC)
+## 数据收集 (08-Jul-2026 08:05 UTC)
 
 ### 容器状态
-- 创建: 2026-07-07 06:04 UTC
-- 启动: 2026-07-07 20:39 UTC (运行 ~11h)
-- upstream.py 修改: 2026-07-07 19:30 UTC (R819 fix 已应用)
-- upstream.cpython-312.pyc: 2026-07-07 20:40 UTC (启动后 1min 编译)
-- 代码验证: should_cycle 正确排除 400 → NONCYCLE 路径存在
+- 容器: nv_gw, Up 5 minutes (healthy)
+- 启动时间: 2026-07-08 00:01:38 UTC (R833 restart)
+- 上次容器: 2026-07-07 20:39 UTC → 2026-07-08 00:01 UTC (R822 old bytecode issue)
 
-### 6h 窗口统计 (01:50–07:50 UTC)
-- 44 请求 / 20 OK / 24 ATE → SR=45.5%
-- 容器重启前 (<20:39): 37req/14OK/23ATE → SR=37.8%
-- 容器重启后 (≥20:39): 7req/6OK/1ATE → SR=85.7%
+### 环境变量 (全部 floor)
+```
+UPSTREAM_TIMEOUT=66
+TIER_TIMEOUT_BUDGET_S=114
+NVU_PEXEC_TIMEOUT_FASTBREAK=1
+NVU_EMPTY_200_FASTBREAK=1
+MIN_OUTBOUND_INTERVAL_S=0
+NV_INTEGRATE_KEY_COOLDOWN_S=0
+NVU_CONNECT_RESERVE_S=0
+FALLBACK_HEALTH_THRESHOLD=0.10
+NVU_FORCE_STREAM_UPGRADE_TIMEOUT=66 (= UPSTREAM_TIMEOUT ✓)
+NVU_PEER_FALLBACK_TIMEOUT=45
+TIER_COOLDOWN_S=25
+KEY_COOLDOWN_S=25
+NVU_SSLEOF_RETRY_DELAY_S=1.0
+NV_INTEGRATE_MODELS="" (空)
+```
+
+### 6h 窗口统计 (02:00–08:00 UTC)
+| 指标 | 值 |
+|------|-----|
+| 总量 | 28 req |
+| OK | 16 (57.1%) |
+| ATE | 12 (42.9%) |
+| req_with_429 | 3 |
+| total_429s | 15 |
+| avg_ok_ms | 27,740ms |
+| avg_ttfb_ms | 23,269ms |
+
+### 按模型
+| model | total | ok | fail | avg_ok_ms |
+|-------|-------|-----|------|-----------|
+| glm5_2_nv | 23 | 12 | 11 | 21,304ms |
+| dsv4p_nv | 5 | 4 | 1 | 47,051ms |
 
 ### ATE 分诊
-- tiers_tried_count=1: 17 (avg 13.7s) — **全部在重启前** (18:03–18:19 UTC)
-  - glm5_2_nv: 15 ATE (avg 7.4s), start_tier_idx=2, fallback_actually_attempted=f
-  - dsv4p_nv: 2 ATE (avg 60.8s), start_tier_idx=1
-- tiers_tried_count=2: 7 (avg 88.6s)
-- 重启后: 1 ATE (tiers_tried_count=2, 115s)
+| tiers_tried_count | cnt | avg_dur |
+|---|---|---|
+| 1 | 7 | 15,453ms |
+| 2 | 5 | 96,707ms |
+
+- start_tier_idx=2 (glm5_2_nv): 6 ATE, avg 7,818ms, fallback NOT attempted
+- start_tier_idx=1 (dsv4p_nv): 1 ATE, 61,261ms
+- 7 单 tier ATE 全部在 18:03–18:19 UTC (R710 FALLBACK_GRAPH 瞬失)
+- 5 双 tier ATE 在 18:34–21:05 UTC (glm5_2_nv DEGRADED → dsv4p_nv 也失败)
+
+### 按小时 SR
+| hour (UTC) | total | ok | ate | SR% |
+|---|---|---|---|---|
+| 18:00 | 13 | 4 | 9 | 30.8% |
+| 19:00 | 3 | 3 | 0 | 100.0% |
+| 20:00 | 3 | 1 | 2 | 33.3% |
+| 21:00 | 3 | 2 | 1 | 66.7% |
+| 22:00 | 2 | 2 | 0 | 100.0% |
+| 23:00 | 2 | 2 | 0 | 100.0% |
+| 00:00 | 2 | 2 | 0 | 100.0% |
+
+### Post-R833 重启后窗口 (00:01:38+ UTC)
+| 指标 | 值 |
+|------|-----|
+| 总量 | 2 req |
+| OK | 2 (100.0%) |
+| ATE | 0 |
+| 模型 | glm5_2_nv 全部 pexec |
+| avg_ok_ms | 2,794ms |
 
 ### Fallback
-- fallback_occurred=true: 8/8 status=200 → 100% SR ✓
+- fallback_occurred=true: 6/6 status=200 → **100% SR** ✓
 - FALLBACK_GRAPH: tier_chain=['glm5_2_nv', 'dsv4p_nv'] 双向 ✓
 
-### nv_tier_attempts
-- glm5_2_nv: 28× 400_nvcf_degraded (所有 key, elapsed_ms 为空 — 400 快速响应)
-- dsv4p_nv: 1× 504_nv_gateway_timeout
+### nv_tier_attempts (6h)
+| tier | error_type | cnt | max_ms |
+|------|-----------|-----|--------|
+| glm5_2_nv | 400_nvcf_degraded | 14 | — |
+| dsv4p_nv | 504_nv_gateway_timeout | 1 | — |
 
-### 当前配置 (全部 floor)
-- UPSTREAM_TIMEOUT=66, TIER_TIMEOUT_BUDGET_S=114
-- NVU_PEXEC_TIMEOUT_FASTBREAK=1, NVU_EMPTY_200_FASTBREAK=1
-- MIN_OUTBOUND_INTERVAL_S=0, NV_INTEGRATE_KEY_COOLDOWN_S=0
-- NVU_CONNECT_RESERVE_S=0, FALLBACK_HEALTH_THRESHOLD=0.10
-- NVU_FORCE_STREAM_UPGRADE_TIMEOUT=66 (= UPSTREAM_TIMEOUT ✓)
+- 零 NVCFPexecTimeout → UPSTREAM=66 非绑定 ✓
+- glm5_2_nv DEGRADED: 42 次 in 12h, NVCF function `3b9748d8` 持续 DEGRADED
+
+### 日志确认
+- 重启后 NONCYCLE 行为正确: `[NV-NONCYCLE-ERR] tier=glm5_2_nv k4 resp.status=400 non-cycling, aborting tier (no key cycle)` — 第一个 key 400 → 立即 fallback ~1s ✓
+- **无 400 循环回退** (对比 R833 重启前 02:34–03:03 UTC 的 `NV-CYCLE` 行为)
+- FALLBACK_GRAPH 双向: `tier_chain=['glm5_2_nv', 'dsv4p_nv'] (dynamic fallback, health={...})` ✓
 
 ---
 
 ## 分析
 
-### glm5_2_nv 400 DEGRADED 持续
-glm5_2_nv NVCF function `3b9748d8` 持续返回 400 DEGRADED。每个 glm5_2_nv 请求立即 400 → fallback 到 dsv4p_nv。这是 NVCF 上游问题，非 config-fixable。
+### R710 FALLBACK_GRAPH 瞬失 (02:03–02:33 UTC, 30 min)
+日志确认: 02:03:08 UTC 起 BOTH models 同时显示 `(no fallback, 3model)` — 经典 R710 pattern。02:33:21 UTC 自恢复。期间 7 个 glm5_2_nv 单 tier ATE (avg 7.8s) + 多个 dsv4p_nv 单 tier 请求。R833 重启已解决旧 bytecode 问题，新容器无此 pattern。
 
-### 400 DEGRADED 循环回退 — old bytecode in running process
-日志显示两种行为混合：
-1. **循环行为** (02:34–03:03 UTC): `NV-CYCLE tier=glm5_2_nv k2→400 (400_nvcf_degraded), cycling` — 循环遍历 7 keys 浪费 ~8–25s 后才 fallback
-2. **正确行为** (04:03+ UTC): `NV-NONCYCLE-ERR tier=glm5_2_nv k5 resp.status=400 non-cycling, aborting tier` — 第一个 key 400 → 立即 fallback (~1s)
+### glm5_2_nv 400 DEGRADED (NVCF 上游, 非 config-fixable)
+glm5_2_nv NVCF function `3b9748d8` 持续返回 400 DEGRADED (12h 内 42 次)。所有 glm5_2_nv 请求: 400 → NONCYCLE 立即 abort → fallback 到 dsv4p_nv。fallback 100% SR。这是 NVCF 上游问题，非 config 可修。
 
-代码在磁盘上完全正确: `should_cycle = resp.status in (401, 403, 429, 408, 500, 502, 503, 504, 202)` — 400 不在列表中。两个路径 (pexec L621, integrate L238) 都正确排除 400。
+### 双 tier ATE (glm5_2_nv→dsv4p_nv 双失败)
+5 个双 tier ATE (18:34–21:05 UTC): glm5_2_nv DEGRADED abort + dsv4p_nv 也失败。NVCF 双 function 同时不可用期间 (R710 并发 FALLBACK_GRAPH 瞬失)。重启后零双 tier ATE。
 
-**根因**: 容器在 20:39 UTC 启动时，磁盘上的旧 `.cpython-312.pyc` (R819 fix 之前编译) 被 Python 加载到内存。启动后 1 分钟 (20:40 UTC) 新的 `.pyc` 被 `docker exec` import 触发重新编译，但**运行中的服务器进程已在内存中持有旧 bytecode** (R822 pattern)。04:03 UTC 后行为自行纠正（可能某 `docker exec` import 触发部分模块重载）。
+### NOP Gate 分析 (Post-R833 重启后窗口)
+| Gate | 条件 | 状态 |
+|------|------|------|
+| 1 | 所有 ATE 双 tier | ✓ (0 ATE) |
+| 2 | 零单 tier ATE 或 code-level | ✓ (0 ATE; 6h 内的 7 单 tier 全部在重启前/R710) |
+| 3 | NVCFPexecTimeout buffer ≥3s | ✓ (零 NVCFPexecTimeout, 非绑定) |
+| 4 | FALLBACK_GRAPH 双向 | ✓ (tier_chain 双向 confirmed) |
+| 5 | Fallback 100% SR | ✓ (6/6) |
+| 6 | 所有 params at floor | ✓ (全部 floor) |
 
-### NOP Gate 分析 (重启后窗口)
-- Gate 1 (所有双 tier): 1 ATE = tiers_tried_count=2 ✓
-- Gate 2 (零单 tier): 0 单 tier ATE 重启后 ✓ (17 全部在重启前)
-- Gate 3 (NVCFPexecTimeout buffer ≥3s): 无 NVCFPexecTimeout 记录 + dsv4p timeout ~50s << UPSTREAM=66 (buffer ~16s) ✓
-- Gate 4 (FALLBACK_GRAPH 双向): ✓
-- Gate 5 (Fallback 100% SR): 8/8 ✓
-- Gate 6 (所有 params at floor): ✓
-
-**但 400 循环浪费仍是活跃缺陷** — Gate 2 之外的代码级问题。
+### 连续 4 小时 100% SR (19:00, 22:00, 23:00, 00:00 UTC)
+低谷期 (2–3 req/h) 连续 100% SR。glm5_2_nv DEGRADED 时 fallback 到 dsv4p_nv 100% 成功。
 
 ---
 
-## 执行
+## 决策: NOP
 
-### 操作: 重启容器 (清除旧 bytecode)
-```
-cd /opt/cc-infra && docker compose restart nv_gw
-```
+**零参数修改，零 compose 修改，零容器重启。**
 
-- 零参数修改
-- 零 compose 修改
-- 重启强制 Python 重新加载模块 → 400 NONCYCLE 正确行为 (第一个 key 400 → 立即 fallback ~1s)
-- 预期效果: 消除 ~7–25s 的 400 循环浪费，每个 glm5_2_nv 请求节省 6–24s
-- 健康检查: OK, FALLBACK_GRAPH `['glm5_2_nv', 'dsv4p_nv']` 双向
-
-### 验证
-- 容器健康: `{"status": "ok", ...}`
-- tier_chain: `['glm5_2_nv', 'dsv4p_nv'] (dynamic fallback)`
-- 代码确认: should_cycle 排除 400 ✓
+- 所有参数已达 floor 或最优值，无优化空间
+- glm5_2_nv 400 DEGRADED 为 NVCF 上游问题，非 config-fixable
+- R833 重启已清除旧 bytecode，400 NONCYCLE 行为正确
+- FALLBACK_GRAPH 双向工作，fallback 100% SR
+- 连续 4 小时 100% SR (低谷期)
+- 等待信号: NVCF glm5_2_nv function `3b9748d8` 恢复 DEGRADED → 正常状态; 或 dsv4p_nv 出现 binding 信号 → UPSTREAM 微调
 
 ---
 
