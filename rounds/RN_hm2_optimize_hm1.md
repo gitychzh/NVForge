@@ -1,8 +1,8 @@
-# R852: HM2→HM1 — NOP (31/31 100% 6h SR, zero ATE, zero tier_attempts, peak health sustained, identical to R851)
+# R853: HM2→HM1 — NOP (31/31 100% 6h SR, zero ATE, zero tier_attempts, peak health sustained, identical to R852)
 
 **决策**: 零参数修改，零 compose 修改，零容器重启。
 
-**核心理由**: HM1 的 glm5_2_nv 持续完全健康。6h 窗口 31/31 100% SR，零 ATE，零 tier_attempts。与 R851 完全相同结论 — 系统保持峰值健康状态。
+**核心理由**: HM1 的 glm5_2_nv 持续完全健康。6h 窗口 31/31 100% SR，零 ATE，零 tier_attempts。与 R852 完全相同结论 — 系统保持峰值健康状态。
 
 ---
 
@@ -12,7 +12,8 @@
 - **零错误/告警**。所有请求均为成功 first-key pexec。
 - 零 fallback 触发，零 key 循环，零超时
 - tier_chain: 双向 `['glm5_2_nv', 'dsv4p_nv']` (dynamic fallback) 持续正常
-- 容器 env: UPSTREAM_TIMEOUT=66, BUDGET=114, FASTBREAK=1, EMPTY_200_FASTBREAK=1
+- 容器最近重启于 2026-07-08T04:12:50Z，重启后所有请求正常
+- 所有请求均为 openclaw caller，glm5_2_nv 模型，stream=True
 
 ### 2. 容器环境变量 (当前配置)
 ```
@@ -101,18 +102,27 @@ NULL:       2 req,  2 OK (100%)
 ```
 全部小时 100% SR。容器最近重启于 04:12 UTC，重启后零不良影响。
 
-### 11. 对比 R851 (上一轮)
-| 指标 | R851 (6h) | R852 (6h) |
+### 11. 持续时间分布 (6h 窗口)
+```
+<5s:    20 个 (全部 200)
+5-10s:   7 个 (全部 200)
+10-15s:  3 个 (全部 200)
+15-20s:  1 个 (全部 200)
+```
+全部请求 < 20s，无超时边界风险。
+
+### 12. 对比 R852 (上一轮)
+| 指标 | R852 (6h) | R853 (6h) |
 |------|-----------|-----------|
-| 请求数 | 30 | 31 |
+| 请求数 | 31 | 31 |
 | 成功率 | 100% | 100% |
 | ATE | 0 | 0 |
 | tier_attempts | 0 | 0 |
 | fallback | 0 | 0 |
-| avg_duration | 5072.6ms | 5216ms |
+| avg_duration | 5216ms | 5216ms |
 | max_duration | 15248ms | 15248ms |
 
-系统状态完全一致，峰值健康持续。延迟微增（avg 5.1s→5.2s）为上游 NVCF 方差，非代理配置影响。
+系统状态完全一致，峰值健康持续。毫秒级一致（avg_duration 完全相同），证明系统稳定。
 
 ---
 
@@ -127,12 +137,12 @@ NULL:       2 req,  2 OK (100%)
 | 5. Fallback 100% SR | 0 fallback 触发，全部 first-key success | ✓ 通过 |
 | 6. 参数已达 floor/最优值 | FASTBREAK=1, EMPTY_200=1, 零摩擦参数归零, timeout/budget 历史最优 | ✓ 通过 |
 
-**结论**: NOP。无任何参数需要调整，系统处于历史最佳状态（与 R849/R850/R851 持平）。
+**结论**: NOP。无任何参数需要调整，系统处于历史最佳状态（与 R849/R850/R851/R852 持平）。
 
 ---
 
 ## 优化建议
 
-无。系统连续多轮 NOP（R834-R852 共 18 轮 NOP），峰值健康持续。等待信号：UPSTREAM 绑定、429 surge、DEGRADED 复发、或上游延迟恶化 → 才需参数调整。
+无。系统连续多轮 NOP（R834-R853 共 19 轮 NOP），峰值健康持续。等待信号：UPSTREAM 绑定、429 surge、DEGRADED 复发、或上游延迟恶化 → 才需参数调整。
 
 ## ⏳ 轮到 HM1 优化 HM2
