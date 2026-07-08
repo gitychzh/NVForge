@@ -1,0 +1,178 @@
+# R924: HM2→HM1 — NOP (false trigger, all params at floor, 100% SR)
+
+> **Trigger**: 2026-07-09 04:55 UTC — cron dispatch for commit `973b6cf` (R923 anchor fix, opc2_uname)
+> **Script output**: `"这是我提交的, 不触发"` — false trigger (HM2 self-commit)
+> **Pattern**: Double-dispatch (symlink already →R923)
+
+## 触发分析
+
+cron 脚本输出: `"这是我提交的, 不触发"`
+- 最新 commit author = opc2_uname (HM2), commit = `973b6cf` (R923 anchor fix)
+- 脚本正确检测到自提交并标记 "不触发"
+- cron 仍被派遣 — 误触发
+- 符号链接已指向 R923，R923 已提交并推送 — 双重派发模式
+- HM1 本地 git 在 R821（103 轮落后）
+
+## 数据采集 (改前必有数据)
+
+### nv_gw 容器状态
+
+- 容器名: `nv_gw` (cc-infra-nv_gw)
+- 运行状态: healthy, FailingStreak=0
+- 启动时间: 约 17min (R923 部署后重启)
+- 日志: 安静，无 error/warn/crash
+- fallback_chain: ['kimi_nv', 'dsv4p_nv', 'glm5_2_nv']
+- health: `{"status": "ok", "nv_num_keys": 5, "nvcf_pexec_models": ["kimi_nv","dsv4p_nv","glm5_2_nv"]}`
+
+### nv_gw 容器 env (key params)
+
+| 参数 | 值 | 来源 |
+|---|---|---|
+| UPSTREAM_TIMEOUT | 64 | 历史 |
+| TIER_TIMEOUT_BUDGET_S | 114 | 历史 |
+| NVU_PEXEC_TIMEOUT_FASTBREAK | 1 | 地板 |
+| NVU_EMPTY_200_FASTBREAK | 3 | R829 |
+| KEY_COOLDOWN_S | 25 | 地板 |
+| TIER_COOLDOWN_S | 25 | 地板 |
+| MIN_OUTBOUND_INTERVAL_S | 0 | 地板 |
+| NVU_CONNECT_RESERVE_S | 0 | 地板 |
+| NV_INTEGRATE_KEY_COOLDOWN_S | 0 | 地板 |
+| NV_INTEGRATE_MODELS | (空) | 无 integrate 请求 |
+| NVU_FORCE_STREAM_UPGRADE | 0 | 禁用 |
+| NVU_FORCE_STREAM_UPGRADE_TIMEOUT | 64 | = UPSTREAM, 无害 |
+| FALLBACK_HEALTH_THRESHOLD | 0.05 | R919 |
+| **KEY_AUTHFAIL_COOLDOWN_S** | **60** | **R922** ✅ |
+| **NVU_PEER_FB_SKIP_MODELS** | **glm5_2_nv,dsv4p_nv** | **R923** ✅ |
+
+### nv_requests DB (6h)
+
+| 指标 | 值 |
+|---|---|
+| 总请求 | 59 |
+| 成功 (200) | 59 |
+| 失败 | 0 |
+| **6h SR** | **100.0%** ✅ |
+| 平均 duration | 15,137ms |
+| 最大 duration | 120,515ms |
+| dsv4p_nv | 6/6 = 100.0%, avg=42,255ms |
+| glm5_2_nv | 53/53 = 100.0%, avg=12,067ms |
+| Fallback 触发 | 2/59 (3.4%) |
+| Fallback 平均 duration | 96,857ms |
+| ATE | 0 |
+
+### nv_requests DB (1h, 最新)
+
+| 指标 | 值 |
+|---|---|
+| 总请求 | 8 |
+| 成功 (200) | 8 |
+| 1h SR | 100.0% |
+| 平均 duration | 7,332ms |
+
+### nv_requests 最近 10 条请求
+
+| request_id | ts | request_model | mapped_model | tier_model | fallback | status | duration_ms |
+|---|---|---|---|---|---|---|---|
+| 962a3b27 | 20:33:32 | glm5_2_nv | glm5_2_nv | glm5_2_nv | f | 200 | 3,746 |
+| ace073db | 20:33:28 | glm5_2_nv | glm5_2_nv | glm5_2_nv | f | 200 | 3,715 |
+| 9af68cd2 | 20:33:21 | glm5_2_nv | glm5_2_nv | glm5_2_nv | f | 200 | 3,698 |
+| 94da8425 | 20:04:08 | glm5_2_nv | glm5_2_nv | glm5_2_nv | f | 200 | 5,218 |
+| cb25f1ee | 20:03:54 | glm5_2_nv | glm5_2_nv | glm5_2_nv | f | 200 | 12,893 |
+| 3f13c047 | 20:03:50 | glm5_2_nv | glm5_2_nv | glm5_2_nv | f | 200 | 4,111 |
+| 340f8389 | 20:03:41 | glm5_2_nv | glm5_2_nv | glm5_2_nv | f | 200 | 9,026 |
+| 2e52b163 | 20:03:21 | glm5_2_nv | glm5_2_nv | glm5_2_nv | f | 200 | 16,245 |
+| 88ced2e3 | 19:33:49 | glm5_2_nv | glm5_2_nv | glm5_2_nv | f | 200 | 3,004 |
+| e949869a | 19:33:44 | glm5_2_nv | glm5_2_nv | glm5_2_nv | f | 200 | 4,851 |
+
+全部成功，延迟 3.0-16.2s，正常。全部直连，无 fallback。
+
+### nv_tier_attempts (6h)
+
+| Tier | Error Type | Count | Max ms |
+|---|---|---|---|
+| dsv4p_nv | NVCFPexecTimeout | 1 | 52,849 |
+| dsv4p_nv | empty_200 | 1 | — |
+| glm5_2_nv | 504_nv_gateway_timeout | 1 | — |
+| glm5_2_nv | empty_200 | 1 | — |
+
+仅 4 次 minor tier 错误，无系统性故障。NVCFPexecTimeout max=52,849ms << UPSTREAM=64 → UPSTREAM 非绑定。
+
+### Fallback 详情 (6h)
+
+| request_id | fallback_from | fallback_to | duration_ms | status |
+|---|---|---|---|---|
+| 439e4ebc | dsv4p_nv | glm5_2_nv | 120,515 | 200 |
+| 0f580180 | glm5_2_nv | dsv4p_nv | 73,199 | 200 |
+
+2 次 fallback 均成功（200），无 ATE。
+
+### ATE 详情 (6h)
+
+| 指标 | 值 |
+|---|---|
+| ATE 数量 | 0 |
+| 错误分类 | 0 条 |
+
+### ms_gw 状态
+
+| 指标 | 值 |
+|---|---|
+| 6h 请求 | 0 (完全空闲) |
+| 错误 | 0 |
+
+### HM1 vs HM2 剩余差异
+
+| 参数 | HM1 | HM2 | 差异分析 |
+|---|---|---|---|
+| UPSTREAM_TIMEOUT | 64 | 66 | HM1 更激进，非绑定 |
+| TIER_TIMEOUT_BUDGET_S | 114 | 180 | HM1 更紧，FASTBREAK=1 下足够 |
+| NVU_PEXEC_TIMEOUT_FASTBREAK | 1 | 3 | HM1 在地板，更激进 |
+| NVU_FORCE_STREAM_UPGRADE_TIMEOUT | 64 | 150 | HM1=64，FORCE_STREAM=0 禁用，无关 |
+| NV_INTEGRATE_MODELS | (空) | glm5_2_nv | HM1 无 integrate 请求，零影响 |
+| FALLBACK_HEALTH_THRESHOLD | 0.05 | 缺失 | HM1 有，HM2 无 |
+
+## Decision: NOP
+
+**Reasoning**:
+1. **100.0% SR, 6h window** — 零失败，零 ATE，极佳链路健康度
+2. **所有性能参数已在地板**:
+   - UPSTREAM=64 → NVCFPexecTimeout max=52.8s, 11.2s buffer, 非绑定 ✓
+   - FASTBREAK=1 (地板) — 1×64=64s << BUDGET=114, 50s fallback 余量 ✓
+   - EMPTY_200=3 (R829 intentional, openclaw SSE bug mitigation) ✓
+   - KEY_COOLDOWN=25, TIER_COOLDOWN=25 (地板) ✓
+   - MIN_OUTBOUND=0, CONNECT_RESERVE=0, NV_INTEGRATE_KEY_COOLDOWN=0 (地板) ✓
+   - FORCE_STREAM=0 (禁用) ✓
+3. **防御性参数已补全**:
+   - KEY_AUTHFAIL_COOLDOWN_S=60 (R922) ✓
+   - NVU_PEER_FB_SKIP_MODELS=glm5_2_nv,dsv4p_nv (R923) ✓
+   - FALLBACK_HEALTH_THRESHOLD=0.05 (R919) ✓
+4. **Fallback 2/2 成功 (100%)**, 双向工作 ✓
+5. **Zero error/warn in container logs** ✓
+6. **ms_gw idle** (0 requests), 无次级优化空间 ✓
+7. **HM1 vs HM2 剩余差异均为 HM1 更激进** — 符合优化方向
+8. **R923 刚部署 17min** — 容器刚重启，需观察稳定期
+9. **数据与 R922/R923 完全一致** — 相同 59/59 SR, 相同 4 次 tier 错误, 相同 2 次 fallback
+
+**No optimization space**: 所有参数在地板或最优。零 ATE，零失败。HM1 比 HM2 更激进（更低 timeout/budget/cooldown），符合优化方向。防御性参数 R922+R923 已补全。R923 部署仅 17min，需观察稳定期。
+
+## 配置快照 (HM1 nv_gw 当前)
+
+| 参数 | 值 |
+|---|---|
+| UPSTREAM_TIMEOUT | 64 |
+| TIER_TIMEOUT_BUDGET_S | 114 |
+| FALLBACK_HEALTH_THRESHOLD | 0.05 (R919) |
+| MIN_OUTBOUND_INTERVAL_S | 0 |
+| KEY_COOLDOWN_S | 25 |
+| TIER_COOLDOWN_S | 25 |
+| NVU_PEXEC_TIMEOUT_FASTBREAK | 1 |
+| NVU_EMPTY_200_FASTBREAK | 3 |
+| NVU_CONNECT_RESERVE_S | 0 |
+| NV_INTEGRATE_KEY_COOLDOWN_S | 0 |
+| NV_INTEGRATE_MODELS | (空) |
+| NVU_FORCE_STREAM_UPGRADE | 0 |
+| NVU_FORCE_STREAM_UPGRADE_TIMEOUT | 64 |
+| KEY_AUTHFAIL_COOLDOWN_S | 60 (R922) |
+| NVU_PEER_FB_SKIP_MODELS | glm5_2_nv,dsv4p_nv (R923) |
+
+## ⏳ 轮到HM1优化HM2  ← 脚本检测此标记
