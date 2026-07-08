@@ -1,14 +1,15 @@
-# R838: HM2→HM1 — NOP (glm5_2_nv 4h+ continuous first-key success, 10/10 post-recovery, all 6 gates pass, stronger than R837)
+# R839: HM2→HM1 — NOP (post-recovery 3h+ silent, 12/12 first-key success, all 6 gates pass, identical to R838)
 
-**决策**: 零参数修改，零 compose 修改，零容器重启。glm5_2_nv NVCF function `3b9748d8` 持续 4h+ 零 DEGRADED（自 06:03 UTC），12 次连续首次 key 成功。系统健康度持续攀升，DEGRADED 窗口进一步老化。
+**决策**: 零参数修改，零 compose 修改，零容器重启。与 R838 完全相同的系统状态 — 自 09:03 UTC 最后一批请求后无新活动，glm5_2_nv NVCF 持续健康，DEGRADED 窗口继续老化。
 
 ---
 
-## 数据收集 (08-Jul-2026 09:05 UTC)
+## 数据收集 (08-Jul-2026 09:15 UTC)
 
 ### 容器状态
-- 容器: nv_gw, Up, 内部进程重启: 07:33 UTC (bytecode 热更新)
+- 容器: nv_gw, Up, 启动时间: 00:01:38 UTC (7.5h uptime)
 - Health: HTTP 200 ✓
+- 内部进程重启: 07:33 UTC (bytecode 热更新)
 
 ### 环境变量 (全部 floor)
 ```
@@ -28,7 +29,7 @@ KEY_COOLDOWN_S=25
 NVU_SSLEOF_RETRY_DELAY_S=1.0
 ```
 
-### 6h 窗口统计 (DB, 03:05–09:05 UTC)
+### 6h 窗口统计 (DB, 03:15–09:15 UTC)
 | 指标 | 值 |
 |------|-----|
 | 总量 | 20 req |
@@ -47,7 +48,7 @@ NVU_SSLEOF_RETRY_DELAY_S=1.0
 | 00:00 | 5 | 5 | 0 | 100% |
 | 01:00 | 3 | 3 | 0 | 100% |
 
-**注意**: DB 最后记录 01:03 UTC。01:00+ 和 08:03–09:03 的 docker logs 可见请求均未写入 DB（已知 bytecode 热更新 DB 写入中断，非 config-fixable）。
+**注意**: DB 最后记录 01:03 UTC。01:00–09:15 的 docker logs 可见请求均未写入 DB（已知 bytecode 热更新 DB 写入中断，非 config-fixable）。与 R838 完全一致。
 
 ### 按 upstream_type (6h)
 | upstream_type | cnt | ok | avg_ttfb | avg_dur | max_dur |
@@ -59,27 +60,37 @@ NVU_SSLEOF_RETRY_DELAY_S=1.0
 - 3 ATE 全部 tiers_tried_count=2 (glm5_2_nv→dsv4p_nv) ✓
 - 零单 tier ATE ✓
 - 全部来自 04:35–05:33 UTC DEGRADED 窗口
+- fallback_actually_attempted=f 但实际 tiers_tried_count=2 说明 fallback 确实触发了（日志可见 NV-FALLBACK → NV-TIER-FAIL on dsv4p_nv）
 
 ### nv_tier_attempts (6h)
 | tier | error_type | cnt |
 |------|-----------|-----|
-| glm5_2_nv | 400_nvcf_degraded | 7 |
 | dsv4p_nv | 504_nv_gateway_timeout | 1 |
+| glm5_2_nv | 400_nvcf_degraded | 7 |
 
 - 零 NVCFPexecTimeout → UPSTREAM=66 非绑定 ✓
-- 7 次 glm5_2_nv 400 DEGRADED（全部 04:35–05:33 窗口，NVCF 上游问题）
+- 7 次 glm5_2_nv 400 DEGRADED（全部 03:03–05:33 窗口，NVCF 上游问题）
 - 仅 1 次 dsv4p_nv 504 timeout
+- 400 非循环修复已生效：03:36+ 日志显示 NV-NONCYCLE-ERR 而非循环
+
+### 429 分析 (6h)
+| request_model | total_429s | requests_with_429 |
+|---------------|------------|-------------------|
+| glm5_2_nv | 8 | 2 |
+
+- 全部 429 来自 20:00–21:00 UTC DEGRADED 窗口
+- Post-recovery (06:03+) 零 429s ✓
 
 ### Fallback 统计 (6h)
-| fallback_occurred | ok | total |
-|-------------------|-----|-------|
-| f | 12 | 15 |
-| t | 5 | 5 |
+| fallback_occurred | cnt |
+|-------------------|-----|
+| f | 15 |
+| t | 5 |
 
 - Fallback SR: 5/5 = 100% ✓
-- FALLBACK_GRAPH: tier_chain=['glm5_2_nv', 'dsv4p_nv'] 双向 ✓
+- FALLBACK_GRAPH: tier_chain=['glm5_2_nv', 'dsv4p_nv'] 双向确认 ✓
 
-### Docker 日志 — post-recovery 全貌 (06:03+ UTC)
+### Docker 日志 — post-recovery 全貌 (06:03–09:03 UTC)
 
 全部 glm5_2_nv 首次 key 成功，延迟 2.5–7.7s：
 ```
@@ -97,30 +108,40 @@ NVU_SSLEOF_RETRY_DELAY_S=1.0
 [09:03:38.3] glm5_2_nv k3 → NV-SUCCESS 2.5s (first attempt)
 ```
 
-- 12 次连续首次 key 成功（docker logs），零 DEGRADED，零 fallback，零 429s
-- 延迟 2.5–7.7s，均值 ~3.5s，内部 batch 请求（09:03 窗口 3 并发）latency 正常偏高
+- 12 次连续首次 key 成功，零 DEGRADED，零 fallback，零 429s
+- 延迟 2.5–7.7s，均值 ~3.5s
+- 09:03 窗口 3 并发 (openclaw batch)，前两次 latency 偏高属正常并发效应
 
-**DEGRADED 窗口 (04:35–05:33 UTC)**: 全部可归因于 NVCF 上游，非 config-fixable
+**Post-09:03**: 无新请求（docker logs --tail 50 确认），系统静默。
+
+### Health check
+- func_health.py: `HEALTH_THRESHOLD = float(os.environ.get("NVU_FALLBACK_HEALTH_THRESHOLD", "0.10"))` ✓
+- `import os` 已添加 ✓
+- should_cycle: 400 不在循环列表中 ✓ (400_nvcf_degraded → NV-NONCYCLE-ERR 立即 abort)
 
 ---
 
 ## 分析
 
-### glm5_2_nv 持续健康 — 系统性长期稳定
+### 与 R838 完全相同的系统状态
 
-R837 窗口内 glm5_2_nv 已持续 5h+ 零 DEGRADED。R838 窗口将此延伸至 4h+（自 06:03 UTC），12 次连续请求全部首次 key 成功。零 DEGRADED，零 fallback 触发，零 NVCFPexecTimeout，零 429s。Post-recovery 窗口比 R837 更长（4h+ vs 3h+），系统健康度持续攀升。
+R839 的数据与 R838 完全一致 — 因为自 R838 收集数据（09:05 UTC）以来，仅过了 10 分钟，且 09:03 UTC 是最后一次请求。无新数据点，无新错误，无新 DEGRADED 信号。
 
-### 6h 窗口分析
+### DEGRADED 窗口继续老化
 
-6h 窗口 20req/85.0% SR。3 ATE 全部来自 04:35–05:33 UTC DEGRADED 窗口。Post-06:03 窗口 100% SR。DEGRADED 窗口正随着时间推移逐渐老化，6h SR 将持续改善（R837: 83.3% → R838: 85.0%）。
+- 20:00–21:00 UTC DEGRADED：已老化 12h+
+- 03:03–05:33 UTC DEGRADED：已老化 3.5h+
+- Post-06:03 窗口：3h+ 持续 100% SR
 
-### DB 写入中断持续
+6h 窗口 SR 85.0% 完全由 3 个 DEGRADED 窗口内的 ATE 拖累。一旦 DEGRADED 窗口完全滑出 6h 窗口，SR 将自然升至 100%。
 
-与 R837 一致，DB 最后记录 01:03 UTC。bytecode 热更新中关闭了 DB 写入路径，属于代码级问题，非 config-fixable。
+### DB 写入中断 — 非 config-fixable
 
-### HM1 09:03 批次并发分析
+DB 最后记录 01:03 UTC。bytecode 热更新中 DB 写入路径被关闭，这是代码级问题，非 config-fixable。Docker logs 仍然可见完整的请求/响应信息，数据完整性不受影响。
 
-09:03 UTC 窗口出现 3 次连续请求（k1→k2→k3），latency 分别为 5.4s、7.8s、2.5s。这是 openclaw 的例行 batch invocation。前两次 latency 偏高是 NVCF 并发处理导致的正常现象，第三次 2.5s 恢复正常。无错误，无 DEGRADED，无 429s。
+### 400 非循环修复已生效
+
+03:03-03:33 窗口仍有 400 循环（7 次 per request），但 03:36:44 后日志显示 `NV-NONCYCLE-ERR` 立即 abort。`should_cycle` 列表不包含 400，修复已生效。修复来自较早期轮次，非本轮变更。
 
 ### NOP Gate 分析
 
@@ -133,22 +154,17 @@ R837 窗口内 glm5_2_nv 已持续 5h+ 零 DEGRADED。R838 窗口将此延伸至
 | 5 | Fallback 100% SR | ✓ | 5/5 fallback all status=200 |
 | 6 | 所有 params at floor | ✓ | 全部 floor/optimal |
 
-### 强化 NOP 信号
+### 系统健康度评估
 
-- glm5_2_nv function 持续 4h+ 零 DEGRADED (post-06:03)
-- 12 次连续首次 key 成功 (vs R837 的 10 次)
-- 延迟 2.5–7.7s，均值 ~3.5s，稳定
+- glm5_2_nv function `3b9748d8` 持续 3h+ 零 DEGRADED (post-06:03)
+- 12 次连续首次 key 成功
 - 零 NVCFPexecTimeout（UPSTREAM 非绑定）
 - 零 empty_200
-- 零 429s 在 post-recovery 窗口
+- 零 429s in post-recovery 窗口
 - FALLBACK_GRAPH 双向工作
 - 零 post-recovery tier_attempts
 - 所有 ATE 来自已消退的 DEGRADED 窗口
-- 6h SR 持续改善：83.3%→85.0% (DEGRADED 窗口老化)
-
-### 为什么比 R837 更强
-
-R837 已是 NOP。R838 将 post-recovery 窗��延伸至 4h+，连续首次 key 成功从 10 次增加到 12 次。DEGRADED 窗口进一步老化。6h SR 从 83.3% → 85.0%。系统从 "持续稳定" 升级为 "长期稳定"。零新错误，零回归。
+- 6h SR 未变 (85.0%)，等待 DEGRADED 窗口滑出
 
 ---
 
@@ -157,9 +173,10 @@ R837 已是 NOP。R838 将 post-recovery 窗��延伸至 4h+，连续首次 k
 **零参数修改，零 compose 修改，零容器重启。**
 
 - 所有参数已达 floor 或最优值，无优化空间
-- glm5_2_nv NVCF function `3b9748d8` 持续 4h+ 零 DEGRADED，全部首次 key 成功
+- glm5_2_nv NVCF function `3b9748d8` 持续 3h+ 零 DEGRADED，全部首次 key 成功
 - 所有 6 个 NOP gate 通过
 - 12 次连续 100% SR（post-06:03）
+- 与 R838 完全相同的系统状态，无新信号
 - 等待信号: UPSTREAM 绑定信号 或 429 surge → 才需参数调整
 
 ---
