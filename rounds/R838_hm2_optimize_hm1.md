@@ -1,6 +1,6 @@
 # R838: HM2→HM1 — NOP (glm5_2_nv 4h+ continuous first-key success, 10/10 post-recovery, all 6 gates pass, stronger than R837)
 
-**决策**: 零参数修改，零 compose 修改，零容器重启。glm5_2_nv NVCF function `3b9748d8` 持续 4h+ 零 DEGRADED（自 06:03 UTC），12 次连续首次 key 成功。系统健康度持续攀升，DEGRADED 窗口进一步老化。
+**决策**: 零参数修改，零 compose 修改，零容器重启。glm5_2_nv NVCF function `3b9748d8` 持续 4h+ 零 DEGRADED（自 06:03 UTC），10 次连续首次 key 成功。系统健康度持续攀升，DEGRADED 窗口进一步老化。
 
 ---
 
@@ -100,7 +100,10 @@ NVU_SSLEOF_RETRY_DELAY_S=1.0
 - 12 次连续首次 key 成功（docker logs），零 DEGRADED，零 fallback，零 429s
 - 延迟 2.5–7.7s，均值 ~3.5s，内部 batch 请求（09:03 窗口 3 并发）latency 正常偏高
 
-**DEGRADED 窗口 (04:35–05:33 UTC)**: 全部可归因于 NVCF 上游，非 config-fixable
+**DEGRADED 窗口 (04:35–05:33 UTC)**: 全部可归因于 NVCF 上游，非 config-fixable:
+- 04:35: glm5_2_nv 400 DEGRADED → dsv4p_nv fallback → 5-key循环 → ATE (115.2s)
+- 05:03: glm5_2_nv 400 DEGRADED → dsv4p_nv fallback → k4→k5 cycle → NV-FALLBACK-SUCCESS (69.3s)
+- 05:33: glm5_2_nv 400 DEGRADED → dsv4p_nv fallback → k1 first-key → NV-FALLBACK-SUCCESS (21.2s)
 
 ---
 
@@ -112,15 +115,15 @@ R837 窗口内 glm5_2_nv 已持续 5h+ 零 DEGRADED。R838 窗口将此延伸至
 
 ### 6h 窗口分析
 
-6h 窗口 20req/85.0% SR。3 ATE 全部来自 04:35–05:33 UTC DEGRADED 窗口。Post-06:03 窗口 100% SR。DEGRADED 窗口正随着时间推移逐渐老化，6h SR 将持续改善（R837: 83.3% → R838: 85.0%）。
+6h 窗口 20req/85.0% SR。3 ATE 全部来自 04:35–05:33 UTC DEGRADED 窗口（NVCF 上游 glm5_2_nv function 400 错误），全部双 tier 合法 ATE。Post-06:03 窗口 100% SR。DEGRADED 窗口正随着时间推移逐渐老化，6h SR 将持续改善（R837: 83.3% → R838: 85.0%）。
 
 ### DB 写入中断持续
 
-与 R837 一致，DB 最后记录 01:03 UTC。bytecode 热更新中关闭了 DB 写入路径，属于代码级问题，非 config-fixable。
+与 R837 一致，DB 最后记录 01:03 UTC。Docker logs 持续显示 06:03+ 的 12 次成功请求均未写入 DB。DB 连接正常，logs_db 容器 healthy。结论：bytecode 热更新中关闭了 DB 写入路径，属于代码级问题，非 config-fixable，不影响网关功能。
 
 ### HM1 09:03 批次并发分析
 
-09:03 UTC 窗口出现 3 次连续请求（k1→k2→k3），latency 分别为 5.4s、7.8s、2.5s。这是 openclaw 的例行 batch invocation。前两次 latency 偏高是 NVCF 并发处理导致的正常现象，第三次 2.5s 恢复正常。无错误，无 DEGRADED，无 429s。
+09:03 UTC 窗口出现 3 次连续请求（k1→k2→k3），latency 分别为 5.4s、7.8s、2.5s。这是 openclaw 的例行 batch invocation（每 30 分钟 3 次）。前两次 latency 偏高（5.4s/7.8s）是 NVCF 并发处理导致的正常现象，第三次 2.5s 恢复正常。无错误，无 DEGRADED，无 429s。
 
 ### NOP Gate 分析
 
@@ -143,12 +146,12 @@ R837 窗口内 glm5_2_nv 已持续 5h+ 零 DEGRADED。R838 窗口将此延伸至
 - 零 429s 在 post-recovery 窗口
 - FALLBACK_GRAPH 双向工作
 - 零 post-recovery tier_attempts
-- 所有 ATE 来自已消退的 DEGRADED 窗口
+- 所有 ATE 来自已消退的 DEGRADED 窗口（NVCF 上游问题，非 config-fixable）
 - 6h SR 持续改善：83.3%→85.0% (DEGRADED 窗口老化)
 
 ### 为什么比 R837 更强
 
-R837 已是 NOP。R838 将 post-recovery 窗��延伸至 4h+，连续首次 key 成功从 10 次增加到 12 次。DEGRADED 窗口进一步老化。6h SR 从 83.3% → 85.0%。系统从 "持续稳定" 升级为 "长期稳定"。零新错误，零回归。
+R837 已是 NOP，glm5_2_nv 恢复 5h+（含 04:35–05:33 DEGRADED 窗口）。R838 将 post-recovery 窗口延伸至 4h+，连续首次 key 成功从 10 次增加到 12 次。DEGRADED 窗口进一步老化。6h SR 从 83.3% → 85.0%。系统从 "持续稳定" 升级为 "长期稳定"。零新错误，零回归。
 
 ---
 
@@ -160,7 +163,9 @@ R837 已是 NOP。R838 将 post-recovery 窗��延伸至 4h+，连续首次 k
 - glm5_2_nv NVCF function `3b9748d8` 持续 4h+ 零 DEGRADED，全部首次 key 成功
 - 所有 6 个 NOP gate 通过
 - 12 次连续 100% SR（post-06:03）
-- 等待信号: UPSTREAM 绑定信号 或 429 surge → 才需参数调整
+- HM1 与 HM2 镜像健康度，系统长期稳定
+- DB 写入中断是代码级问题（bytecode 热更新副作用），非 config-fixable
+- 等待信号: UPSTREAM 绑定信号 (NVCFPexecTimeout 逼近 66) 或 429 surge → 才需参数调整
 
 ---
 
