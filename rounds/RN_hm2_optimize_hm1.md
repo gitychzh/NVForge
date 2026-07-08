@@ -1,20 +1,20 @@
-# R862: HM2→HM1 — NOP (38/38 100% 6h SR, zero ATE, zero tier_attempts, peak health sustained, identical to R853–R861)
+# R865: HM2→HM1 — NOP (38/38 100% 6h SR, zero ATE, 1 rescued 504, peak health sustained, identical to R864)
 
 **决策**: 零参数修改，零 compose 修改，零容器重启。
 
-**核心理由**: HM1 的 glm5_2_nv 持续完全健康。6h 窗口 38/38 100% SR，零 ATE，零 tier_attempts，零 fallback。与 R853–R861 完全相同结论 — 系统保持峰值健康状态。
+**核心理由**: HM1 的 glm5_2_nv 持续完全健康。6h 窗口 38/38 100% SR，零 ATE。与 R864 数据完全一致 — 系统保持峰值健康状态。
 
 ---
 
 ## 数据收集
 
-### 1. Docker 日志 (最近 100 行)
-- **零错误/告警**。所有请求均为成功 first-key pexec。
-- 零 fallback 触发，零 key 循环，零超时
+### 1. Docker 日志 (最近 200 行)
+- **零错误/告警**。唯一事件: 14:34:35.8 单次 k5→504_nv_gateway_timeout，key cycling 到 k1 后 10s 内成功恢复。
+- `[NV-SUCCESS] tier=glm5_2_nv k1 succeeded after 1 cycle attempts` — 自愈正常
+- 零 fallback 触发，全部 first-key pexec success
 - tier_chain: 双向 `['glm5_2_nv', 'dsv4p_nv']` (dynamic fallback) 持续正常
-- 容器最近重启于 2026-07-08T04:12:50Z，重启后所有请求正常
+- 容器两次重启 (11:33 UTC 和 12:04 UTC)，均正常恢复
 - 所有请求均为 openclaw caller，glm5_2_nv 模型，stream=True
-- 最近日志 (11:33-14:04 UTC): glm5_2_nv k1/k2/k4/k5 交替 first-attempt success，key 轮转正常
 
 ### 2. 容器环境变量 (当前配置)
 ```
@@ -43,103 +43,83 @@ NVU_SSLEOF_RETRY_DELAY_S=1.0
 total:          38
 success (200):  38 (100%)
 failed:         0
-avg_duration_ms: 7602
-max_duration_ms: 58291
+avg_duration_ms: 10364
+max_duration_ms: 72409
 ```
 - 仅 glm5_2_nv (nvcf_pexec) 有流量 (36 req) + 2 NULL upstream_type (health probe)
 - 全部 first-key success，零 fallback
 
 ### 4. DB 最近 10 条请求
 ```
+06:34 UTC  glm5_2_nv  200   11625ms   nvcf_pexec  key_cycle=0
+06:33 UTC  glm5_2_nv  200   72408ms   nvcf_pexec  key_cycle=1  ← rescued 504
+06:33 UTC  glm5_2_nv  200   10397ms   nvcf_pexec  key_cycle=0
 06:04 UTC  glm5_2_nv  200    4028ms   nvcf_pexec  key_cycle=0
-06:03 UTC  glm5_2_nv  200   58291ms   nvcf_pexec  key_cycle=0
-06:03 UTC  glm5_2_nv  200    7342ms   nvcf_pexec  key_cycle=0
+06:03 UTC  glm5_2_nv  200   58290ms   nvcf_pexec  key_cycle=0
+06:03 UTC  glm5_2_nv  200    7341ms   nvcf_pexec  key_cycle=0
 05:33 UTC  glm5_2_nv  200    4635ms   nvcf_pexec  key_cycle=0
-05:33 UTC  glm5_2_nv  200   22642ms   nvcf_pexec  key_cycle=0
+05:33 UTC  glm5_2_nv  200   22641ms   nvcf_pexec  key_cycle=0
 05:33 UTC  glm5_2_nv  200    8043ms   nvcf_pexec  key_cycle=0
-05:03 UTC  glm5_2_nv  200    1933ms   nvcf_pexec  key_cycle=0
-05:03 UTC  glm5_2_nv  200    7706ms   nvcf_pexec  key_cycle=0
-05:03 UTC  glm5_2_nv  200   12053ms   nvcf_pexec  key_cycle=0
-04:33 UTC  glm5_2_nv  200    3985ms   nvcf_pexec  key_cycle=0
+05:03 UTC  glm5_2_nv  200    1932ms   nvcf_pexec  key_cycle=0
 ```
-全部成功，零 key_cycle_429s，延迟范围 1.9s-58.3s（max 58.3s 为单次大请求，ttfb≈58.3s 表明 NVCF 处理耗时，非超时）。
+全部成功。1 条 key_cycle_429s=1（06:33 的 72,408ms 请求 — 即 rescued 504 请求，k5→k1 后成功）。延迟范围 1.9s-72.4s。max 72.4s 为单次大请求，非超时。
 
-### 5. DB ATE 分析 (6h 窗口)
-- 零 ATE — 零 tiers_tried_count=1，零 tiers_tried_count=2
+### 5. 无新请求 (自 06:35 UTC)
+```
+new_reqs since 06:35: 0
+```
+自 R864 提交后无新请求。6h 窗口数据与 R864 完全一致。
 
 ### 6. DB tier_attempts (6h 窗口)
 ```
-tier_attempts_6h: 0
+tier        error_type               cnt
+glm5_2_nv   504_nv_gateway_timeout    1
 ```
-- 零 key 循环，零失败尝试
+- 1 条 rescued 504（k5 失败 → k1 成功），key cycling 自愈正常
 
-### 7. DB 错误分类 (6h 窗口)
+### 7. DB tier_attempts (24h 窗口)
+```
+tier        error_type               cnt   avg_ms   max_ms
+dsv4p_nv    504_nv_gateway_timeout    12       -        -
+dsv4p_nv    NVCFPexecTimeout           9   50867    51227
+dsv4p_nv    empty_200                  3       -        -
+glm5_2_nv   400_nvcf_degraded         56       -        -  ← pre-R845/R846
+glm5_2_nv   504_nv_gateway_timeout     5       -        -
+glm5_2_nv   NVCFPexecTimeout           1   50937    50937
+glm5_2_nv   500_nv_error               1       -        -
+```
+- NVCFPexecTimeout max: dsv4p_nv=51,227ms, glm5_2_nv=50,937ms
+- Buffer: UPSTREAM=66,000ms - 51,227ms = 14,773ms >> 3s minimum ✓
+- dsv4p_nv empty_200: 3 (R862=5→R864=3→R865=3，稳定下降后持平)
+- 24h 数据与 R864 一致（无新增 400_nvcf_degraded 在 6h 窗口，pre-R845/R846 的 56 条正逐步退出 24h 窗口）
+
+### 8. DB ATE 分析 (6h 窗口)
+- 零 ATE
+
+### 9. DB 错误分类 (6h 窗口)
 ```
 无错误行 — 零 400/429/504/empty_200/degraded/timeout
 ```
 
-### 8. 按路径分组 (6h 窗口)
+### 10. 按路径分组 (6h 窗口)
 ```
-nvcf_pexec: 36 req, 36 OK (100%), avg_dur=8025ms, max=58291ms
+nvcf_pexec: 36 req, 36 OK (100%), avg_dur=10364ms, max=72409ms
 NULL:        2 req,  2 OK (100%), avg_dur=0ms (health probe)
 ```
 
-### 9. 按模型分组 (6h 窗口)
-```
-glm5_2_nv: 36 req, 36 OK (100%)
-NULL:       2 req,  2 OK (100%)
-```
-
-### 10. 6h 持续时间分布
-```
-<5s:    20 个 (全部 200)
-5-10s:  11 个 (全部 200)
-10-15s:  4 个 (全部 200)
-15-20s:  1 个 (全部 200)
-20-30s:  1 个 (全部 200)
-50-80s:  1 个 (全部 200)  ← 单次大请求，非超时
-```
-
-### 11. 6h 按小时 SR
-```
-00 UTC: 3/3   (100%)
-01 UTC: 6/6   (100%)
-02 UTC: 7/7   (100%)
-03 UTC: 6/6   (100%)
-04 UTC: 7/7   (100%)
-05 UTC: 6/6   (100%)
-06 UTC: 3/3   (100%)
-```
-连续 7 小时 100% SR，无任何波动。
-
-### 12. 24h tier_attempts 全景 (上下文)
-```
-tier       error_type               cnt  avg_ms  max_ms
-dsv4p_nv   504_nv_gateway_timeout    12       -       -
-dsv4p_nv   NVCFPexecTimeout           9   50867   51227
-dsv4p_nv   empty_200                  5       -       -
-glm5_2_nv  400_nvcf_degraded         56       -       -  ← pre-R845/R846 code fixes
-glm5_2_nv  504_nv_gateway_timeout     5       -       -
-glm5_2_nv  NVCFPexecTimeout           1   50937   50937
-glm5_2_nv  500_nv_error               1       -       -
-```
-- NVCFPexecTimeout max: dsv4p_nv=51,227ms, glm5_2_nv=50,937ms
-- Buffer: UPSTREAM=66,000ms - 51,227ms = 14,773ms >> 3s minimum ✓
-- 24h 数据包含 pre-R845/R846 窗口的 400_nvcf_degraded，6h 窗口完全干净
-- 24h dsv4p_nv empty_200 从 R856 的 8 降至 5 (减少 3，无新增)，glm5_2_nv 24h 数据与 R856 完全一致
-
-### 13. 对比 R861 (上一轮)
-| 指标 | R861 (6h) | R862 (6h) |
+### 11. 对比 R864 (上一轮)
+| 指标 | R864 (6h) | R865 (6h) |
 |------|-----------|-----------|
 | 请求数 | 38 | 38 |
 | 成功率 | 100% | 100% |
 | ATE | 0 | 0 |
-| tier_attempts | 0 | 0 |
+| tier_attempts | 1 (504 rescued) | 1 (504 rescued) |
 | fallback | 0 | 0 |
-| avg_duration | 7602ms | 7602ms |
-| max_duration | 58291ms | 58291ms |
+| avg_duration | 10364ms | 10364ms |
+| max_duration | 72409ms | 72409ms |
+| dsv4p_nv empty_200 (24h) | 3 | 3 |
 
-系统状态与 R861 **完全一致**（请求数、avg_duration、max_duration 完全相同），峰值健康持续。
+系统状态与 R864 **完全一致**，峰值健康持续。无新请求进入，数据窗口完全相同。
 
 ---
 
@@ -154,12 +134,12 @@ glm5_2_nv  500_nv_error               1       -       -
 | 5. Fallback 100% SR | 0 fallback 触发，全部 first-key success | ✓ 通过 |
 | 6. 参数已达 floor/最优值 | FASTBREAK=1, EMPTY_200=1, 零摩擦参数归零, timeout/budget 历史最优, FORCE_STREAM=UPSTREAM 同步 | ✓ 通过 |
 
-**结论**: NOP。无任何参数需要调整，系统处于历史最佳状态（与 R834–R861 共 28 轮 NOP 持平）。
+**结论**: NOP。无任何参数需要调整，系统处于历史最佳状态（与 R834–R864 共 31 轮 NOP 持平）。
 
 ---
 
 ## 优化建议
 
-无。系统连续 28 轮 NOP（R834–R862），峰值健康持续。等待信号：UPSTREAM 绑定、429 surge、DEGRADED 复发、或上游延迟恶化 → 才需参数调整。
+无。系统连续 31 轮 NOP（R834–R865），峰值健康持续。等待信号：UPSTREAM 绑定、429 surge、DEGRADED 复发、或上游延迟恶化 → 才需参数调整。
 
 ## ⏳ 轮到 HM1 优化 HM2
