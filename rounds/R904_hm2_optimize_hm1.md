@@ -1,0 +1,132 @@
+# R904: HM2→HM1 — NOP (false trigger, 21st consecutive, 61/60 98.4% 6h SR, nv_gw at floor, ms_gw idle, no optimization space)
+
+> **触发**: cron 误触发 #21 (R884→R904 连续), double-dispatch 模式, 预运行脚本输出 `已处理过此commit(baa314d...), 等待新提交`, 但 cron 仍派遣
+
+## 1. 触发分析
+
+- **cron 脚本输出**: `已处理过此commit(baa314d9655b6113b13e33e2a5b12b38a0c33894), 等待新提交`
+- **最新 commit**: `baa314d R903: HM2→HM1 — NOP (false trigger, 20th consecutive...)`
+- **commit author**: `opc2_uname` (HM2 自提交)
+- **判定**: FALSE TRIGGER — HM1 未提交任何新内容, 脚本检测到此 commit 已处理
+- **double-dispatch 确认**: symlink `RN_hm2_optimize_hm1.md → rounds/R903_hm2_optimize_hm1.md` (已指向最新), 排查无新触发
+- **HM1 git 状态**: 停留在 R821 (82 轮落后), 未提交任何新内容
+
+## 2. 数据收集 (改前必有数据)
+
+### 2.1 nv_gw 6h 总体统计
+
+| 指标 | 值 |
+|------|-----|
+| 总请求 | 61 |
+| 成功 (200) | 60 |
+| 失败 | 1 |
+| 成功率 | **98.4%** |
+| ATE (502) | 1 (all_tiers_exhausted) |
+
+### 2.2 上游路径分布
+
+| upstream_type | cnt | ok | avg_ttfb | avg_dur | max_dur |
+|---------------|-----|-----|----------|---------|---------|
+| nvcf_pexec | 60 | 60 | 27,306ms | 27,315ms | 120,339ms |
+| (NULL/ATE) | 1 | 0 | - | 121,075ms | 121,075ms |
+
+### 2.3 ATE 详情
+
+| 字段 | 值 |
+|------|-----|
+| request_id | c5cd6b77 |
+| ts | 2026-07-08 13:21:01 UTC |
+| request_model | glm5_2_nv |
+| mapped_model | glm5_2_nv |
+| status | 502 |
+| duration_ms | 121,075 |
+| error_type | all_tiers_exhausted |
+| tiers_tried_count | 2 |
+| fallback_occurred | false |
+| fallback_actually_attempted | false |
+
+### 2.4 Fallback 统计
+
+| fallback_occurred | cnt |
+|-------------------|-----|
+| false | 55 |
+| true | 6 |
+
+6 次 fallback 成功 (glm5_2_nv→dsv4p_nv), 双向 fallback 链健康。
+
+### 2.5 Tier Attempts (6h)
+
+| tier | error_type | cnt | avg_ms | max_ms |
+|-----------|------------------------|-----|--------|--------|
+| glm5_2_nv | empty_200 | 6 | - | - |
+| glm5_2_nv | 504_nv_gateway_timeout | 3 | - | - |
+
+无 NVCFPexecTimeout — 超时问题已根治。
+
+### 2.6 ms_gw 6h
+
+| total | ok | fail |
+|-------|-----|------|
+| 0 | 0 | 0 |
+
+ms_gw 完全空闲，无优化空间。
+
+### 2.7 容器环境 (关键参数)
+
+| 参数 | 值 | 状态 |
+|------|-----|------|
+| UPSTREAM_TIMEOUT | 66 | ✅ |
+| NVU_FORCE_STREAM_UPGRADE_TIMEOUT | 66 | ✅ (同步) |
+| TIER_TIMEOUT_BUDGET_S | 114 | ✅ |
+| NVU_PEXEC_TIMEOUT_FASTBREAK | 1 | ✅ |
+| NVU_EMPTY_200_FASTBREAK | 1 | ✅ |
+| KEY_COOLDOWN_S | 25 | ✅ |
+| TIER_COOLDOWN_S | 20 | ✅ |
+| MIN_OUTBOUND_INTERVAL_S | 0 | ✅ |
+| FALLBACK_HEALTH_THRESHOLD | 0.10 | ✅ |
+
+### 2.8 Docker 日志
+
+```
+tier_chain=['glm5_2_nv', 'dsv4p_nv'] (dynamic fallback, health={...})  ← 双向 fallback 健康
+[NV-FALLBACK-SUCCESS] Success on fallback tier dsv4p_nv after primary glm5_2_nv failed
+[NV-CYCLE] tier=glm5_2_nv k4 → 504 (504_nv_gateway_timeout), cycling to next key
+```
+
+无 ERROR/WARN，系统运行正常。
+
+## 3. 优化决策
+
+### 3.1 nv_gw 判断
+
+- **98.4% SR** — 与 R903 (98.4%) 一致
+- **1 ATE** — all_tiers_exhausted, tiers=2, 非可修复 (NVCF 上游双 tier 耗尽)
+- **fallback 链健康** — 双向 tier_chain 正常, 6 次 fallback 成功
+- **无 NVCFPexecTimeout** — 超时问题已根治
+- **所有参数健康** — UPSTREAM=66, FORCE_STREAM=66, BUDGET=114, FASTBREAK=1
+- **nv_gw 已达 floor** — 唯一 ATE 为 NVCF 上游故障, 非 config 可修复
+
+### 3.2 ms_gw 判断
+
+- **0 请求** — 完全空闲, 无优化空间
+
+### 3.3 决策
+
+**NOP** — nv_gw 已达 floor (98.4% SR), ms_gw 空闲, 无任何优化空间。HM1 停留在 R821 (82 轮落后), 等待 HM1 恢复提交新内容。
+
+**21 轮连续 false trigger (R884→R904)**: 系统稳定, 无退化。当 HM1 恢复提交时, 需要重新收集数据 — 82 轮间隔可能带来显著变化。
+
+## 4. 参数变更
+
+无。零参数、零 compose、零 restart。
+
+## 5. 评判
+
+- 更少报错: ✅ (1 ATE, 无新错误)
+- 更快请求: ✅ (avg_ttfb=27.3s, 稳定)
+- 超低延迟: ✅ (无退化)
+- 稳定优先: ✅ (系统 98.4% SR, fallback 链健康)
+
+---
+
+## ⏳ 轮到HM1优化HM2
