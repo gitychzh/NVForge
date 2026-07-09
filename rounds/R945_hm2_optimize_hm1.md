@@ -1,0 +1,168 @@
+# HM2 Optimize HM1 — Round R945
+
+**Time:** 2026-07-09 08:35 UTC  
+**Trigger:** False trigger (double-dispatch). Cron pre-run script correctly detected `"这是我提交的, 不触发"` but agent was still dispatched. R944 already committed (NOP).  
+**Decision:** **NOP** — all nv_gw params at floor, 38/38 100% SR 6h, zero errors.
+
+---
+
+## 1. 触发分析
+
+cron 脚本输出:
+```
+HEAD is now at b7c5538 R944: HM2→HM1 — NOP (false trigger, 61st consecutive, 39/39 100% 6h SR, all params at floor, zero errors, zero ATE)
+[2026-07-09 08:35:17] 这是我提交的, 不触发
+```
+
+- 最新 commit = R944 (HM2/opc2_uname 提交的 NOP)
+- 脚本正确检测到自提交并标记 "不触发"
+- cron 仍被派遣 — 误触发 (double-dispatch: R944 已提交+push 完毕)
+- HM1 本地 git log 停留在 R821 (124 轮落后，非阻塞)
+- 确认：false trigger
+
+## 2. HM1 nv_gw 数据收集
+
+### 2.1 Docker Logs (最近 50 行)
+全部 [NV-SUCCESS]，零 ERROR/WARN/Exception/Traceback。所有请求 `glm5_2_nv` → pexec key 1-5 轮流，首次尝试成功。
+
+### 2.2 容器 Env Vars (关键参数)
+```
+UPSTREAM_TIMEOUT: 64
+TIER_TIMEOUT_BUDGET_S: 114
+KEY_COOLDOWN_S: 25
+TIER_COOLDOWN_S: 25
+MIN_OUTBOUND_INTERVAL_S: 0
+NV_INTEGRATE_KEY_COOLDOWN_S: 0
+NVU_CONNECT_RESERVE_S: 0
+NVU_FORCE_STREAM_UPGRADE_TIMEOUT: 64
+NVU_EMPTY_200_FASTBREAK: 3
+NVU_PEXEC_TIMEOUT_FASTBREAK: 1
+NVU_SSLEOF_RETRY_DELAY_S: 1.0
+FALLBACK_HEALTH_THRESHOLD: 0.05
+KEY_AUTHFAIL_COOLDOWN_S: 60
+NVU_PEER_FB_SKIP_MODELS: glm5_2_nv,dsv4p_nv
+NV_INTEGRATE_MODELS: (empty → all pexec)
+NVU_FORCE_STREAM_UPGRADE: 0
+```
+全部与 compose 一致，容器状态最新。
+
+### 2.3 DB — 6h 总体统计
+```
+total | ok | fail
+    38 | 38 |    0
+```
+100% SR，零 fail。
+
+### 2.4 DB — 6h 按路径
+```
+upstream_type | cnt | ok | avg_ttfb | avg_dur | max_dur
+nvcf_pexec    |  38 | 38 |     7364 |    7364 |   67241
+```
+全部 pexec，零 integrate。avg TTFB=7.4s，max=67.2s。
+
+### 2.5 DB — 6h 错误分类
+```
+error_type | cnt
+-----------+-----
+(0 rows)
+```
+零错误。
+
+### 2.6 DB — 6h 请求延迟（最近 10 条）
+```
+ts               | model       | mapped  | status | ttfb_ms | dur_ms | upstream | 429s
+2026-07-09 00:33:43 | glm5_2_nv   | glm5_2_nv | 200 |   2678 |   2678 | nvcf_pexec | 0
+2026-07-09 00:33:30 | glm5_2_nv   | glm5_2_nv | 200 |  12075 |  12075 | nvcf_pexec | 0
+2026-07-09 00:33:21 | glm5_2_nv   | glm5_2_nv | 200 |   5766 |   5767 | nvcf_pexec | 0
+2026-07-09 00:03:38 | glm5_2_nv   | glm5_2_nv | 200 |   1916 |   1917 | nvcf_pexec | 0
+2026-07-09 00:03:27 | glm5_2_nv   | glm5_2_nv | 200 |  10273 |  10273 | nvcf_pexec | 0
+2026-07-09 00:03:21 | glm5_2_nv   | glm5_2_nv | 200 |   3535 |   3536 | nvcf_pexec | 0
+2026-07-08 23:34:36 | glm5_2_nv   | glm5_2_nv | 200 |   3035 |   3035 | nvcf_pexec | 0
+2026-07-08 23:34:32 | glm5_2_nv   | glm5_2_nv | 200 |   3718 |   3719 | nvcf_pexec | 0
+2026-07-08 23:33:21 | glm5_2_nv   | glm5_2_nv | 200 |  67241 |  67241 | nvcf_pexec | 0
+2026-07-08 23:03:36 | glm5_2_nv   | glm5_2_nv | 200 |   2160 |   2160 | nvcf_pexec | 0
+```
+全部 glm5_2_nv (openclaw)，全 200 OK，全 key_cycle_429s=0。p50~3.5s，p95~12s，1 outlier 67.2s (NVCF upstream slow，非本地故障)。
+
+### 2.7 DB — 6h Fallback 统计
+```
+fallback_occurred | cnt
+f                 |  38
+```
+零 fallback — 所有请求第一次 key/tier 即成功。
+
+### 2.8 DB — 24h 错误全景
+```
+error_type         | cnt
+all_tiers_exhausted |   1
+```
+仅 1 ATE (2026-07-08 13:21 UTC)：glm5_2_nv → 尝试了 glm5_2_nv + dsv4p_nv 两个 tier，均失败。
+
+### 2.9 nv_tier_attempts — 24h 按 tier+error
+```
+tier       | error_type             | cnt | avg_ms | max_ms
+glm5_2_nv  | 504_nv_gateway_timeout |   8 |        |       
+glm5_2_nv  | empty_200              |   6 |        |       
+glm5_2_nv  | NVCFPexecTimeout       |   1 |  51475 |  51475
+dsv4p_nv   | NVCFPexecTimeout       |   1 |  52849 |  52849
+dsv4p_nv   | empty_200              |   1 |        |       
+```
+均为 NVCF 上游服务端异常（504 gateway timeout、empty_200、pexec timeout），非本地 config 可修复。
+
+### 2.10 ms_gw 数据
+```
+total | ok | fail
+     0 |  0 |    0
+```
+ms_gw 6h 零请求。EMPTY_200_FASTBREAK_THRESHOLD=3 已优化（R824/R829），KEY_COOLDOWN_S=60，无优化空间。
+
+## 3. 优化分析
+
+### 3.1 Floor 参数检查
+所有可调参数已至 floor：
+- `KEY_COOLDOWN_S=25` — 历史上修到 25 后零 429 稳定
+- `TIER_COOLDOWN_S=25` — 单 tier 架构 dead param，已与 KEY_COOLDOWN 对齐
+- `MIN_OUTBOUND_INTERVAL_S=0` — 已完全取消 throttle
+- `NV_INTEGRATE_KEY_COOLDOWN_S=0` — 已完全取消 integrate key cooldown
+- `NVU_CONNECT_RESERVE_S=0` — 已取消 connect reserve
+- `NVU_SSLEOF_RETRY_DELAY_S=1.0` — 与 HM2 对称，0 次 SSLEOF
+- `NV_INTEGRATE_MODELS=""` — 全部走 pexec（避免 integrate timeout）
+- `NVU_EMPTY_200_FASTBREAK=3` — R829 修飞书不回复，与 ms_gw 对齐
+- `NVU_PEXEC_TIMEOUT_FASTBREAK=1` — R709 从 2→1，省 60s/ATE
+- `FALLBACK_HEALTH_THRESHOLD=0.05` — R708 从 0.10→0.05，更宽松保留微弱存活 fallback
+- `KEY_AUTHFAIL_COOLDOWN_S=60` — R922 新增，防御性参数
+- `NVU_PEER_FB_SKIP_MODELS=glm5_2_nv,dsv4p_nv` — R923 新增，避免 peer 回环
+- `UPSTREAM_TIMEOUT=64` — 历史多轮调优，当前 max pexec 成功=67.2s > 64（outlier，非频繁），BUDGET=114 安全
+- `NVU_FORCE_STREAM_UPGRADE_TIMEOUT=64` — 与 UPSTREAM 对齐
+- `TIER_TIMEOUT_BUDGET_S=114` — 足够的双 tier fallback 余量
+
+### 3.2 决策
+**NOP（无需优化）**：
+1. 6h 38/38 100% SR，零错误，零 ATE，零 key_cycle_429s
+2. 所有 floor 参数已在最激进取值无法再降
+3. UPSTREAM_TIMEOUT=64 和 BUDGET=114 保持安全余量 — 既无 burning edge 也无浪费
+4. 24h 仅 1 ATE (NVCF 上游 server-side，非本地 config 可修)
+5. ms_gw 零请求，无优化目标
+6. Docker logs 零 ERROR/WARN — 容器稳定运行
+
+**铁律遵守**: 只改 HM1 不改 HM2。本回合因 false trigger + 数据完美，不需任何配置修改。
+
+## 4. 参数状态总结
+
+| 参数 | 当前 | 状态 |
+|------|------|------|
+| UPSTREAM_TIMEOUT | 64 | 稳定 |
+| TIER_TIMEOUT_BUDGET_S | 114 | 稳定 |
+| MIN_OUTBOUND_INTERVAL_S | 0 | Floor |
+| KEY_COOLDOWN_S | 25 | Floor |
+| TIER_COOLDOWN_S | 25 | Floor (dead param) |
+| NV_INTEGRATE_KEY_COOLDOWN_S | 0 | Floor |
+| NVU_CONNECT_RESERVE_S | 0 | Floor |
+| NVU_FORCE_STREAM_UPGRADE_TIMEOUT | 64 | 与 UPSTREAM 对齐 |
+| NVU_EMPTY_200_FASTBREAK | 3 | 已优化 |
+| NVU_PEXEC_TIMEOUT_FASTBREAK | 1 | 已优化 |
+| FALLBACK_HEALTH_THRESHOLD | 0.05 | 已优化 |
+| KEY_AUTHFAIL_COOLDOWN_S | 60 | R922 已添加 |
+| NVU_PEER_FB_SKIP_MODELS | glm5_2_nv,dsv4p_nv | R923 已添加 |
+
+## ⏳ 轮到HM1优化HM2
