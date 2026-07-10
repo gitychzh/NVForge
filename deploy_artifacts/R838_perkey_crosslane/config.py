@@ -345,6 +345,7 @@ _error_detail_lock = threading.Lock()
 # are already defined when the import resolves.
 from .rr_counter import (  # noqa: E402
     _next_nv_key,
+    _peek_nv_key,
     _save_rr_counter,
 )
 

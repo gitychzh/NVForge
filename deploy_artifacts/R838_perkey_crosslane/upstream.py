@@ -43,6 +43,7 @@ from .config import (
     is_key_cooling, mark_key_cooling, reset_key429_count, KEY_COOLDOWN_S,
     TIER_COOLDOWN_S,
     is_key_auth_failed, mark_key_auth_failed,
+    _peek_nv_key,
     is_tier_degraded, mark_tier_degraded,
     NV_INTEGRATE_ENABLED, NV_INTEGRATE_HOST, NV_INTEGRATE_PATH,
     NV_INTEGRATE_KEY_COOLDOWN_S, NV_INTEGRATE_PATH_COOLDOWN_S, NV_INTEGRATE_MODELS,
@@ -967,17 +968,23 @@ def execute_request(handler, oai_body, mapped_model, request_id, metrics, t_star
                 _log("NV-FALLBACK", f"Tier {prev_tier} all-failed → "
                                     f"falling back to {tier_model}")
 
-            # R838: per-key 跨链路 — model 不在 NV_INTEGRATE_MODELS 但有 NV_KEY_INTEGRATE_KEYS
-            # 时, 指定 key(如 K5) 先试 integrate, 失败回退下方 pexec _try_tier_keys 全 key 轮转.
+            # R838b: per-key 跨链路 — RR 自然分散. peek 当前 RR key (不 advance), 若该 key 在
+            # NV_KEY_INTEGRATE_KEYS 则走 integrate (只试该 key), 否则走 pexec (RR 到该 key 起).
+            # 这样 K1-4 pexec 与 K5 integrate 按 RR 比例自然分担流量, 实现数据多样性.
             # 与 R572 互斥: model 在 NV_INTEGRATE_MODELS 走全 key integrate; 否则走 per-key 分支.
             _r838_keys = nv_key_integrate_keys_for(tier_model)
+            _peek_key = _peek_nv_key(tier_model) if (is_first_tier and _r838_keys) else -1
             if (is_first_tier and NV_INTEGRATE_ENABLED
                     and tier_model not in NV_INTEGRATE_MODELS
-                    and _r838_keys and not _integrate_is_path_cooling()):
+                    and _r838_keys and _peek_key in _r838_keys
+                    and not _integrate_is_path_cooling()):
+                _log("NV-R838B-LANE", f"tier={tier_model} RR peek=k{_peek_key+1} → integrate (per-key)")
                 integ_result = _try_integrate_keys(oai_body, tier_model, request_id, metrics, t_start,
                                                     is_stream, all_attempts, upstream_timeout_override,
-                                                    key_filter=_r838_keys)
+                                                    key_filter=[_peek_key])
                 if integ_result.success and not integ_result.empty_200:
+                    # integrate 命中后 advance RR (与 pexec 对齐, 保持轮转均匀)
+                    _next_nv_key(tier_model)
                     integ_result.fallback_tiers_used = [tier_model]
                     metrics["tier_model"] = integ_result.tier_model
                     metrics["fallback_tiers_used"] = integ_result.fallback_tiers_used
@@ -985,9 +992,11 @@ def execute_request(handler, oai_body, mapped_model, request_id, metrics, t_star
                         _log("NV-STARTUP-RETRY-SUCCESS", f"Startup retry #{retry_idx} succeeded (integrate per-key)")
                         metrics["startup_retry"] = retry_idx
                     return integ_result
-                # per-key integrate 失败 → 落到下方 pexec _try_tier_keys 全 key 轮转 (含 K5 pexec 兜底).
-                _log("NV-INTEGRATE-PERKEY-FALLBACK", f"tier={tier_model} per-key integrate failed → falling back to pexec")
+                # per-key integrate 失败 → 落到下方 pexec _try_tier_keys 全 key 轮转 (含该 key pexec 兜底).
+                _log("NV-INTEGRATE-PERKEY-FALLBACK", f"tier={tier_model} k{_peek_key+1} integrate failed → falling back to pexec")
                 all_attempts = list(integ_result.key_cycle_attempts)
+                # integrate 失败也 advance RR (避免下次仍 peek 到同一坏 key)
+                _next_nv_key(tier_model)
             # R572: 首选 integrate 直连路径 (仅 first tier + NV_INTEGRATE_MODELS + path 未冷却).
             # integrate 全 key 失败/全 429 → 回退下方 pexec _try_tier_keys (同一 tier_model).
             elif (is_first_tier and NV_INTEGRATE_ENABLED and tier_model in NV_INTEGRATE_MODELS
