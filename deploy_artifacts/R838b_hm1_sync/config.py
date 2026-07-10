@@ -1,0 +1,441 @@
+#!/usr/bin/env python3
+"""Configuration for NV proxy (nv_gw) — single-model dsv4p_nv, 三 agent 通用.
+
+unify-nv (2026-06-30): 内部 model key 从 deepseek_hm_nv 改为 dsv4p_nv, 反映
+      通用语义 (供 hermes/opencode/openclaw 三 agent 共用, 非 Hermes 专属).
+      旧名 deepseek_hm_nv 保留为 alias 向后兼容.
+R274: Removed kimi dead code. The proxy serves exactly one model —
+      dsv4p_nv (deepseek-v4-pro) — via NVCF pexec. No tier fallback.
+
+Chain: agent (hermes/opencode/openclaw) → nv_gw → NVCF pexec
+       (orion-deepseek-v4-pro, ACTIVE) → per-key SOCKS5 → mihomo/direct → NV API.
+
+5 keys (k1→k5) round-robin with a persistent RR counter (全局共享, N+1 跨 agent
+连续, 重启续接). A request fails only when all 5 keys are exhausted
+(429 / empty 200 / timeout) within the tier budget — there is no model fallback.
+
+Reng (HM1 self-change, authorized): modularized for long-term maintainability.
+RR counter state machine → gateway/rr_counter.py; 429 cooldown state machine
+→ gateway/cooldown.py; NVCF connection layer → gateway/nvcf_conn.py; pexec
+request construction/validation → gateway/pexec.py. This file now holds pure
+configuration + throttle_outbound only. Logic is byte-for-byte equivalent;
+all downstream `from .config import ...` statements keep working via re-export.
+"""
+import os
+import sys
+import time
+import threading
+
+# ─── Network ──────────────────────────────────────────────────────────────
+LISTEN_HOST = "0.0.0.0"
+LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "40006"))
+PROXY_TIMEOUT = int(os.environ.get("PROXY_TIMEOUT", "300"))
+UPSTREAM_TIMEOUT = int(os.environ.get("UPSTREAM_TIMEOUT", "30"))  # CC-2026-07-01: 45->30, NVCF挂死超时更快放弃切key; compose env 同步  # R38.5: 60→45 (NV p95<30s)
+
+# ─── Gateway auth (局域网 agent 共享 key, 2026-06-30) ──────────────────────
+# 空 = 不校验(向后兼容); 非空 = /v1/* 须带 Authorization: Bearer <NVU_GATEWAY_API_KEY>
+# 或 x-api-key: <NVU_GATEWAY_API_KEY>. /health 与 CORS preflight 免鉴权.
+# 默认 nv-local (与 hermes config model.api_key 一致, 局域网 agent 共用).
+NVU_GATEWAY_API_KEY = os.environ.get("NVU_GATEWAY_API_KEY", "nv-gw-token")
+
+# ─── Proxy Role ────────────────────────────────────────────────────────────
+# "passthrough" — serves /v1/chat/completions (OpenAI format)
+PROXY_ROLE = os.environ.get("PROXY_ROLE", "passthrough")
+
+# ─── Logging ──────────────────────────────────────────────────────────────
+LOG_DIR = os.environ.get("LOG_DIR", "/app/logs")
+
+# ─── NVCF pexec configuration (三模型 pass-through, 各 agent 各后端) ──────
+# 3model (2026-07-01): 从单 dsv4p_nv 坍缩态扩为多模型直路由, 三 agent 各对应一真实后端.
+#   hermes   → kimi_nv  (f966661c nvquery-kimi-k2_6)
+#   opencode → dsv4p_nv (74f02205 ai-deepseek-v4-pro)
+#   openclaw → glm5_2_nv (3b9748d8 ai-glm-5_2)
+# R704 (2026-07-05): 已下架的旧 tier 此处移除, 仅保留 kimi/dsv4p/glm5_2 三模型.
+# 思考能力抓包实测 (key1 直连 NVCF, 完整 dump 全字段, 足 max_tokens + 推理题):
+#   - dsv4p 74f02205(ai-deepseek): 普通模式最快(1.8-4.9s 首字节). thinking:{type:enabled}/reasoning_effort
+#     都会让 74f02205 进入慢推理模式(首字节 12-49s) → strip 全部思考参数, inject 空.
+#   - kimi f966661c: reasoning_effort/thinking/chat_template_kwargs 三种都触发, 用 reasoning_effort.
+#   - glm5_2 3b9748d8: chat_template_kwargs.enable_thinking 唯一有效 (reasoning_effort 无效, rc=None).
+# 教训: NVCF 每个 function 思考触发参数各不相同, 不能假设统一, 必须逐个完整 dump 抓包.
+# inject 字段语义: dict, key=要注入的 body 参数路径, value=要设的值; 客户端已自带该参数则不覆盖.
+NVCF_BASE_URL = os.environ.get("NVCF_BASE_URL", "api.nvcf.nvidia.com")
+# R_multi (2026-07-02): function_id → function_ids (有序候选列表).
+# NVCF function 有 ACTIVE→DEGRADING→DEGRADED→INACTIVE 生命周期 + 间歇 surge 故障.
+# 单一 function 一旦 surge/下架, 该模型全网不可用. 多候选 + func_health 健康度自动切换:
+# handlers/upstream 按 per-function 健康度选首个健康候选, surge 的自动跳过, 恢复后自动回切.
+# 顺序 = 首选优先; env 可覆盖首选 (NVCF_*_FUNCTION_ID 覆盖候选[0]).
+NVCF_PEXEC_MODELS = {
+    "kimi_nv": {
+        # 首选 f966661c (nvquery-kimi-k2_6, ACTIVE, 中国直连秒回); 备选 f966661c 同 id 无其他 ACTIVE 候选 → 单元素
+        "function_ids": [os.environ.get("NVCF_KIMI_FUNCTION_ID",
+                                        "f966661c-790d-4f71-b973-c525fb8eafd4")],
+        "strip_params": ["thinking_budget"],  # NVCF 拒 thinking_budget → 400
+        # R833b: 思考模式最高档. 抓包实测 reasoning_effort 是 kimi 思考触发参数,
+        #   各档(low/medium/high/minimal)都产生 reasoning_content, high=OpenAI标准最高档.
+        #   re=high 实测 rc_len≈520, content 正常, fin=stop, 6-8s. max 非标准档(被降级), 用 high.
+        "inject": {"reasoning_effort": "high"},
+    },
+    "dsv4p_nv": {
+        # 首选 74f02205 (ai-deepseek-v4-pro, ACTIVE, 中国直连秒回); 备选 8915fd28 (sglang, surge 间歇挂死, 恢复时可用)
+        "function_ids": [os.environ.get("NVCF_DEEPSEEK_FUNCTION_ID",
+                                        "74f02205-c7ba-438f-b81a-2537955bd7ec")],
+        "strip_params": ["reasoning_effort", "stream_options", "thinking"],  # reasoning_effort: strip 客户端 xhigh (openclaw thinkingDefault). stream_options: handlers.py:196 给所有 stream 请求加 stream_options.include_usage, 但 74f02205 带该字段首字节 5x 慢且常挂死. thinking: strip 客户端/防旧 inject.
+        # ★ R694 抓包实测 (2026-07-04) — 四段递进定位:
+        #   1) integrate 端点对 deepseek-v4-pro 30s 挂死 → NV_INTEGRATE_MODELS 设空, 全走 pexec.
+        #   2) pexec 74f02205 + stream_options.include_usage → 首字节 2.8→14.1s 且常 28s timeout → strip stream_options.
+        #   3) pexec 74f02205 + thinking:{type:enabled} + 复杂prompt → 首字节 12-49s → timeout → strip thinking.
+        #   4) pexec 74f02205 + reasoning_effort=medium (无 thinking) + 代码prompt → 首字节 >40s (still slow!).
+        #      但完全无思考参数 → 首字节 1.8-4.9s ✅. 结论: reasoning_effort=medium 也会让 74f02205 进入慢推理模式
+        #      (即便不输出 rc 字段). 故 inject 必须为空 — 不注入任何思考参数, deepseek 普通模式秒回.
+        #   - 8915fd28(sglang, failover): 同一 strip 也去掉 reasoning_effort, sglang 普通模式也快 (不触发思考).
+        #   方案: strip reasoning_effort + stream_options + thinking, inject 空 {}.
+        #   74f02205 普通模式首字节 1.8-4.9s, 25s UPSTREAM_TIMEOUT 充足. is_thinking_req=False (inject 空) → 走默认 25s.
+        "inject": {},  # 空: 不注入任何思考参数. deepseek-v4-pro 74f02205 普通模式最快 (1.8-4.9s 首字节).
+    },
+    "glm5_2_nv": {
+        # 2026-07-03: NVCF 上线 ai-glm-5_2 (3b9748d8, ACTIVE, ownedByDifferentAccount=True=NVIDIA官方).
+        # 抓包探测: glm-5.2 思考触发参数 = chat_template_kwargs.enable_thinking
+        #   或 thinking:{type:enabled} (OpenAI 风格, 也生效); reasoning_effort 无效 (rc=None).
+        #   裸请求无思考 (rc=None), 必须显式触发.
+        #   触发后 finish=stop (非 length), 思考消耗 ~400-535 tokens, content 正常 — 健康.
+        # strip 掉 reasoning_effort/thinking 防干扰, 由 inject 补 chat_template_kwargs.
+        "function_ids": [os.environ.get("NVCF_GLM52_FUNCTION_ID",
+                                        "3b9748d8-1d85-40e8-8573-0eeaa63a4b63")],
+        "strip_params": ["thinking_budget", "reasoning_effort", "thinking"],
+        "inject": {},
+    },
+    "minimax_m3_nv": {
+        # R833 (2026-07-09): 新增 ai-minimax-m3 (87ea0ddc, ACTIVE, ownedByDifferentAccount).
+        #   model 名 = minimaxai/minimax-m3 (pexec/integrate 双通道均 200, 抓包确认).
+        #   实测矩阵 (5key×3轮, 美国代理): pexec 11/15 avg4.4s, integrate 11/15 avg3.7s → integrate 略快.
+        #   直连日本GSL可用但波动大 (2.6-59s avg19s) → 仍走美国代理求稳.
+        #   与 glm5.2/dsv4p 不同: minimax 直连不被严格风控, 但美国代理更稳更快.
+        #   k3 曾误判403 (测试脚本抄错key), 正确key后 6/6 全200.
+        #   pexec/integrate 都不拒思考参数, inject 空 (普通模式). NV_INTEGRATE_MODELS 加入走 integrate 首选.
+        "function_ids": [os.environ.get("NVCF_MINIMAX_FUNCTION_ID",
+                                        "87ea0ddc-cff1-4bca-bf8b-3bd98a35ddd0")],
+        "strip_params": [],
+        # R833b: 思考模式最高档. 抓包实测 minimax 的 reasoning_content 字段恒 None
+        #   (不分离思考, 思考融入 content), 但 reasoning_effort=high 仍生效——
+        #   content 深度增加 (bat&ball题 bare 371c → re=high 628c), 推理更详尽.
+        #   thinking:{type:enabled} 触发 NVCF async 202 挂起, 不可用. 故用 reasoning_effort=high.
+        "inject": {"reasoning_effort": "high"},
+    },
+}
+# 向后兼容: 部分老代码/测试可能读 nvcf_cfg["function_id"], 暴露首选 (候选[0]) 避免 KeyError.
+# 新代码应直接读 ["function_ids"] 列表 + func_health.select_healthy_function().
+for _m in NVCF_PEXEC_MODELS:
+    NVCF_PEXEC_MODELS[_m]["function_id"] = NVCF_PEXEC_MODELS[_m]["function_ids"][0]
+
+# ─── NV API keys for NVCF pexec (all models use same 5 keys) ──────────────
+NVU_KEYS = []
+for i in range(1, 6):
+    key = os.environ.get(f"NVU_KEY{i}", "")
+    if key:
+        NVU_KEYS.append(key)
+NVU_NUM_KEYS = len(NVU_KEYS)
+
+# ─── Per-key mihomo SOCKS5 proxy URLs ──────────────────────────────────────
+# K1→7894, K2→direct, K3→7896, K4→direct, K5→7899  (Rproxy: empty=direct)
+NVU_PROXY_URLS = []
+for i in range(1, 6):
+    url = os.environ.get(f"NVU_PROXY_URL{i}", "")
+    NVU_PROXY_URLS.append(url)  # Rproxy: keep ALL slots incl. empty for correct index alignment
+
+# ─── R784: Per-key egress IP/route mapping (for long-term IP-diversity analysis) ──
+# 每个 key 实际走哪个出口 IP + 人类可读 route 标签, 写入 DB nv_requests.egress_ip/egress_route.
+# IP 从 env NVU_EGRESS_IP<n> 读 (便于 IP 变化时改 env 不改代码); route 从 proxy_url 推导.
+#   - proxy_url 空 = "direct" route (容器宿主网络直连)
+#   - proxy_url 非空 = "mihomo-<port>" route (socks5 代理出口)
+NVU_EGRESS_IPS = []
+for i in range(1, 6):
+    NVU_EGRESS_IPS.append(os.environ.get(f"NVU_EGRESS_IP{i}", ""))
+
+
+def egress_info_for_key(key_idx):
+    """Return (egress_route, egress_ip) for a given key index.
+
+    R784: 用于 metrics 记录, 写入 DB 做长期 IP-稳定性分析.
+    route: 'direct' 或 'mihomo-<port>' 或 'unknown'
+    ip: 从 NVU_EGRESS_IP<n> env 取 (配置时硬编码, 运行时不解析代理出口)
+    """
+    if key_idx >= len(NVU_PROXY_URLS):
+        return ("unknown", "")
+    proxy_url = NVU_PROXY_URLS[key_idx]
+    ip = NVU_EGRESS_IPS[key_idx] if key_idx < len(NVU_EGRESS_IPS) else ""
+    if not proxy_url or proxy_url.strip() == "":
+        route = "direct"
+    else:
+        # 从 socks5h://host:port 提取 port (用 rsplit 避免 import re)
+        port = proxy_url.strip().rsplit(":", 1)[-1] if ":" in proxy_url else "?"
+        route = f"mihomo-{port}"
+    return (route, ip)
+
+def egress_info_for_integrate_key(key_idx):
+    """Return (egress_route, egress_ip) for integrate path. R828.
+
+    integrate 走 NV_INTEGRATE_PROXY_URLS[key_idx % len], 与 pexec 的 NVU_PROXY_URLS 不同.
+    无 integrate 代理配置时回退到 egress_info_for_key.
+    """
+    if not NV_INTEGRATE_PROXY_URLS:
+        return egress_info_for_key(key_idx)
+    idx = key_idx % len(NV_INTEGRATE_PROXY_URLS)
+    proxy_url = NV_INTEGRATE_PROXY_URLS[idx]
+    ip = NV_INTEGRATE_EGRESS_IPS[idx] if idx < len(NV_INTEGRATE_EGRESS_IPS) else ""
+    port = proxy_url.strip().rsplit(":", 1)[-1] if ":" in proxy_url else "?"
+    return (f"integrate-mihomo-{port}", ip)
+
+if NVU_NUM_KEYS < 5:
+    print(f"[NV-CONFIG] WARN: only {NVU_NUM_KEYS} NV keys configured (expected 5)", file=sys.stderr, flush=True)
+
+# ─── Three-model tiers (3model 2026-07-01: 各 agent 各后端, 无跨 tier fallback) ───
+# NV_MODEL_TIERS 仅用于 get_tier_index 定位 start tier; upstream.execute_request 改 tier_order=[mapped_model]
+# 单元素, 天然无跨 tier fallback (各 agent 各后端语义, 不允许 deepseek 悄悄变 glm5.2).
+# R704: 旧已下架 tier 移除.
+NV_MODEL_TIERS = ["kimi_nv", "dsv4p_nv", "glm5_2_nv", "minimax_m3_nv"]
+
+NV_MODEL_IDS = {
+    "kimi_nv": "moonshotai/kimi-k2.6",
+    "dsv4p_nv": "deepseek-ai/deepseek-v4-pro",
+    "glm5_2_nv": "z-ai/glm-5.2",
+    "minimax_m3_nv": "minimaxai/minimax-m3",
+}
+
+DEFAULT_NV_MODEL = "dsv4p_nv"  # 裸 model 兜底 (opencode 裸名即此)
+
+# ─── Integrate direct path (R572: 5-key 全走 integrate 首选, pexec 降为 fallback) ───
+# 实测 (2026-07-02): integrate.api.nvidia.com 的 /v1/chat/completions 路径
+#   - 延迟 3-13s 平均 8.9s (pexec 15-28s, 快 2-3x)
+#   - 成功率 10/10 (pexec 有 surge/502)
+#   - 思考触发: thinking:{type:enabled} (与 pexec 74f02205 完全一致, 复用 inject)
+#   - 限流: per-KEY (不是 per-IP!), 单 key ~6-12/min 窗口, 冷却 1-2min
+#   - 多 key 独立: key2 限流不影响同 IP 的 key4 (已验证)
+#   - 5 key 合计 ~50 RPM (hermes 峰值 8/min 远低于)
+# 策略: 5 key rr 轮换走 integrate, 全局 1.5s 延时分摊; 429 立即跳 key + 90s 冷却;
+#       全限流 → fallback 现有 pexec 通道 (保证不宕).
+NV_INTEGRATE_ENABLED = os.environ.get("NV_INTEGRATE_ENABLED", "1") == "1"
+NV_INTEGRATE_HOST = os.environ.get("NV_INTEGRATE_HOST", "integrate.api.nvidia.com")
+NV_INTEGRATE_PATH = "/v1/chat/completions"
+# 429 冷却时长 (秒). 实测单 key 429 冷却 1-2min, 取 90s 保守.
+NV_INTEGRATE_KEY_COOLDOWN_S = int(os.environ.get("NV_INTEGRATE_KEY_COOLDOWN_S", "90"))
+# 全 key 限流时, 标记整个 integrate 路径冷却多久 (强制走 pexec).
+NV_INTEGRATE_PATH_COOLDOWN_S = int(os.environ.get("NV_INTEGRATE_PATH_COOLDOWN_S", "60"))
+# 哪些 model 走 integrate 首选 (其余 model 直接走 pexec, 不受影响).
+# 默认只 dsv4p_nv (openclaw 主力, 流量最大 82%). kimi/glm5_2 流量低, 保持 pexec.
+NV_INTEGRATE_MODELS = os.environ.get("NV_INTEGRATE_MODELS", "dsv4p_nv").split(",")
+# integrate 限流白名单: 收到 429 的 key 标冷却, rr 轮到自动跳过 (复用 cooldown.py 的
+# R827: integrate 路径专用美国代理(per-key). integrate.api.nvidia.com 对 glm5_2 有地理限制,
+# 只接受美国出口IP(JP/SG 卡死40s). pexec 仍用 NVU_PROXY_URLS(全直连)互不影响.
+# 逗号分隔, 按 key_idx 取模轮换. 空=直连(兼容).
+NV_INTEGRATE_PROXY_URLS = [u.strip() for u in os.environ.get("NV_INTEGRATE_PROXY_URLS", "").split(",") if u.strip()]
+# R828: integrate per-port 真实美国出口IP (对应 NV_INTEGRATE_PROXY_URLS 顺序)
+NV_INTEGRATE_EGRESS_IPS = [ip.strip() for ip in os.environ.get("NV_INTEGRATE_EGRESS_IPS", "").split(",") if ip.strip()]
+# ─── R838: per-key 跨链路调度 (per-model 粒度) ────────────────────────────
+# 指定哪些 model 的哪些 key(1-based) 首选 integrate, 其余 key 走 pexec. 与 NV_INTEGRATE_MODELS
+# (模型级全 key) 互补: model 在 NV_INTEGRATE_MODELS → 全 key integrate; 否则查本表, 命中的 key
+# 先试 integrate 失败回退 pexec, 不在表的 key 走 pexec.
+# 格式: "model:key1,key2;model2:key3" (model=内部 tier 名 kimi_nv/dsv4p_nv/glm5_2_nv/minimax_m3_nv).
+# 旧格式纯数字 "5" 向后兼容 = 应用到所有不在 NV_INTEGRATE_MODELS 的 model.
+# 例: "dsv4p_nv:5;minimax_m3_nv:5" = dsv4p 和 minimax 的 K5 先试 integrate. 空=不启用(完全回滚).
+def _parse_nv_key_integrate(raw):
+    out = {}
+    if not raw:
+        return out
+    if ":" not in raw:
+        keys = [int(x.strip()) - 1 for x in raw.split(",") if x.strip()]
+        return {"__all__": keys}
+    for part in raw.split(";"):
+        if ":" not in part:
+            continue
+        mdl, kstr = part.split(":", 1)
+        mdl = mdl.strip()
+        keys = [int(x.strip()) - 1 for x in kstr.split(",") if x.strip()]
+        if mdl and keys:
+            out[mdl] = keys
+    return out
+NV_KEY_INTEGRATE_KEYS_MAP = _parse_nv_key_integrate(os.environ.get("NV_KEY_INTEGRATE_KEYS", ""))
+def nv_key_integrate_keys_for(tier_model):
+    """Return list of 0-based key idxs that should try integrate first for this model. R838."""
+    if tier_model in NV_KEY_INTEGRATE_KEYS_MAP:
+        return NV_KEY_INTEGRATE_KEYS_MAP[tier_model]
+    if "__all__" in NV_KEY_INTEGRATE_KEYS_MAP and tier_model not in NV_INTEGRATE_MODELS:
+        return NV_KEY_INTEGRATE_KEYS_MAP["__all__"]
+    return []
+NV_KEY_INTEGRATE_PROXY_URLS = [u.strip() for u in os.environ.get("NV_KEY_INTEGRATE_PROXY_URLS", "").split(",") if u.strip()]
+NV_KEY_INTEGRATE_EGRESS_IPS = [ip.strip() for ip in os.environ.get("NV_KEY_INTEGRATE_EGRESS_IPS", "").split(",") if ip.strip()]
+# integrate 限流白名单: 收到 429 的 key 标冷却, rr 轮到自动跳过 (复用 cooldown.py 的
+# per-(tier_model, key_idx) 机制, tier_model 用 "<model>_integrate" 虚拟 tier 名隔离).
+
+# --- Dynamic surge fallback (R551: NVCF dynamic surge) ---
+# R832: 删除跨模型 fallback. 用户要求:必须同模型 fallback, 禁止 glm5_2_nv→dsv4p_nv 跨模型.
+# glm5_2_nv 故障由 handlers._ms_gw_fallback 走 ms_gw:40007 的 glm5_2_ms (同模型跨网关).
+# 同模型 nv_gw 内部无第二 tier, 故 FALLBACK_GRAPH 全清空 (不再有跨模型 surge).
+FALLBACK_GRAPH = {
+    # 空: 同模型只在 nv_gw 内部走 5-key cycle; 全 key 失败 → 502 → _ms_gw_fallback 转 ms_gw
+}
+FALLBACK_HEALTH_THRESHOLD = float(os.environ.get("FALLBACK_HEALTH_THRESHOLD", "0.10"))
+
+# ─── Tier timeout budget ──────────────────────────────────────────────────
+TIER_TIMEOUT_BUDGET_S = float(os.environ.get("TIER_TIMEOUT_BUDGET_S", "60"))
+
+# ─── Agent suffix (unify-nv: _nv 通用, 非 Hermes 专属) ───────────────────
+AGENT_SUFFIXES = {
+    "_nv": {"name": "NVCus", "format": "openai"},
+}
+DEFAULT_AGENT_SUFFIX = "_nv"
+
+# ─── Model name mapping (3model 2026-07-01: pass-through, 不再坍缩) ─────
+# 三模型各自路由到对应内部 key, 不再统一坍缩到 dsv4p_nv.
+# detect_nv_model() 对未知名 fallback 到 DEFAULT_NV_MODEL (dsv4p_nv).
+MODEL_MAP = {
+    "kimi_nv": "kimi_nv",
+    "kimi-k2.6": "kimi_nv",
+    "moonshotai/kimi-k2.6": "kimi_nv",
+    "dsv4p_nv": "dsv4p_nv",
+    "deepseek-v4-pro": "dsv4p_nv",
+    "deepseek-ai/deepseek-v4-pro": "dsv4p_nv",
+    "glm5_2_nv": "glm5_2_nv",
+    "glm5.2": "glm5_2_nv",
+    "z-ai/glm-5.2": "glm5_2_nv",
+    "minimax_m3_nv": "minimax_m3_nv",
+    "minimax-m3": "minimax_m3_nv",
+    "minimaxai/minimax-m3": "minimax_m3_nv",
+}
+
+def detect_nv_model(model_id: str) -> str:
+    """Map a frontend model name to the internal NV model key.
+
+    Returns: one of kimi_nv / dsv4p_nv / glm5_2_nv / minimax_m3_nv. Falls back to
+    DEFAULT_NV_MODEL for unrecognized names.
+    """
+    mapped = MODEL_MAP.get(model_id, None)
+    if mapped and mapped in NV_MODEL_IDS:
+        return mapped
+    return DEFAULT_NV_MODEL
+
+def get_tier_index(mapped_model: str) -> int:
+    """Get the tier index for a mapped model."""
+    try:
+        return NV_MODEL_TIERS.index(mapped_model)
+    except ValueError:
+        return 0
+
+# ─── Token estimation ──────────────────────────────────────────────────────
+CHARS_PER_TOKEN_ESTIMATE = float(os.environ.get("CHARS_PER_TOKEN_ESTIMATE", "3.0"))
+
+# ─── Outbound throttle ──────────────────────────────────────────────────────
+MIN_OUTBOUND_INTERVAL_S = float(os.environ.get("MIN_OUTBOUND_INTERVAL_S", "1.5"))
+_outbound_last_sent = 0.0
+_outbound_throttle_lock = threading.Lock()
+
+def throttle_outbound():
+    """Enforce MIN_OUTBOUND_INTERVAL_S between consecutive outbound requests."""
+    if MIN_OUTBOUND_INTERVAL_S <= 0:
+        return
+    global _outbound_last_sent
+    with _outbound_throttle_lock:
+        now = time.monotonic()
+        elapsed = now - _outbound_last_sent
+        wait = MIN_OUTBOUND_INTERVAL_S - elapsed
+        if wait > 0:
+            time.sleep(wait)
+            now = time.monotonic()
+        _outbound_last_sent = now
+
+# ─── Context window (3model: 三模型各 131072) ───────────────────────────
+MODEL_INPUT_TOKEN_SAFETY = {
+    "kimi_nv": 131072,
+    "dsv4p_nv": 131072,
+    "glm5_2_nv": 131072,
+    "minimax_m3_nv": 131072,
+}
+DEFAULT_CONTEXT_FALLBACK = 131072
+
+# ─── Thread locks for logging ────────────────────────────────────────────
+_log_lock = threading.Lock()
+_metrics_lock = threading.Lock()
+_error_detail_lock = threading.Lock()
+
+# ─── Re-exports for backward compatibility (Reng modularization) ──────────
+# These state machines were extracted to their own modules. Re-export here so
+# all existing `from .config import _next_nv_key / is_key_cooling / ...`
+# statements in handlers.py and upstream.py keep working unchanged.
+# NOTE: imported at end-of-file so LOG_DIR / NVU_NUM_KEYS (needed by rr_counter)
+# are already defined when the import resolves.
+from .rr_counter import (  # noqa: E402
+    _next_nv_key,
+    _peek_nv_key,
+    _save_rr_counter,
+)
+
+
+# ─── R502: Stream upgrade for non-stream requests ──────────────────────
+# Non-stream reqs to NVCF have ~48%% SR vs ~87%% for stream (kimi-k2.6 thinking).
+# NVCF server must complete full inference before sending first byte in non-stream,
+# causing frequent pexec_timeout. Stream mode avoids this by establishing TTFB earlier.
+# FORCE_STREAM_UPGRADE=1: upgrade non-stream → stream internally, accumulate SSE,
+# return non-stream JSON to caller. Zero caller-visible change.
+# R502: When force-stream-upgrade is active, non-stream requests are sent as stream
+# to NVCF. Thinking requests (injected thinking:type:enabled) need longer for first
+# byte. This override extends the per-attempt upstream timeout for upgraded requests
+# only (original non-stream callers). Default: 55s (vs 25s normal), giving thought
+# models more time to emit the first SSE chunk.
+NVU_FORCE_STREAM_UPGRADE_TIMEOUT = int(os.environ.get('NVU_FORCE_STREAM_UPGRADE_TIMEOUT', '55'))
+NVU_FORCE_STREAM_UPGRADE = os.environ.get('NVU_FORCE_STREAM_UPGRADE', '0')
+# R835 (2026-07-10, HM1 self): 流式 idle deadline (首字节后). 背景: conn.sock.settimeout 是 per-read
+# socket 超时, 但 SSE upstream 持续发 keep-alive chunk (每次都在 read_timeout 窗口内) → 单次 read 永不
+# 超时 → 流永不中断 → openclaw 等流结束等到 abort → ms_gw 再 abort 双杀 (R834 审计 P0 铁证: 流持续 102s).
+# 此 deadline 从首字节(ttfb)之后算, 不从 t_start 算 — 避免砍 glm5.2 thinking 慢 ttfb(实测 max 71s, 由
+# NVU_INTEGRATE_THINKING_TIMEOUT_S per-attempt 管). 只兜"流已开始但持续不结束"的僵尸流. compose env 设 42s
+# (< openclaw nv_gw timeoutSeconds=45s, 让 nv_gw 先干净 break 给 openclaw failover). 默认 90 (env 未设时).
+NVU_STREAM_TOTAL_DEADLINE_S = float(os.environ.get("NVU_STREAM_TOTAL_DEADLINE_S", "90"))
+# R576 (2026-07-03): per-model 排除 force-stream 升级.
+# dsv4p_nv 流式+thinking 实测 content 丢失 90% (19/21 content=0c): deepseek-v4-pro 流式时
+# 思考消耗 max_tokens, 正式 content 在末尾 chunk, finish=length 时根本不产生 content.
+# dsv4p 走 integrate 非流原生 26-35s 正常返回 content (远低于 61s timeout), 无需 force-stream.
+# R577 (2026-07-03): +glm5_2_nv. _accumulate_stream_to_nonstream 重组非流JSON时只提取
+# delta.content/reasoning_content, 不提取 delta.tool_calls → 工具调用结构丢失
+# (finish=tool_calls 但 tool_calls=null content空). glm5.2 直接打NVCF非流工具调用完美,
+# 思考也快(3-6s 远低61s timeout), 无需 force-stream. 排除后走原生非流, tool_calls 保留.
+NVU_FORCE_STREAM_EXCLUDE_MODELS = [m for m in os.environ.get('NVU_FORCE_STREAM_EXCLUDE_MODELS', 'dsv4p_nv,glm5_2_nv,minimax_m3_nv').split(',') if m]
+
+# ─── 跨机 peer fallback (2026-07-01, 用户要求两台互备) ──────────────────
+# 本机 nv_gw 在 all_tiers_exhausted (单 tier 5 key 全失败) 时, 转发请求到对端 nv_gw
+# 同模型, 而非直接返回 502. 对端同样 all_keys_exhausted 才真正返回 502.
+# 循环防护: 转发请求带 X-Fallback-Hop: 1 头, 对端收到该头 ≥1 时不再转发 (无状态 hop count).
+# 安全约束 (cc2 三轮仲裁): 只在 tier 耗尽时转发, 不在单 key SSL error 转发
+#   (否则 F-fix 删的跨机重试以转发形式复活, 且两次跨机往返比本地重试慢).
+# 透传: 流式 SSE + 非 JSON 均透传, 对端响应原样回客户端.
+# env: NVU_PEER_FALLBACK_URL (对端 nv_gw base, 如 http://100.109.57.26:40006)
+#      NVU_PEER_FALLBACK_ENABLED (1 开启, 默认关)
+NVU_PEER_FALLBACK_ENABLED = os.environ.get('NVU_PEER_FALLBACK_ENABLED', '0') == '1'
+NVU_PEER_FALLBACK_URL = os.environ.get('NVU_PEER_FALLBACK_URL', '').rstrip('/')
+# 转发请求自身的超时 (秒). 对端 nv_gw 内部有自己的 tier budget, 这里只限转发整体上限.
+NVU_PEER_FALLBACK_TIMEOUT = int(os.environ.get('NVU_PEER_FALLBACK_TIMEOUT', '120'))
+
+# ─── R832: nv_gw → ms_gw 同模型 fallback (替代跨模型 FALLBACK_GRAPH) ──────────
+# 当 mapped_model 全 key 失败(all_tiers_exhausted) 时, 不再跨模型 fallback 到 dsv4p_nv,
+# 而是转发到 ms_gw:40007 的同模型后端 (glm5_2_nv → glm5_2_ms). 用户要求禁止跨模型 fallback.
+# model 名改写: NV_MS_GW_FALLBACK_MODELMAP = {"glm5_2_nv":"glm5_2_ms"} (nv名→ms名).
+# token 用 ms_gw 的 MSU_GATEWAY_API_KEY (非 nv 自己的).
+NVU_MS_GW_FALLBACK_ENABLED = os.environ.get('NVU_MS_GW_FALLBACK_ENABLED', '1') == '1'
+NVU_MS_GW_FALLBACK_URL = os.environ.get('NVU_MS_GW_FALLBACK_URL', 'http://ms_gw:40007').rstrip('/')
+NVU_MS_GW_FALLBACK_TOKEN = os.environ.get('NVU_MS_GW_FALLBACK_TOKEN', 'ms-gw-token')
+NVU_MS_GW_FALLBACK_TIMEOUT = int(os.environ.get('NVU_MS_GW_FALLBACK_TIMEOUT', '120'))
+NVU_MS_GW_FALLBACK_MODELMAP = {}
+_raw_map = os.environ.get('NVU_MS_GW_FALLBACK_MODELMAP', 'glm5_2_nv:glm5_2_ms')
+for _pair in _raw_map.split(','):
+    _pair = _pair.strip()
+    if ':' in _pair:
+        _k, _v = _pair.split(':', 1)
+        NVU_MS_GW_FALLBACK_MODELMAP[_k.strip()] = _v.strip()
+from .cooldown import (  # noqa: E402
+    is_key_cooling,
+    mark_key_cooling,
+    reset_key429_count,
+    KEY_COOLDOWN_S,
+    TIER_COOLDOWN_S,
+    is_key_auth_failed,
+    mark_key_auth_failed,
+    KEY_AUTHFAIL_COOLDOWN_S,
+)

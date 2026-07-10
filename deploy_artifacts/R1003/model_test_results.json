@@ -1,0 +1,163 @@
+{
+  "timestamp": "2026-07-09T17:41:04Z",
+  "test_params": {
+    "max_tokens": 200,
+    "stream": false,
+    "prompt": "respond with exactly: OK",
+    "endpoint": "/v1/chat/completions",
+    "auth": "Bearer nv-gw-token"
+  },
+  "results": [
+    {
+      "host": "HM1 (opcsname)",
+      "model_requested": "kimi_nv",
+      "http_status": "200",
+      "response_time_ms": 4326,
+      "content": " OK",
+      "content_is_ok": true,
+      "finish_reason": "stop",
+      "model_returned": "moonshotai/kimi-k2.6",
+      "model_match": true,
+      "error": null,
+      "model_match_expected_upstream": "moonshotai/kimi-k2.6"
+    },
+    {
+      "host": "HM1 (opcsname)",
+      "model_requested": "dsv4p_nv",
+      "http_status": "200",
+      "response_time_ms": 1308,
+      "content": "OK",
+      "content_is_ok": true,
+      "finish_reason": "stop",
+      "model_returned": "deepseek-ai/deepseek-v4-pro",
+      "model_match": true,
+      "error": null,
+      "model_match_expected_upstream": "deepseek-ai/deepseek-v4-pro"
+    },
+    {
+      "host": "HM1 (opcsname)",
+      "model_requested": "glm5_2_nv",
+      "http_status": "200",
+      "response_time_ms": 1483,
+      "content": "OK",
+      "content_is_ok": true,
+      "finish_reason": "stop",
+      "model_returned": "z-ai/glm-5.2",
+      "model_match": true,
+      "error": null,
+      "model_match_expected_upstream": "z-ai/glm-5.2"
+    },
+    {
+      "host": "HM1 (opcsname)",
+      "model_requested": "minimax_m3_nv",
+      "http_status": "200",
+      "response_time_ms": 2962,
+      "content": "OK",
+      "content_is_ok": true,
+      "finish_reason": "stop",
+      "model_returned": "minimaxai/minimax-m3",
+      "model_match": true,
+      "error": null,
+      "model_match_expected_upstream": "minimaxai/minimax-m3"
+    },
+    {
+      "host": "HM2 (opc2sname)",
+      "model_requested": "kimi_nv",
+      "http_status": "200",
+      "response_time_ms": 2205,
+      "content": " OK",
+      "content_is_ok": true,
+      "finish_reason": "stop",
+      "model_returned": "moonshotai/kimi-k2.6",
+      "model_match": true,
+      "error": null,
+      "model_match_expected_upstream": "moonshotai/kimi-k2.6"
+    },
+    {
+      "host": "HM2 (opc2sname)",
+      "model_requested": "dsv4p_nv",
+      "http_status": "200",
+      "response_time_ms": 8813,
+      "content": "OK",
+      "content_is_ok": true,
+      "finish_reason": "stop",
+      "model_returned": "deepseek-ai/deepseek-v4-pro",
+      "model_match": true,
+      "error": null,
+      "model_match_expected_upstream": "deepseek-ai/deepseek-v4-pro"
+    },
+    {
+      "host": "HM2 (opc2sname)",
+      "model_requested": "glm5_2_nv",
+      "http_status": "200",
+      "response_time_ms": 40851,
+      "content": "OK",
+      "content_is_ok": true,
+      "finish_reason": "stop",
+      "model_returned": "z-ai/glm-5.2",
+      "model_match": true,
+      "error": null,
+      "model_match_expected_upstream": "z-ai/glm-5.2"
+    },
+    {
+      "host": "HM2 (opc2sname)",
+      "model_requested": "minimax_m3_nv",
+      "http_status": "200",
+      "response_time_ms": 8576,
+      "content": "OK",
+      "content_is_ok": true,
+      "finish_reason": "stop",
+      "model_returned": "deepseek-ai/deepseek-v4-pro",
+      "model_match": false,
+      "error": null,
+      "model_match_expected_upstream": "minimaxai/minimax-m3",
+      "note": "HM2 nv_gw has no minimax_m3_nv registered; detect_nv_model() fell back to DEFAULT_NV_MODEL=dsv4p_nv (returned deepseek). content=OK is from dsv4p, NOT minimax."
+    }
+  ],
+  "summary": {
+    "HM1": {
+      "kimi_nv": {
+        "ok": true,
+        "ms": 4326,
+        "match": true
+      },
+      "dsv4p_nv": {
+        "ok": true,
+        "ms": 1308,
+        "match": true
+      },
+      "glm5_2_nv": {
+        "ok": true,
+        "ms": 1483,
+        "match": true
+      },
+      "minimax_m3_nv": {
+        "ok": true,
+        "ms": 2962,
+        "match": true
+      }
+    },
+    "HM2": {
+      "kimi_nv": {
+        "ok": true,
+        "ms": 2205,
+        "match": true
+      },
+      "dsv4p_nv": {
+        "ok": true,
+        "ms": 8813,
+        "match": true
+      },
+      "glm5_2_nv": {
+        "ok": true,
+        "ms": 40851,
+        "match": true
+      },
+      "minimax_m3_nv": {
+        "ok": true,
+        "ms": 8576,
+        "match": false
+      }
+    }
+  }
+}

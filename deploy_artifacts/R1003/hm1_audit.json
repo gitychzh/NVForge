@@ -1,0 +1,312 @@
+{
+  "hostname": "opcsname",
+  "timestamp": "2026-07-09T17:26:22Z",
+  "containers": [
+    {
+      "name": "nv_gw",
+      "status": "Up 37 minutes (healthy)",
+      "state": "running",
+      "ports": "0.0.0.0:40006->40006/tcp, [::]:40006->40006/tcp",
+      "image": "cc-infra-nv_gw",
+      "health": "healthy"
+    },
+    {
+      "name": "ms_gw",
+      "status": "Up 25 hours (healthy)",
+      "state": "running",
+      "ports": "0.0.0.0:40007->40007/tcp, [::]:40007->40007/tcp",
+      "image": "cc-infra-ms_gw",
+      "health": "healthy"
+    },
+    {
+      "name": "legacy_dispatch",
+      "status": "Up 5 days (healthy)",
+      "state": "running",
+      "ports": "0.0.0.0:40000->40000/tcp, [::]:40000->40000/tcp",
+      "image": "cc-infra-legacy_dispatch",
+      "health": "healthy"
+    },
+    {
+      "name": "legacy_cc_1",
+      "status": "Up 5 days (healthy)",
+      "state": "running",
+      "ports": "0.0.0.0:40001->40001/tcp, [::]:40001->40001/tcp",
+      "image": "cc-infra-legacy_cc_1",
+      "health": "healthy"
+    },
+    {
+      "name": "legacy_passthrough",
+      "status": "Up 5 days (healthy)",
+      "state": "running",
+      "ports": "0.0.0.0:40003->40003/tcp, [::]:40003->40003/tcp",
+      "image": "cc-infra-legacy_passthrough",
+      "health": "healthy"
+    },
+    {
+      "name": "legacy_cc_2",
+      "status": "Up 5 days (healthy)",
+      "state": "running",
+      "ports": "0.0.0.0:40005->40005/tcp, [::]:40005->40005/tcp",
+      "image": "cc-infra-legacy_cc_2",
+      "health": "healthy"
+    },
+    {
+      "name": "legacy_codex",
+      "status": "Up 5 days (healthy)",
+      "state": "running",
+      "ports": "0.0.0.0:40002->40002/tcp, [::]:40002->40002/tcp",
+      "image": "cc-infra-legacy_codex",
+      "health": "healthy"
+    },
+    {
+      "name": "logs_db",
+      "status": "Up 5 days (healthy)",
+      "state": "running",
+      "ports": "5432/tcp",
+      "image": "postgres:16-alpine",
+      "health": "healthy"
+    },
+    {
+      "name": "legacy_ms_litellm",
+      "status": "Up 5 days (healthy)",
+      "state": "running",
+      "ports": "0.0.0.0:41001->4000/tcp, [::]:41001->4000/tcp",
+      "image": "cc-infra-legacy_ms_litellm",
+      "health": "healthy"
+    }
+  ],
+  "nv_gw": {
+    "health": {
+      "status": "ok",
+      "proxy_role": "passthrough",
+      "nv_num_keys": 5,
+      "nvcf_pexec_models": [
+        "kimi_nv",
+        "dsv4p_nv",
+        "glm5_2_nv",
+        "minimax_m3_nv"
+      ],
+      "nv_model_tiers": [
+        "kimi_nv",
+        "dsv4p_nv",
+        "glm5_2_nv",
+        "minimax_m3_nv"
+      ],
+      "nv_default_model": "dsv4p_nv",
+      "port": 40006
+    },
+    "config_models": {
+      "kimi_nv": {
+        "function_ids": [
+          "f966661c-790d-4f71-b973-c525fb8eafd4"
+        ],
+        "strip_params": [
+          "thinking_budget"
+        ],
+        "inject": {
+          "reasoning_effort": "high"
+        },
+        "model_id": "moonshotai/kimi-k2.6"
+      },
+      "dsv4p_nv": {
+        "function_ids": [
+          "74f02205-c7ba-438f-b81a-2537955bd7ec"
+        ],
+        "strip_params": [
+          "reasoning_effort",
+          "stream_options",
+          "thinking"
+        ],
+        "inject": {},
+        "model_id": "deepseek-ai/deepseek-v4-pro"
+      },
+      "glm5_2_nv": {
+        "function_ids": [
+          "3b9748d8-1d85-40e8-8573-0eeaa63a4b63"
+        ],
+        "strip_params": [
+          "thinking_budget",
+          "reasoning_effort",
+          "thinking"
+        ],
+        "inject": {},
+        "model_id": "z-ai/glm-5.2"
+      },
+      "minimax_m3_nv": {
+        "function_ids": [
+          "87ea0ddc-cff1-4bca-bf8b-3bd98a35ddd0"
+        ],
+        "strip_params": [],
+        "inject": {
+          "reasoning_effort": "high"
+        },
+        "model_id": "minimaxai/minimax-m3"
+      }
+    },
+    "env_vars": {
+      "NVU_FORCE_STREAM_UPGRADE": "0",
+      "PROXY_TIMEOUT": "300",
+      "MIN_OUTBOUND_INTERVAL_S": "0",
+      "UPSTREAM_TIMEOUT": "66",
+      "NVU_FORCE_STREAM_UPGRADE_TIMEOUT": "66",
+      "TIER_COOLDOWN_S": "25",
+      "NVU_PEER_FALLBACK_ENABLED": "1",
+      "KEY_COOLDOWN_S": "25",
+      "NVU_MS_GW_FALLBACK_TIMEOUT": "45",
+      "NVU_PEER_FB_SKIP_MODELS": "glm5_2_nv,dsv4p_nv",
+      "NVU_TIER_BUDGET_GLM5_2_NV": "96",
+      "TIER_TIMEOUT_BUDGET_S": "112",
+      "NVU_PEER_FALLBACK_TIMEOUT": "45",
+      "NVU_EMPTY_200_FASTBREAK": "1",
+      "NV_INTEGRATE_MODELS": "glm5_2_nv,minimax_m3_nv",
+      "NV_INTEGRATE_KEY_COOLDOWN_S": "0",
+      "NVU_PEER_FALLBACK_URL": "http://100.109.57.26:40006"
+    }
+  },
+  "ms_gw": {
+    "health": {
+      "status": "ok",
+      "proxy": "ms_gw",
+      "role": "ms_uni",
+      "listen": "0.0.0.0:40007",
+      "num_keys": 7,
+      "num_variants": 10,
+      "models": [
+        "glm5_2_ms",
+        "dsv4p_ms",
+        "kimi_ms"
+      ],
+      "default_model": "glm5_2_ms",
+      "ms_baseurl": "https://api-inference.modelscope.cn/v1",
+      "rr_counters": {
+        "ms_glm5_2": 102
+      },
+      "cooldown": {
+        "keys_cooling": [],
+        "variants_cooling": [],
+        "models_all_exhausted": []
+      },
+      "time": "2026-07-10 01:26:26"
+    },
+    "env_vars": {
+      "PROXY_TIMEOUT": "600",
+      "MIN_OUTBOUND_INTERVAL_S": "1.0",
+      "MS_BASEURL": "https://api-inference.modelscope.cn/v1",
+      "MSU_GATEWAY_API_KEY": "ms-gw-token",
+      "UPSTREAM_TIMEOUT": "300"
+    }
+  },
+  "openclaw_config": {
+    "providers": {
+      "nv_gw": {
+        "baseUrl": "http://127.0.0.1:40006/v1",
+        "api": "openai-completions",
+        "timeoutSeconds": 100,
+        "models": [
+          {
+            "id": "dsv4p_nv",
+            "contextWindow": 131072,
+            "maxTokens": 32768,
+            "reasoning": true,
+            "supportsReasoningEffort": true
+          },
+          {
+            "id": "glm5_2_nv",
+            "contextWindow": 131072,
+            "maxTokens": 32768,
+            "reasoning": true,
+            "supportsReasoningEffort": false
+          }
+        ]
+      },
+      "ms_gw": {
+        "baseUrl": "http://127.0.0.1:40007/v1",
+        "api": "openai-completions",
+        "timeoutSeconds": 50,
+        "models": [
+          {
+            "id": "glm5_2_ms",
+            "contextWindow": 131072,
+            "maxTokens": 32768,
+            "reasoning": true,
+            "supportsReasoningEffort": false
+          }
+        ]
+      }
+    },
+    "primary_model": "nv_gw/glm5_2_nv",
+    "fallbacks": [
+      "ms_gw/glm5_2_ms"
+    ],
+    "thinkingDefault": "medium",
+    "acp": {
+      "enabled": true,
+      "backend": "acpx",
+      "allowedAgents": [
+        "claude",
+        "hermes",
+        "opencode"
+      ],
+      "defaultAgent": "claude"
+    }
+  },
+  "hermes_config": {
+    "default_model": "dsv4p_nv",
+    "provider": "nv_gw",
+    "models": [
+      {
+        "model_id": "dsv4p_nv",
+        "max_tokens": 32768,
+        "supports_thinking": true,
+        "supports_vision": false
+      },
+      {
+        "model_id": "glm5_2_nv",
+        "max_tokens": 32768,
+        "supports_thinking": true,
+        "supports_vision": false
+      },
+      {
+        "model_id": "kimi_nv",
+        "max_tokens": 170000,
+        "supports_thinking": true,
+        "supports_vision": true
+      }
+    ],
+    "fallback_providers": [
+      {
+        "provider": "custom",
+        "base_url": "http://127.0.0.1:40007/v1",
+        "model": "glm5_2_ms"
+      }
+    ]
+  },
+  "opencode_config": {
+    "default_model": "nv_gw/kimi_nv",
+    "models": [
+      {
+        "model_id": "kimi_nv",
+        "context": 131072,
+        "output": 32768,
+        "reasoning": true,
+        "tool_call": true
+      },
+      {
+        "model_id": "minimax_m3_nv",
+        "context": 131072,
+        "output": 32768,
+        "reasoning": true,
+        "tool_call": true
+      }
+    ]
+  },
+  "codex_config": {
+    "model": "glm5.1",
+    "model_provider": "litellm-42001",
+    "base_url": "http://localhost:42001/v1",
+    "configured_port": 42001,
+    "port_listening": false,
+    "wire_api": "responses",
+    "note": "port 42001 NOT listening"
+  }
+}

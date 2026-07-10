@@ -1,0 +1,267 @@
+{
+  "hostname": "opc2sname",
+  "ip": "100.109.57.26",
+  "timestamp": "2026-07-09T17:38:02Z",
+  "containers": [
+    {
+      "name": "cc4101",
+      "status": "Up 10 hours",
+      "state": "running",
+      "ports": "127.0.0.1:4101->4101/tcp",
+      "image": "cc-infra-cc4101",
+      "health": "none"
+    },
+    {
+      "name": "ms_gw",
+      "status": "Up 25 hours",
+      "state": "running",
+      "ports": "0.0.0.0:40007->40007/tcp, [::]:40007->40007/tcp",
+      "image": "cc-infra-ms_gw",
+      "health": "none"
+    },
+    {
+      "name": "nv_gw",
+      "status": "Up 25 hours",
+      "state": "running",
+      "ports": "0.0.0.0:40006->40006/tcp, [::]:40006->40006/tcp",
+      "image": "cc-infra-nv_gw",
+      "health": "none"
+    },
+    {
+      "name": "opclaw4103",
+      "status": "Up 28 hours",
+      "state": "running",
+      "ports": "127.0.0.1:4103->4103/tcp",
+      "image": "cc-adapter:latest",
+      "health": "none"
+    },
+    {
+      "name": "cx4102",
+      "status": "Up 31 hours",
+      "state": "running",
+      "ports": "127.0.0.1:4102->4102/tcp",
+      "image": "cc-infra-cx4102",
+      "health": "none"
+    },
+    {
+      "name": "hm4104",
+      "status": "Up 3 days",
+      "state": "running",
+      "ports": "4103/tcp, 127.0.0.1:4104->4104/tcp",
+      "image": "cc-adapter:latest",
+      "health": "none"
+    },
+    {
+      "name": "oc4105",
+      "status": "Up 3 days",
+      "state": "running",
+      "ports": "4103/tcp, 127.0.0.1:4105->4105/tcp",
+      "image": "cc-adapter:latest",
+      "health": "none"
+    },
+    {
+      "name": "logs_db",
+      "status": "Up 4 days",
+      "state": "running",
+      "ports": "5432/tcp",
+      "image": "postgres:16-alpine",
+      "health": "none"
+    }
+  ],
+  "nv_gw": {
+    "health": {
+      "status": "ok",
+      "proxy_role": "passthrough",
+      "nv_num_keys": 5,
+      "nvcf_pexec_models": [
+        "kimi_nv",
+        "dsv4p_nv",
+        "glm5_2_nv"
+      ],
+      "nv_model_tiers": [
+        "kimi_nv",
+        "dsv4p_nv",
+        "glm5_2_nv"
+      ],
+      "nv_default_model": "dsv4p_nv",
+      "port": 40006
+    },
+    "config_models": {
+      "kimi_nv": {
+        "function_ids": [
+          "f966661c-790d-4f71-b973-c525fb8eafd4"
+        ],
+        "strip_params": [
+          "thinking_budget"
+        ],
+        "inject": {
+          "reasoning_effort": "low"
+        },
+        "model_id": "moonshotai/kimi-k2.6",
+        "note": "HM2 reasoning_effort=low (HM1=high)"
+      },
+      "dsv4p_nv": {
+        "function_ids": [
+          "74f02205-c7ba-438f-b81a-2537955bd7ec"
+        ],
+        "strip_params": [
+          "reasoning_effort",
+          "stream_options",
+          "thinking"
+        ],
+        "inject": {},
+        "model_id": "deepseek-ai/deepseek-v4-pro"
+      },
+      "glm5_2_nv": {
+        "function_ids": [
+          "3b9748d8-1d85-40e8-8573-0eeaa63a4b63"
+        ],
+        "strip_params": [
+          "thinking_budget",
+          "reasoning_effort",
+          "thinking"
+        ],
+        "inject": {
+          "chat_template_kwargs": {
+            "enable_thinking": true
+          }
+        },
+        "model_id": "z-ai/glm-5.2",
+        "note": "HM2 injects enable_thinking=True (HM1 inject empty {})"
+      },
+      "minimax_m3_nv": {
+        "registered": false,
+        "note": "NOT registered on HM2 nv_gw (only 3 models in NV_MODEL_TIERS)"
+      }
+    },
+    "env_vars": {
+      "KEY_COOLDOWN_S": "25",
+      "MIN_OUTBOUND_INTERVAL_S": "0",
+      "NV_INTEGRATE_EGRESS_IPS": "134.195.101.193,134.195.101.195,134.195.101.180",
+      "NV_INTEGRATE_KEY_COOLDOWN_S": "0",
+      "NV_INTEGRATE_MODELS": "glm5_2_nv",
+      "NV_INTEGRATE_PROXY_URLS": "socks5h://172.18.0.1:7894,socks5h://172.18.0.1:7896,socks5h://172.18.0.1:7899",
+      "NVU_EMPTY_200_FASTBREAK": "3",
+      "NVU_FORCE_STREAM_UPGRADE": "0",
+      "NVU_FORCE_STREAM_UPGRADE_TIMEOUT": "150",
+      "NVU_PEER_FALLBACK_ENABLED": "1",
+      "NVU_PEER_FALLBACK_TIMEOUT": "25",
+      "NVU_PEER_FALLBACK_URL": "http://100.109.153.83:40006",
+      "NVU_PEER_FB_SKIP_MODELS": "glm5_2_nv,dsv4p_nv",
+      "NVU_TIER_BUDGET_DSV4P_NV": "70",
+      "NVU_TIER_BUDGET_GLM5_2_NV": "70",
+      "PROXY_TIMEOUT": "300",
+      "TIER_COOLDOWN_S": "25",
+      "TIER_TIMEOUT_BUDGET_S": "180",
+      "UPSTREAM_TIMEOUT": "66"
+    }
+  },
+  "ms_gw": {
+    "health": {
+      "status": "ok",
+      "proxy": "ms_gw",
+      "role": "ms_uni",
+      "listen": "0.0.0.0:40007",
+      "num_keys": 7,
+      "num_variants": 10,
+      "models": [
+        "glm5_2_ms",
+        "dsv4p_ms"
+      ],
+      "default_model": "glm5_2_ms",
+      "ms_baseurl": "https://api-inference.modelscope.cn/v1",
+      "rr_counters": {
+        "ms_glm5_2": 1998,
+        "ms_dsv4p": 3760
+      },
+      "cooldown": {
+        "keys_cooling": [],
+        "variants_cooling": [],
+        "models_all_exhausted": []
+      },
+      "time": "2026-07-10 01:37:03"
+    },
+    "env_vars": {
+      "MIN_OUTBOUND_INTERVAL_S": "2.0",
+      "MS_BASEURL": "https://api-inference.modelscope.cn/v1",
+      "MSU_GATEWAY_API_KEY": "ms-gw-token",
+      "PROXY_TIMEOUT": "600",
+      "UPSTREAM_TIMEOUT": "300"
+    }
+  },
+  "openclaw_config": {
+    "providers": {
+      "opclaw4103": {
+        "baseUrl": "http://127.0.0.1:4103/v1",
+        "api": "openai-completions",
+        "timeoutSeconds": null,
+        "models": [
+          {
+            "id": "glm5_2_nv",
+            "contextWindow": 131072,
+            "maxTokens": 32768,
+            "reasoning": true,
+            "supportsReasoningEffort": false
+          }
+        ]
+      }
+    },
+    "primary_model": "opclaw4103/glm5_2_nv",
+    "fallbacks": [],
+    "thinkingDefault": "medium",
+    "acp": {
+      "enabled": true,
+      "backend": "acpx",
+      "allowedAgents": [
+        "claude",
+        "opencode",
+        "hermes"
+      ],
+      "defaultAgent": "claude"
+    }
+  },
+  "hermes_config": {
+    "default_model": "dsv4p_nv",
+    "provider": "hm4104",
+    "base_url": "http://127.0.0.1:4104/v1",
+    "provider_name": "hm4104",
+    "default_model_in_provider": "dsv4p_nv",
+    "name": "HM Adapter 4104 (dsv4p_nv -> dsv4p_ms fallback)",
+    "models": [],
+    "fallback_providers": []
+  },
+  "opencode_config": {
+    "default_model": "oc4105/kimi_nv",
+    "providers": [
+      {
+        "provider": "oc4105",
+        "name": "OC Adapter 4105 (kimi_nv, no fallback)",
+        "api": "http://127.0.0.1:4105/v1",
+        "models": [
+          {
+            "model_id": "kimi_nv",
+            "context": 131072,
+            "output": 32768,
+            "reasoning": true,
+            "tool_call": true
+          }
+        ]
+      }
+    ]
+  },
+  "codex_config": {
+    "model": "glm5_2_nv",
+    "model_provider": "cx4102",
+    "base_url": "http://127.0.0.1:4102/v1",
+    "configured_port": 4102,
+    "port_listening": true,
+    "wire_api": "responses",
+    "models_in_provider": [
+      "glm5_2_nv",
+      "glm5_2_ms"
+    ],
+    "note": "port 4102 listening",
+    "approval_policy": "never",
+    "sandbox_mode": "danger-full-access"
+  }
+}
