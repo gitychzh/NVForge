@@ -73,3 +73,38 @@ curl ms_gw:40007 glm5_2_ms (同请求):
 - 聚焦 nv_gw: 本轮改 cc4101 config 注释 + settings bak, 非 nv_gw 参数; 属配置卫生,
   不动 model selection/tier/thinking. (cc4101 是 CC 自身链路, 非优化目标 nv_gw)
 - 写入仓库: ✓ 本文件
+
+---
+
+## 补充: 后续三项全部完成 (2026-07-13 22:00, commit a6f5920)
+
+### 3. session-env 清理 + 系统 cron
+
+- 清 >7d 空 session-env 目录: 152 → 13 (全是空壳, 0 文件, 无活跃 session 引用)
+- 装系统 crontab (非 CronCreate, 见 [[cron-session-only-unreliable]]): 每周一 3:30 清 >30d 空目录
+  `30 3 * * 1 find ~/.claude/session-env -maxdepth 1 -type d -empty -mtime +30 -exec rmdir {} +`
+- telemetry 最老 22d 未到 30d 阈值, 保守不删; cron 未来覆盖
+
+### 4. memory 双向同步
+
+- 远程 NVForge memory 原 2 条 (cc-chain-layout-hm2, openclaw-hm2-topology), 修正 stale:
+  - cc-chain-layout-hm2: PRIMARY_HEADER_TIMEOUT=8(R825) → 25(R828) 实测
+  - openclaw-hm2-topology: contextWindow 48000 → 120000 (R1243 已修)
+- 拉远程 2 条到本地, 推本地 22 条到远程, MEMORY.md 索引补 2 行
+- 双向同步后: 两机各 25 个 memory .md + MEMORY.md, 内容一致
+
+### 5. CLAUDE.md 重写 (commit a6f5920)
+
+R682 "legacy 不退役"决策已被 R827 实际推翻 (legacy 容器物理退役, 端口 closed).
+改前三处 stale: 容器表 / CC config 段 / 铁律3. 详见 commit message.
+
+- 容器表删 6 legacy 行, 加 5 cc-adapter 行 (cc4101/cx4102/opclaw4103/hm4104/oc4105)
+- CC 链路段: 改为经 cc4101 走 nv_gw/ms_gw 同链 (非 separate glm5.1)
+- 铁律3 + Agent config 末段同步
+- 备份 CLAUDE.md.bak.pre-R1245; 两 clone (hermes_improve_self + NVForge) 已对齐 origin/main
+
+## 本轮总结
+
+R1245 系统性体检 → 4 项配置卫生修复全部完成, 2 commit (9629066 config+bak, a6f5920 CLAUDE.md).
+核心发现: primary (nv_gw glm5_2_nv) NVCF 后端故障非配置可修, 熔断器+fallback 已是最优;
+zombie 与 token 规模弱相关, 下调 autoCompactWindow 无效 (不做).
