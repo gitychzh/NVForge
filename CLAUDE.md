@@ -22,29 +22,31 @@ peers (none belongs to another, none belongs to CC). Each has its own model chai
 **infrastructure side**: it builds/tunes the gateways the agents point at, but does not own
 the agents or their model-selection logic.
 
-The optimization target is the `nv_gw` link above. CC itself runs on a *separate* legacy
-glm5.1 chain (40000–40005); that chain is **not** the optimization target and must not be
-broken — it serves CC itself. R569 cancelled the dual-machine alternating-optimization
-ritual; CC now edits both machines directly (still data-backed, still verified, still
-committed).
+The optimization target is the `nv_gw` link above. **CC itself also runs through `nv_gw`/`ms_gw`**
+(via the `cc4101` adapter, see below) — since R827 CC is no longer on a separate legacy
+chain. The `legacy_*` containers (40000–40005 + 4000) that previously served CC's own glm5.1
+chain were **retired in R827**; ports 40000–40005 and 4000 are closed on both hosts. Do not
+resurrect them. R569 cancelled the dual-machine alternating-optimization ritual; CC now edits
+both machines directly (still data-backed, still verified, still committed).
 
-**Containers (R680 names, both machines symmetric):**
+**Containers (both machines symmetric; R827 retired the `legacy_*` set, R680 names kept for the rest):**
 
 | Port | Container | Role |
 |---|---|---|
 | 40006 | `nv_gw` | NV gateway (optimization target) — NVCF pexec/integrate, per-key SOCKS5/直连 |
 | 40007 | `ms_gw` | MS gateway (backup) — ModelScope, 2D key×variant rotation |
-| 5432  | `logs_db` | postgres `hermes_logs` DB (nv_requests, ms_requests, nv_tier_attempts) |
-| 4000  | `legacy_ms_litellm` | MS-gateway (ms_gw 的镜像复用), 给 cc 自己的 glm5.1 链路用 |
-| 40000 | `legacy_dispatch` | cc 链路 dispatcher (primary→legacy_cc_2, fallback→legacy_cc_1) |
-| 40001 | `legacy_cc_1` | cc 链路 anthropic→openai 转换 (PROXY_ROLE=cc) |
-| 40002 | `legacy_codex` | cc 链路 (PROXY_ROLE=codex) |
-| 40003 | `legacy_passthrough` | cc 链路 (PROXY_ROLE=passthrough) |
-| 40005 | `legacy_cc_2` | cc 链路 (PROXY_ROLE=cc, primary) |
+| 5432  | `logs_db` | postgres `hermes_logs` DB (nv_requests, ms_requests, nv_tier_attempts, cc_requests) |
+| 4101  | `cc4101` | CC's own adapter — anthropic→openai, primary `nv_gw`/`glm5_2_nv`, fallback `ms_gw`/`glm5_2_ms` (R805) |
+| 4102  | `cx4102` | opencode adapter (same `cc-adapter` image) |
+| 4103  | `opclaw4103` | openclaw adapter — does primary→ms_gw fallback on nv_gw 502 |
+| 4104  | `hm4104` | hermes adapter |
+| 4105  | `oc4105` | opencode secondary adapter |
 
-`nv_gw`/`ms_gw` serve the three agents. `legacy_*` (40000–40005 + 4000) serve **CC itself**
-(`ANTHROPIC_BASE_URL=http://127.0.0.1:40001` in `~/.claude/settings.json`). They are not dead
-code — do not retire them.
+`nv_gw`/`ms_gw` are the shared upstreams for all four adapters. Each adapter (`cc-adapter`
+image) converts anthropic-format requests to openai-format and points at `nv_gw` (primary) +
+`ms_gw` (fallback). CC's own config (`~/.claude/settings.json`) sets
+`ANTHROPIC_BASE_URL=http://127.0.0.1:4101` — i.e. CC runs the **same `glm5_2_nv`/`glm5_2_ms`**
+chain as the agents, not a separate glm5.1 chain.
 
 ## Roles & hosts
 
@@ -77,8 +79,10 @@ From `rule.md` / `README.md` — highest priority (R569 dropped rules 1 & 5; the
 
 1. **改前必有数据** — every change backed by logs/DB/metrics, no guessing.
 2. **改后必有验证** — end-to-end verify after deploying.
-3. **聚焦 nv_gw** — only the 40006 NV link. (The legacy 40000–40005 cc chain is not a target,
-   but it is also not to be broken — it serves CC itself.)
+3. **聚焦 nv_gw** — only the 40006 NV link. (CC's own chain `cc4101`→`nv_gw`/`ms_gw` is not the
+   optimization target either, but it rides the same `nv_gw` — so `nv_gw` health directly
+   affects CC itself. The retired `legacy_*` 40000–40005 chain is gone; don't treat it as a live
+   fallback to preserve.)
 4. Network problems → use your own mihomo proxy (`socks5://127.0.0.1:9090` on HM1; HM2 docker
    daemon is already behind mihomo 7880).
 5. **所有修改写入仓库** — commit so the next round can `git pull` and continue.
@@ -184,8 +188,11 @@ Do **not** change model selection, thinking strength, or tool_calls logic — th
 agents' own behavior. (openclaw/opencode thinking is selectable; hermes' NV/MS chain is
 hardcoded medium by `chat_completions.py:426` — not CC's to change.)
 
-CC's own config (`~/.claude/settings.json`) points `ANTHROPIC_BASE_URL` at the legacy
-40001 chain — separate from the agent chain, not touched by optimization rounds.
+CC's own config (`~/.claude/settings.json`) points `ANTHROPIC_BASE_URL` at
+`http://127.0.0.1:4101` (`cc4101`, token `cc4101-token`, frontend model `cc-glm5-2`) — the
+**same** `nv_gw`/`ms_gw` chain as the agents, via the `cc4101` adapter. R827 retired the old
+legacy 40001 glm5.1 chain; the three `settings.json.bak.*` that still pointed at 40001 were
+removed in R1245.
 
 ## Gotchas
 
