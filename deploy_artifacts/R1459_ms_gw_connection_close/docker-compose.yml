@@ -1,0 +1,741 @@
+# R38.14: HM tier reorder — glm5.1 primary → deepseek fallback → kimi last-resort
+# 40001 (cc-stable):    CC → Anthropic format → 41001 glm5.1 v×k (pure MS baseline)
+# 40005 (cc-experiment): CC → Anthropic format → 41001 glm5.1 v×k, NV last-resort
+# 40002 (codex):        Codex → Responses API → 41001 glm5.1 v×k
+# 40003 (passthrough):  _ol/_oc/_hm_ms → OpenAI passthrough → 41001 glm5.1 v×k
+# 40006 (nv-uni):    _hm_nv → NVCF pexec direct (glm5.1/deepseek/kimi, per-model ACTIVE function; glm5.1 primary)
+# 41001: legacy_ms_litellm LiteLLM (70 glm5.1 dep)
+#
+# Port assignments: 41001=LiteLLM MS, 40000=dispatcher,
+#   40001=proxy(cc), 40002=proxy(codex), 40003=proxy(passthrough), 40005=proxy(cc-experiment), 40006=nv-uni(NVCF)
+# ulimit nofile: 41001 uses 2048 soft / 65536 hard (70 dep)
+
+# ── Docker official proxy config: YAML anchors (docs.docker.com/network/proxy/) ──
+# All containers needing host access use host.docker.internal (Linux requires extra_hosts).
+# Proxy env vars follow Docker official naming (uppercase + lowercase auto-set by config.json).
+# NO_PROXY prevents proxy loops for inter-container traffic on cc-net.
+
+x-host-access: &host-access
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+x-proxy-env-ms: &proxy-env-ms
+  # MS containers: use mihomo mixed port 7880 for GitHub access (LiteLLM startup fetch)
+  HTTP_PROXY: http://host.docker.internal:7880
+  HTTPS_PROXY: http://host.docker.internal:7880
+  NO_PROXY: localhost,127.0.0.1,logs_db,legacy_ms_litellm,legacy_dispatch,legacy_cc_1,legacy_codex,legacy_passthrough,legacy_cc_2
+
+x-resource-1c1g-host: &resource-1c1g-host
+  # R36.2: Combined resource limits + host access (YAML prohibits multiple << merge keys per mapping)
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+    - "api-inference.modelscope.cn:47.92.141.220"
+  deploy:
+    resources:
+      limits:
+        memory: 1G
+        cpus: "1.0"
+      reservations:
+        memory: 256M
+        cpus: "0.1"
+
+x-resource-1c1g: &resource-1c1g
+  deploy:
+    resources:
+      limits:
+        memory: 1G
+        cpus: "1.0"
+      reservations:
+        memory: 256M
+        cpus: "0.1"
+
+x-resource-1c2g-host: &resource-1c2g-host
+  # LiteLLM containers: legacy_ms_litellm (70 dep only). NV HM via NVCF pexec (no LiteLLM needed).
+  # 1GiB sufficient (actual usage ~500MiB after model cost map loads).
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  deploy:
+    resources:
+      limits:
+        memory: 1G
+        cpus: "1.0"
+      reservations:
+        memory: 256M
+        cpus: "0.1"
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 50m
+    max-file: '5'
+    tag: container/{{.Name}}
+
+services:
+  # ─── PostgreSQL ───
+  logs_db:
+    image: postgres:16-alpine
+    container_name: logs_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: litellm
+      POSTGRES_MULTIPLE_DATABASES: litellm_glm51 litellm_nv_hm hermes_logs
+      TZ: Asia/Shanghai
+    volumes:
+      - cc_pgdata:/var/lib/postgresql/data
+      - ./postgres/init-db.sh:/docker-entrypoint-initdb.sh:ro
+      # R40: hermes_logs schema
+      - ./postgres/hermes-logs-schema.sql:/docker-entrypoint-initdb.d/20-hermes-logs-schema.sql:ro
+      - /etc/localtime:/etc/localtime:ro
+    expose:
+      - "5432"
+    networks:
+      - cc-net
+    <<: *resource-1c1g
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U litellm -d litellm
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *logging
+
+  # ─── R44: ms-gateway — lightweight Python gateway replacing LiteLLM ───
+  # Replaces litellm/litellm:v1.87.0 (1.5GB image, 70 dep config.yaml) with
+  # a ~50MB python:3.11-alpine image that directly calls ModelScope API.
+  # Function: receive model_name (e.g. glm5.1v3k5), resolve variant ID + key,
+  # forward to ModelScope via HTTPS. No routing/retries/cooldown — upstream
+  # proxies (cc-proxy etc.) handle all v×k cycling and error management.
+  # LiteLLM config.yaml kept in repo for rollback reference (not mounted).
+  legacy_ms_litellm:
+    build:
+      context: ./proxy/legacy-ms-gateway
+      dockerfile: Dockerfile
+    container_name: legacy_ms_litellm
+    restart: unless-stopped
+    environment:
+      LISTEN_PORT: "4000"
+      UPSTREAM_TIMEOUT: "300"
+      PROXY_TIMEOUT: "300"
+      GATEWAY_KEY: sk-litellm-local
+      MS_BASEURL: https://api-inference.modelscope.cn/v1
+      MS_KEY1: ms-bb4e5bee-ca0e-49be-8de3-2347a57752f5
+      MS_KEY2: ms-b836c297-9cb3-45f7-86b3-a33e1b76f48f
+      MS_KEY3: ms-202e8dc3-b2f0-4aa3-9b56-0fa6798ac5b9
+      MS_KEY4: ms-ed773f9d-9ca1-4fd9-87e4-b6acd0e545ae
+      MS_KEY5: ms-69d3fbc6-6938-4fb1-b403-dfa44a05fb0c
+      MS_KEY6: ms-e392cb51-9637-4766-80aa-490a6044294c
+      MS_KEY7: ms-20761627-ec32-497c-a11a-7ff580617f0b
+      LOG_DIR: /app/logs
+      TZ: Asia/Shanghai
+    <<: *resource-1c1g-host
+    volumes:
+      - ./logs/legacy-ms-gateway:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - 41001:4000
+    networks:
+      - cc-net
+    # R44: No depends_on logs_db — ms-gateway doesn't use DB.
+    # LiteLLM needed DB for its router state; ms-gateway is pure passthrough.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:4000/health')" || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *logging
+
+  # ─── 40001: FALLBACK CC proxy (pure MS, stable baseline) ───
+  # ─── ms_gw: MS (ModelScope) unified proxy for three agents (hermes/openclaw/opencode) ───
+  # R582: HM1 部署, 对齐 HM2. 独立容器, 解耦 legacy_ms_litellm (CC 链路 41001 不变).
+  # 三 agent 的 MS glm5.2 fallback 入口. 7 key × 10 variant 2D 顺序循环.
+  # 自写代理 (非 litellm): 处理 MS 畸形 200 + n+1 顺序 + 429-style cooldown.
+  # 纯 OpenAI passthrough (无 Anthropic 转换).
+  # bind-mount gateway/ → 改 .py 只 restart 不 rebuild. 源码从 HM2 rsync.
+  ms_gw:
+    build:
+      context: ./proxy/ms-gw
+      dockerfile: Dockerfile
+    container_name: ms_gw
+    restart: unless-stopped
+    environment:
+      PROXY_ROLE: ms_uni
+      LISTEN_PORT: "40007"
+      UPSTREAM_TIMEOUT: "300"
+      PROXY_TIMEOUT: "600"
+      MS_BASEURL: https://api-inference.modelscope.cn/v1
+      MS_KEY1: ms-bb4e5bee-ca0e-49be-8de3-2347a57752f5
+      MS_KEY2: ms-b836c297-9cb3-45f7-86b3-a33e1b76f48f
+      MS_KEY3: ms-202e8dc3-b2f0-4aa3-9b56-0fa6798ac5b9
+      MS_KEY4: ms-ed773f9d-9ca1-4fd9-87e4-b6acd0e545ae
+      MS_KEY5: ms-69d3fbc6-6938-4fb1-b403-dfa44a05fb0c
+      MS_KEY6: ms-e392cb51-9637-4766-80aa-490a6044294c
+      MS_KEY7: ms-20761627-ec32-497c-a11a-7ff580617f0b
+      NUM_KEYS: "7"
+      NUM_VARIANTS: "10"
+      KEY_COOLDOWN_S: "60"
+      VARIANT_COOLDOWN_S: "30"
+      ALL_EXHAUSTED_COOLDOWN_S: "30"
+      MIN_OUTBOUND_INTERVAL_S: "1.0"
+      EMPTY_200_FASTBREAK_THRESHOLD: "3"  # R900 (HM2→HM1): 5→3 (-2). ms_gw log req 88027738 2 variants 5 empty200 cycles each → 10 wasted requests ~9s. Lower to 3 saves 4 empty cycles per variant (40%). FASTBREAK floor=1, 3 still conservative. ms_gw traffic ~1req/5h, zero risk. Single param, iron rule: only change HM1 never HM2.
+      DEFAULT_MODEL: glm5_2_ms
+      MSU_GATEWAY_API_KEY: ms-gw-token   # R680: 网关鉴权 token
+      # R683: 实时 DB 写入 (抄 nv_gw db.py 模式, 异步 best-effort)
+      MSU_DB_ENABLED: "1"
+      MSU_DB_HOST: logs_db
+      MSU_DB_PORT: "5432"
+      MSU_DB_USER: litellm
+      MSU_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      MSU_DB_NAME: hermes_logs
+      MSU_HOST_MACHINE: ${NVU_HOST_MACHINE:-opc_uname}
+      AUTH_ENABLED: "1"
+      LOG_DIR: /app/logs
+      LOG_RETENTION_DAYS: "7"
+      TZ: Asia/Shanghai
+    <<: *resource-1c1g-host
+    volumes:
+      - ./proxy/ms-gw/gateway:/app/gateway
+      - ./logs/ms_gw:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - 40007:40007
+    networks:
+      - cc-net
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen(\"http://localhost:40007/health\")" || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging: *logging
+  legacy_cc_1:
+    build:
+      context: ./proxy/legacy-cc
+      dockerfile: Dockerfile
+    container_name: legacy_cc_1
+    restart: unless-stopped
+    environment:
+      PROXY_ROLE: cc
+      LITELLM_URL_GLM51: http://legacy_ms_litellm:4000/v1/chat/completions
+      LITELLM_MODELS_URL_GLM51: http://legacy_ms_litellm:4000/v1/models
+      LITELLM_KEY: sk-litellm-local
+      LISTEN_PORT: "40001"
+      PROXY_TIMEOUT: "300"
+      UPSTREAM_TIMEOUT: "60"
+      MAX_TOOL_DESC: "2000"
+      MAX_SCHEMA_DESC: "600"
+      CHARS_PER_TOKEN_ESTIMATE: "3.0"
+      MODEL_INPUT_TOKEN_SAFETY_GLM51: "170000"
+      NUM_KEYS: "7"
+      NUM_VARIANTS_GLM51: "10"
+      MIN_OUTBOUND_INTERVAL_S: "1.5"
+      NV_NUM_KEYS: "0"
+      NV_TIMEOUT: "20"
+      NV_BASEURL: https://integrate.api.nvidia.com/v1
+      NV_KEY1: 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
+      NV_KEY2: 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
+      NV_PROXY_URL: http://host.docker.internal:7894
+      LOG_DIR: /app/logs
+      LOG_RETENTION_DAYS: "7"
+      TZ: Asia/Shanghai
+    <<: *resource-1c1g-host
+    volumes:
+      - ./logs/legacy-40001:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - 40001:40001
+    networks:
+      - cc-net
+    depends_on:
+      - legacy_ms_litellm
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:40001/health')" || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging: *logging
+
+  # ─── 40005: PRIMARY CC proxy (MS-NV alternating, EXPERIMENT) ───
+  legacy_cc_2:
+    build:
+      context: ./proxy/legacy-cc
+      dockerfile: Dockerfile
+    container_name: legacy_cc_2
+    restart: unless-stopped
+    environment:
+      PROXY_ROLE: cc
+      LITELLM_URL_GLM51: http://legacy_ms_litellm:4000/v1/chat/completions
+      LITELLM_MODELS_URL_GLM51: http://legacy_ms_litellm:4000/v1/models
+      LITELLM_KEY: sk-litellm-local
+      LISTEN_PORT: "40005"
+      PROXY_TIMEOUT: "300"
+      UPSTREAM_TIMEOUT: "60"
+      MAX_TOOL_DESC: "2000"
+      MAX_SCHEMA_DESC: "600"
+      CHARS_PER_TOKEN_ESTIMATE: "3.0"
+      MODEL_INPUT_TOKEN_SAFETY_GLM51: "170000"
+      NUM_KEYS: "7"
+      NUM_VARIANTS_GLM51: "10"
+      MIN_OUTBOUND_INTERVAL_S: "1.5"
+      # R36: 5 NV keys + strict alternating + per-key proxy + timeout
+      NV_NUM_KEYS: "5"
+      # R36.5: NV_TIMEOUT 40→30 — NV last-resort mode: success p50=13.4s, p80=~30s
+      #   30s captures 80% of viable NV requests while limiting waste per failure.
+      #   With MS-first design, NV is only tried on MS all-429 (rare), so fewer timeouts overall.
+      NV_TIMEOUT: "30"
+      NV_BASEURL: https://integrate.api.nvidia.com/v1
+      NV_KEY1: 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
+      NV_KEY2: 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
+      NV_KEY3: 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
+      NV_KEY4: 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
+      NV_KEY5: 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
+      NV_PROXY_URL: http://host.docker.internal:7894
+      NV_PROXY_URL_MAP: '{"0":"http://host.docker.internal:7894","1":"http://host.docker.internal:7895","2":"http://host.docker.internal:7896","3":"http://host.docker.internal:7897","4":"http://host.docker.internal:7899"}'
+      NV_MAX_CYCLE: "1200000"
+      # R42: Tier reorder — deepseek first (verified fast, 1-3s, 100% rate).
+      # Previously glm-5.1 was Tier 1 but frequently timeouts (30s+ on NVCF),
+      # wasting budget before reaching working models. R42 also removed NV-TIER-SKIP
+      # so all tiers are tried regardless of failure type.
+      # NV_TIER_TIMEOUT_BUDGET_S: total time budget for all NV tiers (R38.7).
+      # R42: With deepseek Tier 1 (1-3s), budget 45s is generous for at least 1-2 tier attempts.
+      NV_FALLBACK_TIERS: '[["deepseek-ai/deepseek-v4-pro","deepseek_nv"],["moonshotai/kimi-k2.6","kimi_nv"],["z-ai/glm-5.1","glm5.1_nv"]]'
+      NV_TIER_TIMEOUT_BUDGET_S: "45"  # R41-1: 90→45 — NV last-resort 24h data: 43 triggers, 8 success (18.6%), 37 fail at attempt 4 (~102s). Front keys timeout→NV unavailable, 45s=1key(30s)+1key(15s), saves ~55s/fail.
+      LOG_DIR: /app/logs
+      LOG_RETENTION_DAYS: "7"
+      TZ: Asia/Shanghai
+    <<: *resource-1c1g-host
+    volumes:
+      - ./logs/legacy-40005:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - 40005:40005
+    networks:
+      - cc-net
+    depends_on:
+      - legacy_ms_litellm
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:40005/health')" || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging: *logging
+
+  # ─── 40000: CC model→endpoint dispatcher ───
+  legacy_dispatch:
+    build:
+      context: ./proxy/legacy-dispatch
+      dockerfile: Dockerfile
+    container_name: legacy_dispatch
+    restart: unless-stopped
+    environment:
+      LISTEN_PORT: "40000"
+      DISPATCH_PRIMARY: "http://legacy_cc_2:40005"
+      DISPATCH_FALLBACK: "http://legacy_cc_1:40001"
+      UPSTREAM_TIMEOUT: "60"
+      PROXY_TIMEOUT: "600"
+      TZ: Asia/Shanghai
+    ports:
+      - 40000:40000
+    networks:
+      - cc-net
+    depends_on:
+      - legacy_cc_2
+      - legacy_cc_1
+    <<: *resource-1c1g
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:40000/health')" || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *logging
+
+  # ─── 40002: Codex proxy (Responses API → glm5.1 v×k) ───
+  legacy_codex:
+    build:
+      context: ./proxy/legacy-codex
+      dockerfile: Dockerfile
+    container_name: legacy_codex
+    restart: unless-stopped
+    environment:
+      PROXY_ROLE: codex
+      LITELLM_URL_GLM51: http://legacy_ms_litellm:4000/v1/chat/completions
+      LITELLM_MODELS_URL_GLM51: http://legacy_ms_litellm:4000/v1/models
+      LITELLM_KEY: sk-litellm-local
+      LISTEN_PORT: "40002"
+      PROXY_TIMEOUT: "300"
+      UPSTREAM_TIMEOUT: "60"
+      MAX_TOOL_DESC: "2000"
+      MAX_SCHEMA_DESC: "600"
+      CHARS_PER_TOKEN_ESTIMATE: "3.0"
+      MODEL_INPUT_TOKEN_SAFETY_GLM51: "170000"
+      NUM_KEYS: "7"
+      NUM_VARIANTS_GLM51: "10"
+      LOG_DIR: /app/logs
+      LOG_RETENTION_DAYS: "7"
+      TZ: Asia/Shanghai
+    volumes:
+      - ./logs/legacy-40002:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - 40002:40002
+    networks:
+      - cc-net
+    depends_on:
+      - legacy_ms_litellm
+    <<: *resource-1c1g
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:40002/health')" || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging: *logging
+
+  # ─── 40003: Passthrough proxy (OpenAI → pure MS v×k) ───
+  legacy_passthrough:
+    build:
+      context: ./proxy/legacy-passthrough
+      dockerfile: Dockerfile
+    container_name: legacy_passthrough
+    restart: unless-stopped
+    environment:
+      PROXY_ROLE: passthrough
+      LITELLM_URL_GLM51: http://legacy_ms_litellm:4000/v1/chat/completions
+      LITELLM_MODELS_URL_GLM51: http://legacy_ms_litellm:4000/v1/models
+      LITELLM_KEY: sk-litellm-local
+      LISTEN_PORT: "40003"
+      PROXY_TIMEOUT: "300"
+      UPSTREAM_TIMEOUT: "60"
+      MAX_TOOL_DESC: "2000"
+      MAX_SCHEMA_DESC: "600"
+      CHARS_PER_TOKEN_ESTIMATE: "3.0"
+      MODEL_INPUT_TOKEN_SAFETY_GLM51: "170000"
+      NUM_KEYS: "7"
+      NUM_VARIANTS_GLM51: "10"
+      MIN_OUTBOUND_INTERVAL_S: "1.8"
+      BURST_COOLDOWN_S: "8"
+      NV_NUM_KEYS: "0"
+      NV_TIMEOUT: "20"
+      NV_BASEURL: https://integrate.api.nvidia.com/v1
+      NV_KEY1: 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
+      NV_KEY2: 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
+      NV_PROXY_URL: http://host.docker.internal:7894
+      LOG_DIR: /app/logs
+      LOG_RETENTION_DAYS: "7"
+      TZ: Asia/Shanghai
+    <<: *resource-1c1g-host
+    volumes:
+      - ./logs/legacy-40003:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - 40003:40003
+    networks:
+      - cc-net
+    depends_on:
+      - legacy_ms_litellm
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:40003/health')" || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging: *logging
+
+
+  # ─── R38.12: nv_gw — Hermes NV proxy (ALL models via NVCF pexec) ───
+  # Hermes → 40006 → NVCF pexec (per-model ACTIVE function) → per-key SOCKS5 proxy → mihomo → NV API
+  # R38.12: dsv4p only via NVCF pexec direct path.
+  #   LiteLLM 41101-41105 no longer used for routing (kept as manual fallback only).
+  #   Per-model strip_params: glm5.1 strips thinking_budget (NVCF rejects it).
+  #   deepseek/kimi pass all params through (NVCF accepts them).
+  # R38.6 critical fixes preserved: sock.settimeout() BEFORE getresponse(), Connection:close
+  nv_gw:
+    build:
+      context: ./proxy/nv-gw
+      dockerfile: Dockerfile
+    container_name: nv_gw
+    restart: unless-stopped
+    environment:
+      PROXY_ROLE: passthrough
+      LISTEN_PORT: "40006"
+      PROXY_TIMEOUT: "360"  # R1442 (HM2→HM1): 300→360 (+60s). dsv4p_nv ATE→ms_gw fallback 5/5 failed TimeoutError 199-214s > 210s limit. 66s tier budget + 240s new fallback = 306s < 360s safe. Bundled with FALLBACK_TIMEOUT 210→240. Single param x2; iron rule: only change HM1 never HM2.
+      UPSTREAM_TIMEOUT: "66"  # R988 (HM2→HM1): UPSTREAM_TIMEOUT 64→66 (+2s). NVCFPexecTimeout max=62,606ms at UPSTREAM=64 binding (gap=1.4s << R751 3s buffer rule). 6h: 54/47 87.0% SR, 7 ATE (all pre-restart NVCFPexecTimeout). Post-restart 15/15 100% SR, 0 ATE. dsv4p_nv fallback 21/21 100% SR reliable rescue. BUDGET=112>>66 safe. FASTBREAK=2. +2s → buffer=3.4s ≥ 3s. Single param; iron rule: only change HM1 never HM2. (HM2→HM1): UPSTREAM_TIMEOUT 60→62 (+2s). glm5_2_nv NVCFPexecTimeout max=60,373ms at UPSTREAM=60 binding (R968 reported 53,473ms → drifted). 6h: 31/31 100% SR, 0 ATE, 10 fallbacks (32.3%) all glm5_2→dsv4p, avg 120s. 9 NVCFPexecTimeout avg 54,668ms max 60,373ms. R751 ≥3s buffer rule: -373ms violated. +2s captures 60-62s edge → post-reduction buffer=1.6s (62,000-60,373). Margin tight per R751 constraint (3s ideal), but reduction not in play (increase, not decrease). BUDGET=114>>62 safe. FORCE_STREAM=64≥62. FASTBREAK=1. Fallback dsv4p_nv 100% SR reliable rescue. Single param; iron rule: only change HM1 never HM2.
+#      TIER_TIMEOUT_BUDGET_S: "76" # R573: HM2→HM1 — BUDGET 80→76 (-4s). 日志21成功max=41.7s,近1h DB max=58.9s,76余量17.1s安全; 失败路径~79s→~75s压缩4s; 单参数少改多轮; 铁律:只改HM1不改HM2 # R572: HM2→HM1 — BUDGET 85→80 (-5s). 近1h数据dsv4p_max=58.3s,kimi_nv_max=58.9s,80余量21.1s安全; 压缩kimi_nv ATE路径~84s→~79s; 单参数少改多轮; 铁律:只改HM1不改HM2 # R541: HM2→HM1 — BUDGET 85→80 (-5s). R540砍BUDGET 100→85省15s(97.4→82.3s), 继续砍到80再省5s(82→77s). 07:20后成功请求max=53.8s(gt80=0), 零误杀. 与HM2对称(R538已验80安全). FASTBREAK=1下attempt2 ceiling=21→16s, 精确命中. 单参数铁律5. 铁律:只改HM1不改HM2  # R505: HM2→HM1 — BUDGET 125→80 (-45s). 单tier持久化不再需要125s冗余; 3model各对1func, ATE 3连pexec timeout fastbreak=2已在60s break; 80s给3key富余+防止EDGE dooming. R386: HM2→HM1 — BUDGET 120→125 +5s预算头寸. 30min: 649req/644OK(99.23%)/5ATE(0.77%)/0 429s; P50=7.2s P95=36s; 5 ATE各消耗95-101s后ABORT(remaining 19-25s<UPSTREAM=45s). +5s遨给extra 5s budget让proxy试第3键(6s throttle+45s key=51s), 余量增加26% \(20→26s\) . 少改多轮(单参数). 铁律:只改HM1不改HM2  # R571: HM2→HM1 — BUDGET 95→85 (-10s). R570后日志dsv4p edge max~57s, 85余量28s充足; R563历史73.9s回调95但当前数据已显著改善; 压缩ATE失败路径等待时间, 成功路径无影响; 单tier架构精简预算; 单参数少改多轮; 铁律:只改HM1不改HM2
+      TIER_TIMEOUT_BUDGET_S: "205"  # R1286 (HM2->HM1): BUDGET 210->205 (-5s). 6h post-restart: 12req/8OK 66.7%SR, 4 zombie (NVCF content-filter, not config-fixable), 0 ATE, 0 ms_gw fallback, 0 tier cycling. ms_gw healthy. 205 gives ms_gw 195s+5s buffer safe. dsv4p_nv primary 66s (UPSTREAM=66) + NVU_TIER_BUDGET=72 caps tier at ~72s. 205-72 = 133s headroom for peer-fb/ms_gw rescue. Single param, conservative -5s; iron rule: only change HM1 never HM2.
+      CHARS_PER_TOKEN_ESTIMATE: "3.0"
+      # R737 (HM2→HM1): TIER_TIMEOUT_BUDGET_S 110→114 (+4s). UPSTREAM=54 绑定边缘 (dsv4p_nv NVCFPexecTimeout max=54,284ms). 6h: 351req/235OK(67.0%)/116ATE(33.0%). dsv4p_nv 57.5% SR, glm5_2_nv 96.5% SR. BUDGET=110 仅余2s (54+54=108 vs 110), 无未来 UPSTREAM +2s 空间。+4s 创建4s 安全余量满足2轮 UPSTREAM 增量。单参数每轮; 铁律:只改HM1不改HM2
+      # R548: HM2→HM1 — 1.2→1.0 (-0.2s). 与HM2当前1.0对齐; KEY_COOLDOWN=25 >> 1.0 零429风险; 单tier下减少key轮转throttle, 成功路径排队微降; 少改多轮; 铁律:只改HM1不改HM2
+      # R632 (HM2→HM1): MIN_OUTBOUND_INTERVAL_S 0.3→0.25 (-0.05s). R631 deploy后零错误regime持续验证(1h 144req全OK/0fail/0key_cycle_429s, integrate路径63/63零错误, pexec路径81/81零错误); KEY_COOLDOWN=25 >> 0.25 零429风险; 减少请求间throttle间隔提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+# R636 (HM2->HM1): 部署验证 MIN_OUTBOUND_INTERVAL_S=0.10; docker logs 零错误; key_cycle_429s=0; 铁律:只改HM1不改HM2
+      MIN_OUTBOUND_INTERVAL_S: "0"
+      # R638 (HM2→HM1): MIN_OUTBOUND_INTERVAL_S 0.05→0 (-0.05s). R637 deploy后零错误regime持续验证(8h+, 177/177 OK/0fail全regime, 193/193 OK/0fail 1h; integrate路径71/71零错误, pexec路径106/106零错误); key_cycle_429s低位5/177(2.8%); KEY_COOLDOWN=25 >> 0 零429风险; 完全取消outbound throttle消除所有请求间强制wait间隔; 成功路径延迟无变化(仅消除排队headroom); 单参数每轮; 铁律:只改HM1不改HM2
+      # R637 (HM2→HM1): MIN_OUTBOUND_INTERVAL_S 0.10→0.05 (-0.05s). R636 deploy后零错误regime持续验证(8h+, 189/189 OK/0fail 1h, 417/428 OK/11ATE 6h全upstream_type=NULL调度层); integrate路径78/78零错误, pexec路径111/111零错误; key_cycle_429s低位5/189(2.6%); KEY_COOLDOWN=25 >> 0.05 零429风险; 继续减少请求间 outbound throttle 延迟 headroom; 单参数每轮; 铁律:只改HM1不改HM2
+      KEY_COOLDOWN_S: "25"  # R162: HM2->HM1 — KEY_COOLDOWN_S 34->38 (+4s). R161: KEY=34<TIER=38 反向(修复合并cooldown出手过早); KEY>=TIER确保key不抢先; 30min 99.5% 3ATE; 0 429; 少改多轮(单参数); 铁律:只改HM1不改HM2
+      KEY_AUTHFAIL_COOLDOWN_S: "60"      # R922 (HM2→HM1): 新增 KEY_AUTHFAIL_COOLDOWN_S=60. HM2已有此参数(默认600s, 显式60s). HM1缺失此参数走默认600s — auth-fail key被标记后冷却10分钟才恢复, 期间若正常key也auth-fail(服务端临时403)则全key耗尽. 60s让auth-fail key快速恢复, 与HM2对称. 默认600s→60s仅在auth-fail场景生效, 正常路径零影响. 防御性参数, 零风险. 6h数据: 59/59 100%SR, 2 fallback, 0 auth-fail. 铁律:只改HM1不改HM2
+      # R1039 (HM2->HM1): PEER_FB_SKIP_MODELS glm5_2_nv,dsv4p_nv -> glm5_2_nv (-dsv4p_nv). 6h: 274req/262OK(95.6%)/12fail. dsv4p_nv 3 ATE ~61s all single-key empty200, pexec 100% SR(87/87) — not function-level degradation. FASTBREAK=2 not effectively applied (log shows threshold=1 despite env=2). Removing dsv4p_nv from peer-fb skip re-enables HM2 key rescue for dsv4p_nv ATE. ms_gw dsv4p_ms unreliable (501/BrokenPipeError). glm5_2_nv stays in skip (NVCF DEGRADING). Single param; iron rule: only change HM1 never HM2.
+      NVU_PEER_FB_SKIP_MODELS: ""  # R1000 (HM2->HM1): 移除glm5_2_nv, 启用peer-fallback. glm5_2_nv integrate 19.9%失败率(zombie+timeout), peer-fb禁用+ms_gw BrokenPipeError=无有效恢复路径. 启用peer-fb给ATE请求HM2独立key池二次机会. 单参数; 铁律:只改HM1不改HM2.
+      TIER_COOLDOWN_S: "15"  # R1103 (HM2->HM1): TIER_COOLDOWN_S 18->15 (-3s). R1018 raised 15->18 based on function-level empty_200 diagnosis. R1031 proved empty_200 is key-specific (1/5 keys empty, not function-level). 18s GLOBAL-COOLDOWN on all 5 keys for single-key transient is excessive. 15s reverts to pre-R1018 stable value, faster key recovery. 6h: 107req/105OK(98.1%SR)/2ATE (dsv4p_nv single-key empty_200->all-key cooldown). Single param; iron rule: only change HM1 never HM2.
+      # R685 (HM2→HM1): NVU_FORCE_STREAM_UPGRADE_TIMEOUT 32→31 (−1s). 6h 264req/259OK 98.1% zero-error regime; pexec glm5_2 247/248 OK 99.6% p95=17822ms << UPSTREAM=25 safe; 1 NVStream_TimeoutError outlier (38215ms k0) +1 ATE server-side all_tiers_exhausted; single param per round; iron rule: only change HM1 never HM2
+      NVU_FORCE_STREAM_UPGRADE: "0"  # R692: align HM2(显式 0). HM1 原走 config.py 默认 0, 补显式与 HM2 对称
+      NVU_FORCE_STREAM_UPGRADE_TIMEOUT: "66"  # R988 (HM2→HM1): sync with UPSTREAM=66. R749 aligned at 64→now 64→66. BUDGET=112>>66 safe. FASTBREAK=2. (HM2→HM1): NVU_FORCE_STREAM_UPGRADE_TIMEOUT 50→64 (+14s). Drift correction: UPSTREAM=64 (R742) but FORCE_STREAM was left at 50 (R734). 6h: 338req/238OK(70.4%)/100ATE(29.6%). glm5_2_nv health=0.0 dead, 93.5% SR via fallback to dsv4p_nv. NVCFPexecTimeout max=57,797ms near UPSTREAM=64 binding; thinking requests log NV-THINKING-TIMEOUT extended 50s — 14s short of UPSTREAM=64. BUDGET=114>>64 safe. FASTBREAK=1 unchanged. Single param per round; iron rule: only change HM1 never HM2
+      # R749 (HM2→HM1): NVU_FORCE_STREAM_UPGRADE_TIMEOUT 50→64 (+14s). Aligns with UPSTREAM=64 drift correction. glm5_2 thinking forced stream timeout extended from 50s to 64s, matching UPSTREAM to reduce premature cutoffs. BUDGET=114>>64 safe.
+      # R664 (HM2→HM1): NVU_FORCE_STREAM_UPGRADE_TIMEOUT 53→52 (−1s). R656-R664 trajectory continued (61→59→58→57→56→55→54→53→52, −9s total); 6h 77req/73OK 94.8% zero-error regime (0 log errors, 4 ATE server-side all_tiers_exhausted non-config fixable, 1 minor kc429); integrate 12/12 OK, pexec 61/61 OK; 52s >> UPSTREAM_TIMEOUT=25 margin 27s safe; single param per round; iron rule: only change HM1 never HM2
+      # R734 (HM2→HM1): NVU_FORCE_STREAM_UPGRADE_TIMEOUT 44→50 (+6s). Aligns with UPSTREAM=50 (R733). R727 aligned at 44 with UPSTREAM=44; R733 bumped UPSTREAM to 50 left FORCE_STREAM at 44 — drift correction. BUDGET=110>>50 safe. FASTBREAK=1 unchanged. Single param per round; iron rule: only change HM1 never HM2.
+      # R661 (HM2→HM1): NVU_FORCE_STREAM_UPGRADE_TIMEOUT 56→55 (-1s). R656-R661 trajectory continued (61→59→58→57→56→55, -6s total); 6h 90req/86OK 95.6% zero-error regime (0 log errors, 4 ATE server-side all_tiers_exhausted non-config fixable); integrate 25/25 OK, pexec 63/63 OK; 55s >> UPSTREAM_TIMEOUT=25 margin 30s safe; single param per round; iron rule: only change HM1 never HM2
+      # R660 (HM2→HM1): NVU_FORCE_STREAM_UPGRADE_TIMEOUT 57→56 (-1s). R656-R660 trajectory continued (61→59→58→57→56, -5s total); 6h 92req/88OK 95.7% zero-error regime (0 log errors, 4 ATE server-side all_tiers_exhausted non-config fixable); integrate 25/25 OK, pexec 63/63 OK; 56s >> UPSTREAM_TIMEOUT=25 margin 31s safe; single param per round; iron rule: only change HM1 never HM2
+      NVU_PEER_FALLBACK_ENABLED: "1"   # 跨机peer fallback: 本机all_tiers_exhausted时转发对端nv_gw同模型 (用户要求两台互备)
+      NVU_PEER_FALLBACK_URL: http://100.109.57.26:40006   # HM1→HM2 fallback (对端是opc2)
+      NVU_PEER_FALLBACK_TIMEOUT: "66"  # R697: 25→45 对齐 R696 UPGRADE_TIMEOUT=40 + 5s connect reserve. R696 改后 dsv4p_nv peer fallback 25s timeout 不足 (peer 自身 upstream 40s), peer 从未有机会完成 thinking/stream-upgrade 请求. 45s = 40s peer upstream + 5s reserve. Worst case: 72s local budget + 45s peer = 117s < PROXY_TIMEOUT 300s.
+      # R708 (HM2→HM1): FALLBACK_HEALTH_THRESHOLD 0.10 作安全地板。硬编码 0.80 过于激进——glm5_2_nv func 健康度 0.25 时 fallback 被阻断，dsv4p_nv ATE 全变 single-tier NO-FALLBACK。func_health.py 改为读取此 env var。0.10 = 仅排除真正死掉的 function (0% 成功率)，保留任何有微弱存活率的 fallback。单参数每轮；铁律：只改 HM1 不改 HM2。
+      FALLBACK_HEALTH_THRESHOLD: "0.05"
+      NVU_FALLBACK_HEALTH_THRESHOLD: "0.05"  # R982 (HM2→HM1): 新增 NVU_FALLBACK_HEALTH_THRESHOLD=0.05。R818线下func_health.py读取此env var(默认0.10)。6h: 33/29 87.9% SR, 4 ATE (2 single-tier 无fallback+2 double-tier)。glm5_2_nv tier 18 NVCFPexecTimeout max=62,606ms << UPSTREAM=64。16:17起 dsv4p_nv被排除出tier_chain(MIN_SAMPLES expired, health<0.10)，导致glm5_2→dsv4p fallback消失→2 single-tier ATE靠ms_gw rescue仅50% SR。dsv4p_nv在chain内时100% SR(5/5)+19 fallbacks全100%。降低阈值0.10→0.05保留dsv4p_nv在chain内，仅排除真死(0%)函数。FALLBACK_HEALTH_THRESHOLD=0.05为死参数(R919)，NVU_FALLBACK_HEALTH_THRESHOLD为有效env var。Single param, iron rule: only change HM1 never HM2.
+      # R648: HM2→HM1 — PEER_FALLBACK_TIMEOUT 12→10 (-2s). zero-error regime sustained (126/126 OK 1h, 0 fail); peer fallback 100% timeout, compress fastbreak wait; single param per round; iron rule: only change HM1 never HM2
+      # R647: HM2→HM1 — PEER_FALLBACK_TIMEOUT 14→12 (-2s). zero-error regime sustained (124/124 OK post-restart; 127/127 OK 1h); peer fallback 100% timeout confirmed, 12s still covers pexec avg 6.5s; compress fastbreak wait on failure path; single param per round; iron rule: only change HM1 never HM2
+      # 3model (2026-07-01): 三模型各对应一 NVCF function, env overrideable.
+      #   hermes→kimi_nv(KIMI), opencode→dsv4p_nv(DEEPSEEK), openclaw→glm5_1_nv(GLM51).
+      # 历史: R502 时期曾把 DEEPSEEK env 指向 kimi f966661c (单模型坍缩); 3model 回归 deepseek 真值 8915fd28.
+      #       GLM51: R487 曾用 4e533b45 (orion, 现已 INACTIVE), 6155636e (ai-glm-5_1) 替代.
+      # 实测: glm5.1 6155636e 拒收 thinking+reasoning_effort (双 400) → config.py strip_params 含两者.
+      NVCF_BASE_URL: api.nvcf.nvidia.com
+      NVCF_DEEPSEEK_FUNCTION_ID: 74f02205-c7ba-438f-b81a-2537955bd7ec  # R_direct: 8915fd28(sglang)→74f02205(ai-deepseek-v4-pro). 实测中国直连秒回稳定(8915fd28挂死0字节). 全key直连无需代理. 铁律破例自改(用户授权两机全直连).
+      NVCF_KIMI_FUNCTION_ID: f966661c-790d-4f71-b973-c525fb8eafd4  # nvquery-kimi-k2_6 (ACTIVE, hermes→kimi_nv)
+      NVCF_GLM51_FUNCTION_ID: 6155636e-8ca8-4d9a-b4e5-4e8d231dfd3f  # ai-glm-5_1 (2026-07-02 EOL/410 Gone on integrate, INACTIVE/404 on pexec; 全系下架. 保留env供glm5_1_nv别名兼容, 实际走fallback→dsv4p)
+      NVCF_GLM52_FUNCTION_ID: 3b9748d8-1d85-40e8-8573-0eeaa63a4b63  # R577: ai-glm-5_2 (ACTIVE, NVIDIA官方 ownedByDifferentAccount). 2026-07-03 glm5.1 EOL后新主力. pexec专用(integrate端点404不支持glm-5.2). 思考触发=chat_template_kwargs.enable_thinking(抓包证实,reasoning_effort无效). openclaw默认改走此model.
+      NVCF_MINIMAX_FUNCTION_ID: 87ea0ddc-cff1-4bca-bf8b-3bd98a35ddd0  # R833: ai-minimax-m3 (ACTIVE, ownedByDifferentAccount). model名=minimaxai/minimax-m3. pexec/integrate双通道均200. 实测integrate略快(3.7s vs pexec4.4s)故走integrate. opencode默认kimi_nv, minimax_m3_nv为可选. 铁律:只改HM1不改HM2.
+      NV_INTEGRATE_MODELS: "glm5_2_nv"  # R838b (HM1 sync from HM2): 从R833的"glm5_2_nv,minimax_m3_nv"改为仅glm5_2_nv. 原因: 用户方案4要求minimax K1-4走pexec_direct+K5走integrate(数据多样性), 故minimax移出NV_INTEGRATE_MODELS(全key integrate)改入NV_KEY_INTEGRATE_KEYS(仅K5 integrate). glm5_2_nv保留全key integrate(刚需美国IP, 全5key走不同美国IP). kimi_nv/dsv4p_nv走pexec(R1245: dsv4p_nv移出NV_KEY_INTEGRATE_KEYS, pexec 100% SR, integrate timeout浪费72s). R833原: minimax走integrate3.7s vs pexec4.4s, glm5.2仅integrate+美国有内容(pexec全empty200), kimi integrate全404.
+      # R580: HM2→HM1 — integrate key cooldown 120→110 (-10s). 30min数据integrate零使用(低流量夜测期),120锁太死,110仍>per-key RPM恢复窗口(>60-90s); 失败路径微加速3s,成功路径零影响; 单参数少改多轮; 铁律:只改HM1不改HM2
+      # R588: integrate coverage micro-trim. zero integrate errors/429s, continue reducing cooldown to boost integrate path coverage. 95s still above per-key RPM recovery window. single param per round. only HM1/never HM2
+      # R589: integrate coverage micro-trim. 1h data: zero integrate errors/429s, dsv4p integrate coverage 29.2%, kimi 41.7% both still below 70% target. cooldown=95 has margin above per-key RPM recovery window (60-90s). reduce to 90 to boost integrate turnover. single param per round. only HM1/never HM2.
+      # R591: HM2→HM1 — integrate key cooldown 90→85 (-5s). 6h data post-R590: 307 req, 0 integrate errors, only 2 key_cycle_429s (0.65%), dsv4p 99.3%SR/99% integrate coverage, kimi 89%SR with 10 all_tiers_exhausted (integrate-only, no fallback). Lower cooldown reduces key contention on integrate path, increasing throughput; 85s still above per-key RPM recovery window; single param per round; 铁律:只改HM1不改HM2
+      # R599 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 64→62 (-2s). R598 zero-error stable regime at 64 validated, continue shrinking integrate coverage gap; 62 still above per-key RPM recovery window with safe margin; dsv4p 99.2%SR, kimi 83.3%SR with ATEs at server-side low-availability window (not local-config fixable); reduce key contention on integrate path micro-trim; single param per round; 铁律:只改HM1不改HM2
+      # R600 (HM2->HM1): NV_INTEGRATE_KEY_COOLDOWN_S 62->60 (-2s). 6h DB zero integrate errors, 158/159 success (99.4%), kimi 100%SR 62/62, dsv4p 100%SR, key_cycle_429s only 2/159; single glm5_2 ATE at 11:07 UTC is server-side低谷. 60 still above per-key RPM recovery window safe margin; continue shrinking integrate coverage gap; single param per round; 铁律:只改HM1不改HM2
+      # R601 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 60→58 (-2s). 6h DB: 1000 req, 876 OK (87.6% overall SR), integrate path 100% success dsv4p(152/152) kimi(97/97), key_cycle_429s only 18/1000 (1.8%). 1h: dsv4p 99.1% SR (214/216), glm5_2 98.4% (63/64), kimi 81.1% (103/127, 24 ATEs avg 78.5s tight cluster 74-84s — integrate key exhaust during bursts). 58s still above per-key RPM recovery window safe margin; continue shrinking integrate coverage gap micro-trim; single param per round; 铁律:只改HM1不改HM2
+      # R602 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 58→56 (-2s). 6h DB 1000req/87.6%SR integrate 100%零错误 dsv4p+kimi key_cycle_429s仅1.8%; 1h dsv4p 99.1%SR glm5_2 98.4%SR kimi 81.1%SR(24 ATEs avg78.5s簇74-84s integrate钥匙burst期exhaust); 56s仍above per-key RPM recovery window安全余量; 继续integrate coverage gap微修; 单参数每轮; 铁律:只改HM1不改HM2
+      # R603 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 56→54 (-2s). R602 deploy后6h零错误regime持续; integrate路径100%SR dsv4p+kimi零错误; key_cycle_429s维持低位; 继续微修integrate coverage gap; 54s仍above per-key RPM recovery window安全余量; 单参数每轮; 铁律:只改HM1不改HM2
+      # R604 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 54→52 (-2s). R603 deploy后零错误regime持续验证; integrate路径100%SR key_cycle低位; 52s仍above per-key RPM安全余量; 继续微修integrate coverage gap; 单参数每轮; 铁律:只改HM1不改HM2
+      # R605 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 52→50 (-2s). R604 deploy后6h零错误regime持续验证; integrate路径100%SR key_cycle低位; 50s仍above per-key RPM recovery window安全余量; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R606 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 50→48 (-2s). R605 deploy后6h零错误regime持续验证(80req/80OK integrate 100%零错误); key_cycle_429s 1h+6h双窗口均为0; integrate路径 207/207 OK(1h) + 52/52 OK(6h); 11 ATE全部无upstream_type(调度层直接拒,非integrate cooldown可修); 48s仍above per-key RPM recovery window安全余量; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R607 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 48→46 (-2s). R606 deploy后~15min零错误regime持续验证(61req/61OK, integrate路径5/5零错误); key_cycle_429s为0; 11 ATE全部upstream_type=NULL(调度层直接拒,非integrate cooldown可修); 46s仍above per-key RPM recovery window安全余量; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R608 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 46→44 (-2s). R607 deploy后零错误regime持续验证(新容器重启后5min暂无DB积累,历史趋势延续); integrate路径100%SR dsv4p+kimi零错误; 44s仍above per-key RPM recovery window安全余量; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R609 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 44→42 (-2s). R608 deploy后零错误regime持续验证(容器重启后5min clean start,环境44已确认); DB最近30min: 309req/0ratelimit/key_cycle_429s=2; integrate路径零错误; 42s仍above per-key RPM recovery window安全余量; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R610 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 42→40 (-2s). R609 deploy后零错误regime持续验证(integrate路径188/188 OK, key_cycle_429s=0, ATE全部upstream_type=NULL调度层直接拒非integrate可修); 40s仍above per-key RPM安全余量; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R611 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 40→38 (-2s). R610 deploy后零错误regime持续验证(1h 54req/54OK/0fail/0key_cycle_429s, 6h 118req/0pct_429, ATE=0, docker logs 0 errors); 38s仍裸近per-key RPM恢复窗口安全余量但已接近保守底线; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R612 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 38→36 (-2s). R611 deploy后零错误regime持续验证(1h 54req/54OK/0fail/0key_cycle_429s, 6h 118req/0pct_429, ATE=0); 38s仍近per-key RPM安全余量; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R613 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 36→34 (-2s). R612 deploy后零错误regime持续验证(2h 9req/9OK/0fail/0key_cycle_429s, 6h 44req/44OK/0pct_429, ATE=0); 34s继续压近per-key RPM安全余量但实证明零错误; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R614 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 34→32 (-2s). R613 deploy后容器重启11min, DB 206req/205OK(99.5%)/1ATE上游调度层; integrate 97/97零错误, pexec 108/108零错误, key_cycle仅1(成功req正常轮转); 32s继续压近per-key RPM安全余量但实证明零错误; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R615 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 32→30 (-2s). R614 deploy后容器重启~6min, DB最近30min 216req/215OK(99.5%)/1ATE 502; integrate路径100/100零错误, pexec路径115/115零错误; key_cycle_429s仅2/216(0.9%,正常轮转成功); 30s继续压近per-key RPM安全余量但integrate路径实证明零错误; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      NV_INTEGRATE_KEY_COOLDOWN_S: "0"
+      # R631 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 1→0 (-1s). R630 deploy后零错误regime持续验证(容器~8min 134req/134OK/0fail/0key_cycle_429s, integrate路径kimi_nv零错误, pexec路径glm5_2_nv零错误); 0s移除integrate key cooldown彻底消除key轮转等待, 历史600+轮微修已完全验证integrate路径安全余量; 继续最大化integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R629 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 4→2 (-2s). R628 deploy后零错误regime持续验证(integrate全路径零错误, key_cycle_429s=0); 2s继续压近per-key RPM安全余量但integrate路径持续零错误证明仍有安全余量; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R630 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 2→1 (-1s). R629 deploy后零错误regime持续验证(integrate全路径零错误, key_cycle_429s=0); 1s继续压近per-key RPM安全余量但integrate路径持续零错误证明仍有安全余量; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R628 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 6→4 (-2s). R627 deploy后零错误regime持续验证(容器~8min 136req全200OK, integrate 58/58零错误, pexec 78/78零错误, key_cycle_429s=0); 4s继续压近per-key RPM安全余量但integrate路径持续零错误证明仍有安全余量; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R625 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 12→10 (-2s). R624 deploy后零错误regime持续验证(integrate/pexec全路径零错误, 136req全200OK, key_cycle_429s=0); 10s继续压近per-key RPM安全余量但integrate路径持续零错误证明安全; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R626 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 10→8 (-2s). R625 deploy后零错误regime持续验证(最近10min 136req全200OK, integrate/pexec全路径零错误, key_cycle_429s=0); 8s继续压近per-key RPM安全余量但integrate路径持续零错误证明安全; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R627 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 8→6 (-2s). R626 deploy后零错误regime持续验证(最近15min 139req全200OK, integrate/pexec全路径零错误, key_cycle_429s=0); 6s继续压近per-key RPM安全余量但integrate路径持续零错误证明安全; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R624 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 14→12 (-2s). R623 deploy后零错误regime持续验证(integrate/pexec全路径零错误, 136 metrics全200OK, key_cycle_429s=0); 12s继续压近per-key RPM安全余量但integrate路径持续零错误证明安全; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R623 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 16→14 (-2s). R622 deploy后零错误regime持续验证(integrate/pexec全路径零错误, 141req全200OK, key_cycle_429s=0); 14s继续压近per-key RPM安全余量但integrate路径持续零错误证明安全; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R622 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 18→16 (-2s). R621 deploy后零错误regime持续验证(integrate/pexec全路径零错误, key_cycle_429s=0); 16s继续压近per-key RPM安全余量但integrate路径持续零错误证明安全; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R621 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 20→18 (-2s). R620 deploy后零错误regime持续验证(integrate/pexec全路径零错误, key_cycle_429s=0); 18s继续压近per-key RPM安全余量但integrate路径持续零错误证明安全; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R616 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 30→28 (-2s). R615 deploy后~5min, DB最近30min dsv4p 28/28(100%) kimi 70/70(100%) glm5_2 108/109(99.1%); integrate/pexec全路径零错误; key_cycle_429s低位; 28s继续压近per-key RPM安全余量但integrate路径实证明零错误; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R617 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 28→26 (-2s). R616 deploy后~8min, DB最近2h 64req/64OK(100%) zero-error; integrate/pexec全路径零错误, key_cycle_429s=0; 26s继续压近per-key RPM安全余量但integrate路径实证明零错误; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R618 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 26→24 (-2s). R617 deploy后~8min, DB最近2h+ 143req/143OK(100%) zero-error regime持续; integrate路径62/62零错误(kimi_nv), pexec路径81/81零错误(glm5_2_nv); key_cycle_429s=0; 24s继续压近per-key RPM安全余量但integrate路径持续零错误证明安全; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R619 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 24→22 (-2s). R618 deploy后零错误regime持续验证(09:03-11:42, 70req/70OK 100% zero-error); integrate路径11/11零错误(kimi_nv), pexec路径59/59零错误(glm5_2_nv); key_cycle_429s=0; 22s继续压近per-key RPM安全余量但integrate路径持续零错误证明安全; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R620 (HM2→HM1): NV_INTEGRATE_KEY_COOLDOWN_S 22→20 (-2s). R619 deploy后零错误regime持续验证(11:42-当前, integrate/pexec全路径零错误, key_cycle_429s=0); 20s继续压近per-key RPM安全余量但持续零错误证明integrate路径仍有安全余量; 继续微修integrate coverage gap提升throughput; 单参数每轮; 铁律:只改HM1不改HM2
+      # R575: HM2→HM1 — integrate models +kimi_nv. dsv4p integrate已验证49/51成功(96%),avg 46s; kimi pexec 11 ATE/2 成功,全部74-76s empty200+timeout; 扩展integrate覆盖kimi以消除ATE; 单参数少改多轮; 铁律:只改HM1不改HM2
+      # NV API keys (shared across all models)
+      NVU_KEY1: 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
+      NVU_KEY2: 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
+      NVU_KEY3: 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
+      NVU_KEY4: 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
+      NVU_KEY5: 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
+      # Per-key SOCKS5 proxy URLs (mihomo mixed ports). empty=direct.
+      # 路由(unify-nv核实2026-06-30): k1/k3 走 mihomo(7894/7896, 美国动态节点IP); k2/k4/k5 直连(本机出口).
+      # mihomo节点IP动态变化,不在注释里固化(曾记134.195.101.193/194,实测已变).实时出口IP查法: curl -x http://127.0.0.1:7894 https://api.ipify.org
+      # R832-us-proxy: 5key全配美国mihomo代理. probe3证实glm5.2经美国IP 90%成功 vs 直连0%(NVCF对glm5.2做出口IP地域风控,非美国IP全timeout/empty200). dsv4p经美国IP偶timeout(5/8)但当前health<0.05已排除tier; kimi经美国IP全OK. 覆盖R_direct全直连决策(彼时主力glm5.1已EOL). 7894/7897同IP(134.195.101.193),其余各独立美国IP.
+      NVU_PROXY_URL1: "http://host.docker.internal:7894"  # -> 134.195.101.193
+      NVU_PROXY_URL2: "http://host.docker.internal:7895"  # -> 134.195.101.120
+      NVU_PROXY_URL3: "http://host.docker.internal:7896"  # -> 134.195.101.194
+      NVU_PROXY_URL4: "http://host.docker.internal:7897"  # -> 134.195.101.193 (dup k1)
+      NVU_PROXY_URL5: "http://host.docker.internal:7899"  # -> 134.195.101.197
+      NVU_EGRESS_IP1: "134.195.101.193"  # mihomo-7894
+      NVU_EGRESS_IP2: "134.195.101.120"  # mihomo-7895
+      NVU_EGRESS_IP3: "134.195.101.194"  # mihomo-7896
+      NVU_EGRESS_IP4: "134.195.101.193"  # mihomo-7897 (dup k1)
+      NVU_EGRESS_IP5: "134.195.101.197"  # mihomo-7899
+      # R838/R838b (HM1 sync from HM2): per-key 跨链路数据多样性.
+      # NV_INTEGRATE_PROXY_URLS: 5美国出口端口轮换(glm5_2_nv全key integrate per-key轮换). HM1实测5端口IP: 7894->193 7895->120 7896->194 7897->193(dup k1) 7899->197.
+      NV_INTEGRATE_PROXY_URLS: "http://host.docker.internal:7894,http://host.docker.internal:7895,http://host.docker.internal:7896,http://host.docker.internal:7897,http://host.docker.internal:7899"
+      NV_INTEGRATE_EGRESS_IPS: "134.195.101.193,134.195.101.120,134.195.101.194,134.195.101.193,134.195.101.197"
+      # NV_KEY_INTEGRATE_KEYS: 指定哪些model的K5走integrate(R838b: RR轮到K5才走integrate, K1-4走pexec_direct, 自然分散). kimi_nv不在此列(integrate全404不可用, 只走pexec). minimax_m3_nv:5 用户方案4(K1-4 pexec_direct + K5 integrate_us). dsv4p_nv:5 用户方案2(已于R1245移除: integrate 72s timeout废掉tier budget, pexec 100% SR更优). glm5_2_nv不在此列(在NV_INTEGRATE_MODELS全key走integrate, 刚需美国IP).
+      NV_KEY_INTEGRATE_KEYS: "minimax_m3_nv:5"
+      # NV_KEY_INTEGRATE_PROXY_URLS: K5走integrate时用的代理(单值, key_filter=[4]即K5→index0). 对齐HM2用7897(美国出口193).
+      NV_KEY_INTEGRATE_PROXY_URLS: "http://host.docker.internal:7897"
+      NV_KEY_INTEGRATE_EGRESS_IPS: "134.195.101.193"
+      LOG_DIR: /app/logs
+      LOG_RETENTION_DAYS: "7"
+      TZ: Asia/Shanghai
+      # R40: structured metrics → logs_db hermes_logs DB (best-effort, async)
+      NVU_DB_ENABLED: "1"
+      NVU_DB_HOST: logs_db
+      NVU_DB_PORT: "5432"
+      NVU_DB_USER: litellm
+      NVU_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      NVU_DB_NAME: hermes_logs
+      NVU_GATEWAY_API_KEY: nv-gw-token   # R680: 网关鉴权 token (agent config model.api_key 与此处一致)
+      NVU_HOST_MACHINE: ${NVU_HOST_MACHINE:-opc_uname}
+      NVU_CONNECT_RESERVE_S: "0"  # R657 (HM2→HM1): CONNECT_RESERVE 1→0 (-1s). R654 plan priority floor; zero-error regime sustained (6h 47req/43OK/4ATE server-side all_tiers_exhausted non-config fixable; logs NO errors; 0 key_cycle_429s; 1h 4/4 OK; 24h 311req/307OK 98.7%); connect measured 0.6-2.1s worst-case << UPSTREAM=25s margin 22.9s safe; +1s pexec usable time; single param per round; iron rule: only change HM1 never HM2
+      NVU_SSLEOF_RETRY_DELAY_S: "1.0"  # R543: HM2→HM1 — SSLEOF_RETRY_DELAY 1.5→1.0 (-0.5s). 8h内0次SSLEOF; HM2已稳定1.0(R321); 完成HM1-HM2 SSLEOF延迟对齐; 单参数少改多轮; 铁律:只改HM1不改HM2
+      NVU_PEXEC_TIMEOUT_FASTBREAK: "1"  # R997 (HM2->HM1): FASTBREAK 2->1. BUDGET=112 integrate consume ~66s (k1) + ~46s (k2 FASTBREAK) = ~112s leaves 0s for pexec fallback -> 8 ATE at 112,051ms avg. FASTBREAK=1: integrate 66s + pexec fallback gets 46s budget. Single param; iron rule: only change HM1 never HM2.
+      # R709 (HM2→HM1): NVU_PEXEC_TIMEOUT_FASTBREAK 2→1 (-1 key). ATE avg 122s(dual-tier), FASTBREAK=2浪费第2key 60s于已失败NVCF function; 1省60s/ATE且释放BUDGET余量给peer fallback; R559-R694历史验证稳定(136轮); 单参数每轮; 铁律:只改HM1不改HM2
+      # R961 (HM2→HM1): FASTBREAK 2→1 (-1 key). 24h: 190req/189OK(99.5%SR)/1ATE(0.5%). NVCFPexecTimeout max=51.8s << UPSTREAM=64 (non-binding, gap=12.2s). Uniform across keys (k0-k4: 1/1/1/0/2). FASTBREAK=2 wastes ~52s 2nd key on same NVCF func. Fallback dsv4p_nv 100% SR → reliable rescue. BUDGET=114>>64 safe. Prefer fallback over futile 2nd key. Single param per round; iron rule: only change HM1 never HM2.
+      # R731 (HM2→HM1): FASTBREAK 2→1 (-1 key). dsv4p_nv NVCFPexecTimeout max=48,305ms uniform across all 5 keys → function-level, not key-specific. 2nd key wastes ~48s on every failure; glm5_2 fallback 97.3% SR rescues. BUDGET=110>>48=48s safe. Single param per round; iron rule: only change HM1 never HM2.
+      # R1031 (HM2->HM1): EMPTY_200_FASTBREAK 1->2. 6h: 93.2% SR (371/398). dsv4p_nv 9 ATE (13.2%) all single empty200->fastbreak=1->ms_gw BrokenPipeError. Log confirmed: 1 empty200/5keys but fastbreak=1 kills whole tier. ms_gw relay failed 3096ms BrokenPipeError. FASTBREAK=2 gives 2nd key chance; if succeeds rescues w/o ms_gw. BUDGET=110 allows k2 if k1<44s (110-44=66>=UPSTREAM=66). Single param; iron rule: only change HM1 never HM2.
+      # R1031 (HM2->HM1): EMPTY_200_FASTBREAK 1->2. 6h: 93.2% SR (371/398). dsv4p_nv 9 ATE (13.2%) all single empty200->fastbreak=1->ms_gw BrokenPipeError. Log confirmed: 1 empty200/5keys but fastbreak=1 kills whole tier. ms_gw relay failed 3096ms BrokenPipeError. FASTBREAK=2 gives 2nd key chance; if succeeds rescues w/o ms_gw. BUDGET=110 allows k2 if k1<44s (110-44=66>=UPSTREAM=66). Single param; iron rule: only change HM1 never HM2.
+      NVU_EMPTY_200_FASTBREAK: "2"
+      # R832c (2026-07-09, HM1 self): budget 20→64. R832纠偏: glm5.2经美国IP可用(抓包73%OK),
+      # 之前budget=20是误判(以为glm5.2不可修supplier surge想逃ms_gw). 实际20s<UPSTREAM=64s,
+      # 单key必先被budget砍, 1次timeout(20s)+fastbreak=1就all_tiers_exhausted, primary永远没机会跑完.
+      # budget=64对齐UPSTREAM_TIMEOUT给单key完整成功路径(3-14s正常,偶发慢30s). 铁律:只改HM1不改HM2.
+      # R830b (2026-07-09, HM1 self): 64→96. 根因(飞书"回答一句卡住"): metrics实测 glm5_2_nv integrate
+      # 成功请求 max=71.3s p95=62.4s, 而 thinking override=NVU_FORCE_STREAM_UPGRADE_TIMEOUT=66s 太紧,
+      # 67s 的偶发慢请求被砍成 timeout → fastbreak=1 放弃整 integrate tier → 切 pexec(对glm5.2全empty200
+      # 不可用, R832d) → 级联 ms_gw 56s timeout → 飞书 lane 120s 杀. budget 64 < override 66 也是病
+      # (单 key 就烧光 budget). 配合新增 NVU_INTEGRATE_THINKING_TIMEOUT_S=90 (integrate 专属, 见下),
+      # budget=96 容纳 1 次 90s 慢思考 + 切换余量; 失败时 fastbreak=1 立即退不级联. 铁律:只改HM1不改HM2.
+      NVU_TIER_BUDGET_GLM5_2_NV: "96"
+      # R835 (2026-07-10, HM1 self): minimax_m3_nv integrate 专属 tier budget.
+      # 背景: minimax reasoning_effort=high 实测 ~156s, 但全局 TIER_TIMEOUT_BUDGET_S=112s 会砍掉 → 502.
+      # pexec 路径早有 NVU_TIER_BUDGET_{model} override (upstream.py:503), integrate 路径之前没有 (R834 审计
+      # P2-8). R835 给 integrate 也加了 per-model override (upstream.py:185), 此 env 配 minimax=180s.
+      # 不影响 glm5.2 (有专属 96) 和 dsv4p/kimi (走 pexec, 不经 integrate). 铁律:只改HM1不改HM2.
+      NVU_TIER_BUDGET_MINIMAX_M3_NV: "100"  # R1035 (HM2->HM1): BUDGET 110->100 (-10s). minimax_m3_nv 7 ATE avg 154s in 6h (no ms_gw rescue), integrate thinking=90s + FASTBREAK=1 = ~90s key abort. 100s cuts 10s headroom per ATE while >90s safe. Empty FALLBACK_GRAPH should route dsv4p ATEs via ms_gw. Single param; iron rule: only change HM1 never HM2
+      NVU_TIER_BUDGET_DSV4P_NV: "66"  # R1333 (HM2→HM1): BUDGET 72→78 (+6s). 6h: 106req/93OK(87.7%)/13fail. dsv4p_nv 6 ATE avg 71.7s — k5 empty_200→k1 timeout→fastbreak at ~72s budget exhaustion (5s min threshold violated). +6s gives 78-62=16s remaining after k1 504 connect, enabling k2/k3 full attempt. 7 zombie_empty_completion glm5_2_nv code-level not config-fixable. ms_gw relay TimeoutError 213-233s code-level streaming sync defect. pexec 100% SR(48/48). ms_gw 94.4% SR. Single param; iron rule: only change HM1 never HM2.  R1116 (HM2->HM1): BUDGET 66->72 (+6s). 6h: 136req/122OK(89.7%SR)/14fail. dsv4p_nv ATE k4 empty_200 at 61.1s -> budget 66s exhausted (4.9s < 5s min) -> ms_gw BrokenPipeError. EMPTY_200_FASTBREAK=2 is code-level no-op (R1039). +6s gives k5 budget for rescue within tier, avoiding ms_gw BrokenPipeError. 72 < BUDGET=198 safe. Single param; iron rule: only change HM1 never HM2.
+      # R835b (2026-07-10, HM1 self): 流式总 deadline. 背景: conn.sock.settimeout 是 per-read socket 超时,
+      # 但 SSE upstream 持续发 keep-alive chunk (每次都在 read_timeout 窗口内) → 单次 read 永不超时 →
+      # 流永不中断 → openclaw 等流结束等到 abort → ms_gw 再 abort 双杀 (R834 审计 P0 铁证: 流持续 102s).
+      # 加总 deadline: 超过就 break + 记 error_type=stream_total_deadline, 不再喂饭式等.
+      # 设 66s: 对齐 UPSTREAM_TIMEOUT=66, 消除 42s 过早截断导致的 stream_total_deadline 错误
+      # 设 66s: < openclaw nv_gw provider timeoutSeconds=120s (R835a→R1028 drift correction), 66s << 120s safe; align with UPSTREAM=66
+      # NVU_INTEGRATE_THINKING_TIMEOUT_S=90 per-attempt 管, 此 deadline 兜的是"流已开始但持续不结束"的僵尸流.
+      NVU_STREAM_TOTAL_DEADLINE_S: "42"  # R839 (HM1 self): 90→42. R835b 原意就是 42s (治"流已开始后的喂饭卡死"). 90s 后期被 R1038 改回兼容 thinking 慢, 但 thinking 慢是 ttfb 慢 (由 NVU_INTEGRATE_THINKING_TIMEOUT_S=90 per-attempt 管), 不是首字节后慢; 首字节后还卡 90s 纯属过长. 42<45s 正好卡在 openclaw timeout 之前主动断流让 fallback 跑. 配合 F2 首字节前 deadline (NVU_STREAM_FIRST_BYTE_DEADLINE_S) 分工互补: 首字节前由 FIRST_BYTE 管, 首字节后由 TOTAL(idle) 管.
+      # R830b (2026-07-09, HM1 self): integrate 专属 thinking timeout override. handlers.py 对 thinking
+      # 请求传 upstream_timeout_override=NVU_FORCE_STREAM_UPGRADE_TIMEOUT(=66s), 但该 env 是 integrate +
+      # pexec 共用; 放宽它会让 pexec(dsv4p/kimi 失败兜底)也晚放弃. 本 env 仅 _try_integrate_keys 读取
+      # (upstream.py R830b), 覆盖传入 override; pexec 路径不受影响. 90s 覆盖实测 max 71.3s + 18s 余量.
+      NVU_INTEGRATE_THINKING_TIMEOUT_S: "90"
+      # R839 (HM1 self): 首字节前绝对 deadline. 兜 "upstream 返回 200 头但 body 首字节永不来" 场景
+      # (R835b idle deadline 盲区: 它只在首字节后设置, 首字节没到时 deadline 永不被设, 只能靠 90s
+      # per-attempt socket timeout 兜底太长). 20s 内没收到首字节就 break + 记 stream_first_byte_timeout.
+      # 与 NVU_STREAM_TOTAL_DEADLINE_S(首字节后 idle 42s) 分工互补, 互不重叠.
+      NVU_STREAM_FIRST_BYTE_DEADLINE_S: "20"
+      # R830c (2026-07-09, HM1 self): integrate 专属 fastbreak 阈值, 解绑 pexec. 专家评审(glm5.2+dsv4p共识):
+      # fastbreak=1 让 integrate 5key 只试1个就放弃整 tier, 单点 thinking 慢(40-71s)连累全局. 改2: 允许2次
+      # timeout 再放弃 tier, 给5key轮换机会. 仅 _try_integrate_keys 读(line~160, 默认回退 NVU_PEXEC_TIMEOUT_FASTBREAK);
+      # pexec 路径(_try_tier_keys line~508)仍读 NVU_PEXEC_TIMEOUT_FASTBREAK=1 不变, 保护 dsv4p/kimi 精调.
+      NVU_INTEGRATE_TIMEOUT_FASTBREAK: "1"
+      # R830c-linkage (2026-07-09, HM1 self): 超时层级关系(不改参数, 仅标注约束, 供后续调参不打架):
+      # openclaw.json providers.nv_gw.timeoutSeconds=100 (第一道闸, openclaw model-fetch requestTimeoutMs)
+      #   └ nv_gw UPSTREAM_TIMEOUT=66 (默认 per-key 头超时)
+      #   └ NVU_INTEGRATE_THINKING_TIMEOUT_S=90 (integrate 专属 override, 覆盖上面 66)
+      #   └ NVU_TIER_BUDGET_GLM5_2_NV=96 (单 tier 总预算, 含多 key 轮换)
+      #   └ ms_gw fallback NVU_MS_GW_TIMEOUT=45 (第二 provider, 仅 primary 熔断后触发)
+      # openclaw compaction.timeoutSeconds=120 (lane 兜底杀). provider timeoutSeconds 是单 fetch 超时, 失败后切
+      # 下一个 provider. 最坏理论: nv_gw fetch 100s + ms_gw fetch 50s = 150s > 120s lane. 但实际 nv_gw 内部
+      # integrate 90s override + fastbreak=2 会在 ~90s 内放弃整 tier 切 ms_gw(ms_gw 50s) approx 140s, 仍可能触 lane.
+      # 这是可接受的最后兜底: lane 120s 杀总比 135s 僵死(line603 case) 强, 至少 stall-watcher 会兜底重启.
+      # 实测 integrate p50=14s p95=62s max=71s 正常远不触 100s; 100s 只拦偶发 135s 僵死. 铁律:只改HM1不改HM2.
+      # R832c (HM1 self): ms_gw fallback timeout 30→45. 日志显示ms_gw relay实际62s才失败(30s被某处覆盖),
+      # 45s放宽兜底. 但primary修好后少fallback到ms_gw. ms_gw本身ModelScope surge本机改不动后端.
+      NVU_MS_GW_FALLBACK_TIMEOUT: 120  # R1459 (HM2→HM1): ms_gw fallback timeout 280→120. Code fix: added Connection:close header to ms_gw fallback request (R1459 code patch in handlers.py). ms_gw responds 2-5s per DB. 120s gives 24x margin. 66s tier budget + 120s = 186s < 360s PROXY_TIMEOUT safe. Iron rule: only change HM1 never HM2.
+      NVU_MS_GW_FALLBACK_MODELMAP: "glm5_2_nv:glm5_2_ms,kimi_nv:kimi_ms,dsv4p_nv:dsv4p_ms"  # R1275 (HM2->HM1): add dsv4p_nv->dsv4p_ms fallback. 3 dsv4p ATEs/6h had zero ms_gw rescue (MODELMAP missing dsv4p). ms_gw dsv4p_ms ACTIVE (10 variants, 17 confirms). BUDGET 210-72=138s headroom. Single-param: MODELMAP extension
+    <<: *resource-1c1g-host
+    volumes:
+      - ./proxy/nv-gw/gateway:/app/gateway   # unify-nv Layer1: 源码挂载(对齐HM2), 改 .py 只需 restart 不再 rebuild
+      - ./logs/nv_gw:/app/logs
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - 40006:40006
+    networks:
+      - cc-net
+    dns:              # R748: 强制用阿里 DNS, 避 ECS 返亚太挂死节点 (glm5_2思考在亚太节点504/202挂死, 美国节点稳定)
+      - 223.5.5.5
+      - 223.6.6.6
+    # R38.12: No depends_on LiteLLM containers — nv_gw no longer routes through them.
+    # LiteLLM 41101-41105 kept running as manual fallback (can add back depends_on if needed).
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:40006/health')" || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging: *logging
+
+  cc4101:
+    build: ./proxy/cc4101
+    image: cc-infra-cc4101
+    container_name: cc4101
+    restart: unless-stopped
+    ports:
+    - 127.0.0.1:4101:4101
+    environment:
+    - LISTEN_PORT=4101
+    - PROXY_ROLE=cc4101
+    - AUTH_ENABLED=1
+    - UPSTREAM_TIMEOUT=30  # R829: 120->30. integrate链路p90<15s, 120s遇SSL卡死致CC mid-response僵2min, 30s快速断触发重试
+    - UPSTREAM_IDLE_TIMEOUT=150  # R830: body read idle超时(两次chunk间隔), 对齐nv_gw thinking 150s, 容纳长思考静默期
+    - PYTHONUNBUFFERED=1  # R830: 消除stdout buffer迟滞, docker logs实时可见(对齐ms_gw/nv_gw虽未设但实测实时)
+    - PRIMARY_UPSTREAM_URL=http://nv_gw:40006/v1/chat/completions
+    - PRIMARY_UPSTREAM_TOKEN=nv-gw-token
+    - PRIMARY_UPSTREAM_MODEL=glm5_2_nv
+    - CC4101_GATEWAY_API_KEY=cc4101-token
+    - CC4101_DB_ENABLED=1
+    - CC4101_DB_HOST=logs_db
+    - CC4101_DB_PORT=5432
+    - CC4101_DB_USER=litellm
+    - CC4101_DB_PASSWORD=${POSTGRES_PASSWORD}  # R1442: 部署cc4101到HM1(从HM2移植); 密码对齐HM1用\${POSTGRES_PASSWORD}, 非HM2固定值
+    - CC4101_DB_NAME=hermes_logs
+    - CC4101_HOST_MACHINE=opcsname
+    - LOG_RETENTION_DAYS=14
+    - LOG_DIR=/app/logs
+    - TZ=Asia/Shanghai
+    volumes:
+    - ./proxy/cc4101/gateway:/app/gateway
+    - ./logs/cc4101:/app/logs
+    - /etc/localtime:/etc/localtime:ro
+    depends_on:
+    - nv_gw
+    - ms_gw
+    - logs_db
+    networks:
+    - cc-net
+    mem_limit: 1g
+
+networks:
+  cc-net:
+    driver: bridge
+
+volumes:
+  cc_pgdata:
