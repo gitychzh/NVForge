@@ -40,18 +40,23 @@ from .config import (
     UPSTREAM_TIMEOUT, TIER_TIMEOUT_BUDGET_S, NVU_FORCE_STREAM_UPGRADE_TIMEOUT,
     _next_nv_key,
     throttle_outbound,
-    is_key_cooling, mark_key_cooling, reset_key429_count, KEY_COOLDOWN_S,
+    is_key_cooling, mark_key_cooling, reset_key429_count,
+    KEY_COOLDOWN_S,
     TIER_COOLDOWN_S,
     is_key_auth_failed, mark_key_auth_failed,
-    _peek_nv_key,
     is_tier_degraded, mark_tier_degraded,
     NV_INTEGRATE_ENABLED, NV_INTEGRATE_HOST, NV_INTEGRATE_PATH,
     NV_INTEGRATE_KEY_COOLDOWN_S, NV_INTEGRATE_PATH_COOLDOWN_S, NV_INTEGRATE_MODELS,
     NV_INTEGRATE_PROXY_URLS,
     NV_KEY_INTEGRATE_PROXY_URLS, NV_KEY_INTEGRATE_EGRESS_IPS,
+    NV_INTEGRATE_EGRESS_IPS,
     nv_key_integrate_keys_for,
     egress_info_for_integrate_key,
     egress_info_for_key,
+    _peek_nv_key,
+    FALLBACK_GRAPH, FALLBACK_HEALTH_THRESHOLD,
+    NV_GLM52_MODE_CHAIN, NV_GLM52_SINGLE_US_PROXY, NV_GLM52_RR_US_PROXIES,
+    glm52_current_mode_idx, glm52_save_mode_idx, glm52_reset_mode_idx,
 )
 from .logger import _log, _log_metrics, _log_error_detail
 from .nvcf_conn import _make_nvcf_proxy_conn
@@ -79,6 +84,9 @@ class UpstreamResult:
         self.fallback_tiers_used = []
         # R_multi: 本次 tier 选中的 function_id (用于上层 func_health.record_result)
         self.function_id = ""
+        # R832f: NVCF per-request trace id (integrate 响应头 Nvcf-Reqid; pexec 同头).
+        #   resp 传给上层后会被流式消费, 故在成功分支内立即抓 header 存此处.
+        self.nvcf_reqid = ""
         # Error fields
         self.all_keys_exhausted = False
         self.all_429 = False
@@ -99,6 +107,11 @@ class UpstreamResult:
 _integrate_rr_counter = 0  # 模块级独立 rr, 不持久化 (重启从 0 开始, 无害)
 _integrate_rr_lock = threading.Lock()
 _integrate_path_cooldown_until = 0.0  # 整条 integrate path 冷却截止 (全 key 429 时触发)
+
+# R858/R1421 (port from HM2): rr_us 模式跨请求持久 RR 计数器. 修 BUG6: 旧 rr_us 用 per-request
+# attempt_idx 致每请求首 attempt 永远取 pool[0]=7894, 7894 压倒性过载(实测 13:1)致 SSL 断流高发.
+_glm52_rr_us_counter = 0
+_glm52_rr_us_lock = threading.Lock()
 
 
 def _integrate_is_path_cooling():
@@ -161,20 +174,39 @@ def _try_integrate_keys(oai_body, tier_model, request_id, metrics, t_start,
     MIN_ATTEMPT_TIMEOUT = 5
     consecutive_pexec_timeout = 0
     consecutive_empty_200 = 0  # R577: 连续 empty_200 计数, 触达阈值则 break
-    PEXEC_TIMEOUT_FASTBREAK = int(os.environ.get('NVU_PEXEC_TIMEOUT_FASTBREAK', '3'))
+    # R830c (2026-07-09, HM1 self): integrate 专属 fastbreak 阈值, 解绑 pexec.
+    # 专家评审(glm5.2+dsv4p共识): fastbreak=1 对 integrate 极不合理 — 单 key 超时大概率是 thinking 慢
+    # (40-71s), 不代表 key 坏; 放弃 k3/k4/k5 等同把单点慢思考放大成全局故障. 但 NVU_PEXEC_TIMEOUT_FASTBREAK
+    # 是 integrate+pexec 共用全局参数, 直接调会连累 dsv4p/kimi 的 pexec 精调. 故给 integrate 独立 env:
+    # NVU_INTEGRATE_TIMEOUT_FASTBREAK (默认回退 NVU_PEXEC_TIMEOUT_FASTBREAK, 向后兼容); pexec 路径
+    # (line ~501 _try_tier_keys) 仍读原 env, 不受影响.
+    PEXEC_TIMEOUT_FASTBREAK = int(os.environ.get('NVU_INTEGRATE_TIMEOUT_FASTBREAK',
+                                                 os.environ.get('NVU_PEXEC_TIMEOUT_FASTBREAK', '3')))
     EMPTY_200_FASTBREAK = int(os.environ.get("NVU_EMPTY_200_FASTBREAK", "1"))
 
-    tier_budget_start = time.time()
+    # R830b (2026-07-09): integrate 专属 thinking timeout override.
+    # 背景: handlers.py 对 thinking 请求传 upstream_timeout_override=NVU_FORCE_STREAM_UPGRADE_TIMEOUT (=66s),
+    # 但该 env 是 integrate + pexec 两条路径共用, 放宽它会让 pexec(dsv4p/kimi 的失败兜底)也跟着晚放弃.
+    # 而实际只有 glm5_2_nv integrate 需要: 抓包+metrics 实测 glm5.2 thinking 成功请求 max=71.3s p95=62.4s,
+    # 66s 上限太紧, 偶发慢一点的请求(如 67475ms)就被砍成 timeout → fastbreak=1 放弃整 tier → 切 pexec(对
+    # glm5.2 全 empty200, R832d 定论)→ 级联到 ms_gw 也 56s timeout → 飞书 lane 120s 杀 → "回答一句卡住".
+    # 新增 NVU_INTEGRATE_THINKING_TIMEOUT_S (默认回退到传入 override, 即不改变行为); 设置后仅 integrate 路径用.
+    # pexec 路径 (line ~517) 仍用原 override, 不受影响.
+    _integ_thinking_to = os.environ.get("NVU_INTEGRATE_THINKING_TIMEOUT_S")
+    if _integ_thinking_to:
+        try:
+            upstream_timeout_override = float(_integ_thinking_to)
+        except ValueError:
+            pass
 
-    # R814: tier-level DEGRADED short-circuit (same as pexec path).
-    if is_tier_degraded(tier_model):
-        _log("NV-INTEGRATE-TIER-DEGRADED-SKIP", f"tier={tier_model} in DEGRADED cooldown, short-circuit → tier fail")
-        result.all_keys_exhausted = True
-        result.final_error_json = {"error": {"type": "nvcf_tier_degraded", "message": f"NVCF function for tier {tier_model} is DEGRADED (short-circuited)"}}
-        result.final_resp_status = 400
-        result.key_cycle_attempts = key_cycle_attempts
-        result.elapsed_ms = int((time.time() - t_start) * 1000)
-        return result
+    tier_budget_start = time.time()
+    # R835: integrate 路径 per-model tier budget override (复用 pexec line 492 模式).
+    # 背景: minimax_m3_nv reasoning_effort=high 实测 ~156s, 但全局 TIER_TIMEOUT_BUDGET_S=112s
+    # 会砍掉 → 502. pexec 路径早有 NVU_TIER_BUDGET_{model} override, integrate 路径之前没有 (line
+    # 186/191/242 直接用全局). 给 integrate 也加上, 让 minimax 等慢思考模型能独立放宽, 不影响 glm5.2.
+    _integ_tier_budget_env = os.environ.get(f"NVU_TIER_BUDGET_{tier_model.upper()}")
+    tier_budget_s = float(_integ_tier_budget_env) if _integ_tier_budget_env else TIER_TIMEOUT_BUDGET_S
+
     _filter_keys = [k for k in (key_filter if key_filter is not None else []) if 0 <= k < NVU_NUM_KEYS]
     _n_iter = len(_filter_keys) if _filter_keys else (NVU_NUM_KEYS + 2)
     for attempt_idx in range(_n_iter):
@@ -183,12 +215,12 @@ def _try_integrate_keys(oai_body, tier_model, request_id, metrics, t_start,
         t_attempt_start = time.time()
 
         elapsed_in_tier = time.time() - tier_budget_start
-        if elapsed_in_tier >= TIER_TIMEOUT_BUDGET_S:
-            _log("NV-INTEGRATE-BUDGET", f"tier={tier_model} budget {TIER_TIMEOUT_BUDGET_S}s "
+        if elapsed_in_tier >= tier_budget_s:
+            _log("NV-INTEGRATE-BUDGET", f"tier={tier_model} budget {tier_budget_s}s "
                                         f"exceeded after {elapsed_in_tier:.1f}s, breaking")
             break
 
-        remaining_budget = TIER_TIMEOUT_BUDGET_S - elapsed_in_tier
+        remaining_budget = tier_budget_s - elapsed_in_tier
         if remaining_budget < MIN_ATTEMPT_TIMEOUT:
             break
         per_attempt_timeout = max(MIN_ATTEMPT_TIMEOUT,
@@ -250,7 +282,7 @@ def _try_integrate_keys(oai_body, tier_model, request_id, metrics, t_start,
             t_connect_start = time.time()
             conn = _make_nvcf_proxy_conn(proxy_url, nvcf_host=NV_INTEGRATE_HOST, timeout=per_attempt_timeout)
             connect_elapsed = time.time() - t_connect_start
-            post_connect_remaining = TIER_TIMEOUT_BUDGET_S - (time.time() - tier_budget_start)
+            post_connect_remaining = tier_budget_s - (time.time() - tier_budget_start)
             if post_connect_remaining < MIN_ATTEMPT_TIMEOUT:
                 _log("NV-INTEGRATE-BUDGET", f"tier={tier_model} k{key_idx+1} after connect "
                                             f"({connect_elapsed:.1f}s) remaining {post_connect_remaining:.1f}s, aborting")
@@ -273,7 +305,8 @@ def _try_integrate_keys(oai_body, tier_model, request_id, metrics, t_start,
                 # R762: 401/403 (per-key auth failed) → cycle next key (同 pexec 修复).
                 should_cycle = resp.status in (401, 403, 429, 408, 500, 502, 503, 504, 202)
                 if should_cycle:
-                    cycle_reason = ("401_integrate_auth_failed" if resp.status == 401 else
+                    cycle_reason = ("400_integrate_degraded" if resp.status == 400 else
+                                    "401_integrate_auth_failed" if resp.status == 401 else
                                     "403_integrate_auth_failed" if resp.status == 403 else
                                     "429_integrate_rate_limit" if resp.status == 429 else
                                     "408_integrate_timeout" if resp.status == 408 else
@@ -306,10 +339,6 @@ def _try_integrate_keys(oai_body, tier_model, request_id, metrics, t_start,
                 # Non-cycling error → report (与 pexec 一致, R762 加日志)
                 _log("NV-INTEGRATE-NONCYCLE-ERR", f"tier={tier_model} k{key_idx+1} resp.status={resp.status} "
                       f"non-cycling, aborting tier. body={err_str[:200]}")
-                # R814: same DEGRADED tier-level short-circuit as pexec path.
-                if resp.status == 400 and "DEGRADED" in err_str.upper():
-                    _cd = mark_tier_degraded(tier_model)
-                    _log("NV-INTEGRATE-TIER-DEGRADED", f"tier={tier_model} marked DEGRADED cooldown {_cd:.0f}s")
                 result.final_error_json = error_json
                 result.final_resp_status = resp.status
                 result.key_cycle_attempts = key_cycle_attempts
@@ -327,9 +356,7 @@ def _try_integrate_keys(oai_body, tier_model, request_id, metrics, t_start,
                     "upstream_type": "nv_integrate",
                     "function_id": "integrate",
                 })
-                # R824: 同 pexec 路径, empty200 标该 key 冷却. NV_INTEGRATE_KEY_COOLDOWN_S=0 时等于不冷却(env 配置).
-                mark_key_cooling(integ_tier, key_idx, duration_s=NV_INTEGRATE_KEY_COOLDOWN_S)
-                _log("NV-INTEGRATE-EMPTY", f"tier={tier_model} k{key_idx+1} empty 200, marked cooling {NV_INTEGRATE_KEY_COOLDOWN_S}s, cycling")
+                _log("NV-INTEGRATE-EMPTY", f"tier={tier_model} k{key_idx+1} empty 200, cycling")
                 # R577: EMPTY_200_FASTBREAK 语义从 boolean 改为连续次数阈值.
                 #   0 = 禁用 (全 cycle, 偶发 empty 可换 key 救回但 surge 期 143s 卡死)
                 #   1 = 每次 empty 都 break (激进, 丢失偶发救回)
@@ -351,10 +378,9 @@ def _try_integrate_keys(oai_body, tier_model, request_id, metrics, t_start,
             result.conn = conn
             result.tier_model = tier_model
             result.nv_key_idx = key_idx
-            # R838: 用实际请求的 proxy_url 算 egress (key_filter 模式下可能是 NV_KEY_INTEGRATE_PROXY_URLS, 非 key_idx 轮换).
+            # R838: 用实际请求的 proxy_url 算 egress (key_filter 模式下可能是 NV_KEY_INTEGRATE_PROXY_URLS).
             _eg_port = proxy_url.strip().rsplit(":", 1)[-1] if proxy_url and ":" in proxy_url else "direct"
             result.egress_route = f"integrate-mihomo-{_eg_port}" if not is_direct else "integrate-direct"
-            # egress IP: key_filter 模式优先 NV_KEY_INTEGRATE_EGRESS_IPS, 否则 egress_info_for_integrate_key.
             if key_filter is not None and NV_KEY_INTEGRATE_EGRESS_IPS and key_idx in _filter_keys:
                 _fi = _filter_keys.index(key_idx)
                 result.egress_ip = NV_KEY_INTEGRATE_EGRESS_IPS[_fi] if _fi < len(NV_KEY_INTEGRATE_EGRESS_IPS) else ""
@@ -364,6 +390,11 @@ def _try_integrate_keys(oai_body, tier_model, request_id, metrics, t_start,
             result.key_cycle_attempts = key_cycle_attempts
             result.fallback_tiers_used = [tier_model]
             result.upstream_type = "nv_integrate"
+            # R832f: 抓 Nvcf-Reqid 落库 (resp 即将被上层流式消费, 必须在此刻取)
+            try:
+                result.nvcf_reqid = (resp.getheader("Nvcf-Reqid") or "").strip() or ""
+            except Exception:
+                result.nvcf_reqid = ""
             reset_key429_count(integ_tier, key_idx)
             metrics["upstream_type"] = "nv_integrate"
             metrics["tier_model"] = tier_model
@@ -528,18 +559,6 @@ def _try_tier_keys(oai_body, tier_model, request_id, metrics, t_start,
 
     EMPTY_200_FASTBREAK = int(os.environ.get("NVU_EMPTY_200_FASTBREAK", "1"))
     consecutive_empty_200 = 0  # R577: 连续 empty_200 计数 (同 _try_integrate_keys)
-    # R814: tier-level DEGRADED short-circuit. If NVCF function for this tier recently
-    # returned 400 DEGRADED (all keys will 400), skip the whole key loop and return fail
-    # immediately so the caller falls back to ms_gw instead of burning 0.6-1s/request
-    # re-probing a known-dead NVCF function (data: glm5_2_nv 14/14 502 DEGRADED/60min).
-    if is_tier_degraded(tier_model):
-        _log("NV-TIER-DEGRADED-SKIP", f"tier={tier_model} in DEGRADED cooldown, short-circuit (skip key loop) → tier fail")
-        result.all_keys_exhausted = True
-        result.final_error_json = {"error": {"type": "nvcf_tier_degraded", "message": f"NVCF function for tier {tier_model} is DEGRADED (short-circuited)"}}
-        result.final_resp_status = 400
-        result.key_cycle_attempts = key_cycle_attempts
-        result.elapsed_ms = int((time.time() - t_start) * 1000)
-        return result
     for attempt_idx in range(NVU_NUM_KEYS + 2):
         key_idx = (start_key_idx + attempt_idx) % NVU_NUM_KEYS
         t_attempt_start = time.time()  # R38.14: per-attempt start time for accurate logging
@@ -681,7 +700,8 @@ def _try_tier_keys(oai_body, tier_model, request_id, metrics, t_start,
                 #   标 KEY_COOLDOWN_S 避免反复试失效 key (浪费 ~1s/次).
                 should_cycle = resp.status in (401, 403, 429, 408, 500, 502, 503, 504, 202)
                 if should_cycle:
-                    cycle_reason = "401_nv_auth_failed" if resp.status == 401 else \
+                    cycle_reason = "400_nvcf_degraded" if resp.status == 400 else \
+                                   "401_nv_auth_failed" if resp.status == 401 else \
                                    "403_nv_auth_failed" if resp.status == 403 else \
                                    "429_nv_rate_limit" if resp.status == 429 else \
                                    "408_nvcf_timeout" if resp.status == 408 else \
@@ -715,12 +735,6 @@ def _try_tier_keys(oai_body, tier_model, request_id, metrics, t_start,
                 # Non-cycling error → report (R762: 加日志, 避免静默失败)
                 _log("NV-NONCYCLE-ERR", f"tier={tier_model} k{key_idx+1} resp.status={resp.status} "
                                           f"non-cycling, aborting tier (no key cycle). body={err_str[:200]}")
-                # R814: NVCF function DEGRADED is tier-level (all keys will 400). Mark tier
-                # degraded so subsequent requests short-circuit at tier entry instead of
-                # re-hitting NVCF every request (data: glm5_2_nv 14/14 502 DEGRADED in 60min).
-                if resp.status == 400 and "DEGRADED" in err_str.upper():
-                    _cd = mark_tier_degraded(tier_model)
-                    _log("NV-TIER-DEGRADED", f"tier={tier_model} marked DEGRADED cooldown {_cd:.0f}s (400 DEGRADED non-cycling)")
                 result.final_error_json = error_json
                 result.final_resp_status = resp.status
                 result.key_cycle_attempts = key_cycle_attempts
@@ -739,12 +753,10 @@ def _try_tier_keys(oai_body, tier_model, request_id, metrics, t_start,
                     "upstream_type": "nvcf_pexec",
                     "function_id": function_id,
                 })
-                # R824: empty200 标该 key 短冷却 (KEY_COOLDOWN_S=25s). 实测 k1 反复 empty200(60s空)
-                # 而 k2-k5 同请求秒回, 说明是 NVCF 对该 key 的服务端降级, 不是请求问题.
-                # 标冷却后 is_key_cooling 会跳过 k1, 后续请求直接从 k2 起, 不再每次撞 k1 拖 60s.
-                # 25s 自动解除, NVCF 恢复后可重试. 与 429/401/403 cooldown 对称.
+                # R832: empty200 按 429 语义处理 — 标 key 冷却, 下次 RR 跳过, 不让空响应上浮到 agent.
+                # 对称行 648 (429 mark_key_cooling). 复用 429 计数器 (指数退避封顶30s 或 KEY_COOLDOWN_S).
                 mark_key_cooling(tier_model, key_idx)
-                _log("NV-EMPTY-CYCLE", f"tier={tier_model} k{key_idx+1} empty 200, marked cooling {KEY_COOLDOWN_S}s, cycling")
+                _log("NV-EMPTY-CYCLE", f"tier={tier_model} k{key_idx+1} empty 200, marked cooling + cycling")
                 # R577: 同 _try_integrate_keys, EMPTY_200_FASTBREAK 语义改为连续次数阈值
                 consecutive_empty_200 += 1
                 if EMPTY_200_FASTBREAK > 0 and consecutive_empty_200 >= EMPTY_200_FASTBREAK:
@@ -771,6 +783,11 @@ def _try_tier_keys(oai_body, tier_model, request_id, metrics, t_start,
             result.key_cycle_attempts = key_cycle_attempts
             result.fallback_tiers_used = [tier_model]
             result.upstream_type = "nvcf_pexec"
+            # R832f: 抓 Nvcf-Reqid 落库 (pexec 响应同样带此头)
+            try:
+                result.nvcf_reqid = (resp.getheader("Nvcf-Reqid") or "").strip() or ""
+            except Exception:
+                result.nvcf_reqid = ""
             reset_key429_count(tier_model, key_idx)
             metrics["upstream_type"] = "nvcf_pexec"
             metrics["tier_model"] = tier_model
@@ -895,6 +912,12 @@ def _try_tier_keys(oai_body, tier_model, request_id, metrics, t_start,
         for k in range(NVU_NUM_KEYS):
             mark_key_cooling(tier_model, k, duration_s=int(TIER_COOLDOWN_S))
         _log("NV-GLOBAL-COOLDOWN", f"tier={tier_model} all keys 429. Marking all cooling {TIER_COOLDOWN_S:.0f}s (TIER_COOLDOWN)")
+    # R832: all_empty 也按 all_429 语义标 tier 冷却, 触发 tier 级 fallback (glm5_2_nv→ms_gw 同模型).
+    # 空响应不上浮到 agent, 在 nv_gw 就吸收掉.
+    elif all_empty:
+        for k in range(NVU_NUM_KEYS):
+            mark_key_cooling(tier_model, k, duration_s=int(TIER_COOLDOWN_S))
+        _log("NV-GLOBAL-COOLDOWN", f"tier={tier_model} all keys empty_200. Marking all cooling {TIER_COOLDOWN_S:.0f}s (R832 EMPTY200=TIER_COOLDOWN)")
 
     _log_error_detail({
         "request_id": request_id,
@@ -908,6 +931,408 @@ def _try_tier_keys(oai_body, tier_model, request_id, metrics, t_start,
     })
 
     return result
+
+
+# ─── R839/R1421: glm5_2_nv mode chain (port from HM2, 3 funcs) ────────
+def _glm52_resolve_proxy(ip_strategy, attempt_idx):
+    """Resolve proxy_url for a given ip_strategy. R839."""
+    if ip_strategy == "direct":
+        return ""
+    if ip_strategy == "single_us":
+        single = NV_GLM52_SINGLE_US_PROXY
+        if single:
+            return single
+        # fallback: first of NV_INTEGRATE_PROXY_URLS (7894→193 on both hosts)
+        return NV_INTEGRATE_PROXY_URLS[0] if NV_INTEGRATE_PROXY_URLS else ""
+    if ip_strategy == "rr_us":
+        pool = NV_GLM52_RR_US_PROXIES if NV_GLM52_RR_US_PROXIES else NV_INTEGRATE_PROXY_URLS
+        if not pool:
+            return ""
+        # R858 BUG6: 跨请求持久 RR(分散负载, 不集中 7894) + 同请求内 fault 重试偏移(attempt_idx).
+        # 旧代码 pool[attempt_idx % len] 用 per-request 序号, 每请求从 0 起, 首次 attempt 永远 7894.
+        global _glm52_rr_us_counter
+        with _glm52_rr_us_lock:
+            _rr_idx = _glm52_rr_us_counter
+            _glm52_rr_us_counter += 1
+        return pool[(_rr_idx + attempt_idx) % len(pool)]
+    return ""
+
+
+def _glm52_single_attempt(oai_body, tier_model, request_id, metrics, t_start,
+                           is_stream, key_idx, mode_name, channel, proxy_url,
+                           all_attempts, upstream_timeout_override):
+    """Issue ONE NVCF request: fixed key_idx + fixed mode-driven proxy_url. R839.
+
+    Mirrors the per-attempt block of _try_tier_keys / _try_integrate_keys but:
+      - key_idx is FIXED (caller controls which key via RR + mode progression)
+      - proxy_url is driven by the current mode (direct / single_us / rr_us)
+      - channel in {pexec, integrate} picks endpoint (NVCF pexec vs integrate.api)
+    Returns UpstreamResult (success=True + resp/conn on 200-non-empty; else
+    failure with key_cycle_attempts appended + appropriate cooldown marking).
+    """
+    result = UpstreamResult()
+    result.is_stream = is_stream
+    result.tier_model = tier_model
+    result.upstream_type = "nvcf_pexec" if channel == "pexec" else "nv_integrate"
+    result.function_id = "integrate" if channel == "integrate" else ""
+
+    nv_model_id = NV_MODEL_IDS[tier_model]
+    nvcf_config = NVCF_PEXEC_MODELS[tier_model]
+    nv_key = NVU_KEYS[key_idx]
+
+    # Body: reuse _build_pexec_body (strip + inject). Same body for pexec/integrate (R572 已验).
+    req_body = _build_pexec_body(oai_body, tier_model, nvcf_config)
+    req_data = json.dumps(req_body).encode("utf-8")
+
+    is_direct = (not proxy_url) or (proxy_url.strip() == "")
+    if channel == "pexec":
+        # func_health 选首选 function (intra-model), surge 的自动跳过.
+        _candidates = nvcf_config.get("function_ids") or [nvcf_config.get("function_id")]
+        function_id = func_health.select_healthy_function(tier_model, _candidates)
+        result.function_id = function_id
+        nvcf_host = NVCF_BASE_URL
+        nvcf_path = f"/v2/nvcf/pexec/functions/{function_id}"
+    else:
+        nvcf_host = NV_INTEGRATE_HOST
+        nvcf_path = NV_INTEGRATE_PATH
+        function_id = "integrate"
+
+    # R839 per-mode budget: 每个 mode 单次 attempt 有自己的 budget, 避免一个慢 mode 吃光整链.
+    # 用 NVU_TIER_BUDGET_GLM5_2_NV (env, 当前 70s) 作为整链上限, 单 attempt timeout 复用
+    # UPSTREAM_TIMEOUT / override. CONNECT_RESERVE_S 预留 connect+SSL 时间.
+    chain_budget_s = float(os.environ.get(f"NVU_TIER_BUDGET_{tier_model.upper()}", "70"))
+    # R1418: chain budget 按 input 缩放. 实测 353K 请求单次 timeout 67s, 4 档容错需 ~270s,
+    # 固定 120s 在第 2 档就耗尽 -> all_tiers_exhausted (16:09:26 353K 请求 240s 全跑穿仍失败).
+    # 大请求给 300s 容 4 档容错; 小请求仍用 env 值 (120s) 不变.
+    _chain_ic = len(json.dumps(oai_body)) if oai_body else 0
+    if _chain_ic > 350000:
+        chain_budget_s = max(chain_budget_s, 300.0)
+    elif _chain_ic > 200000:
+        chain_budget_s = max(chain_budget_s, 240.0)
+    elapsed_in_chain = time.time() - t_start
+    remaining_budget = chain_budget_s - elapsed_in_chain
+    CONNECT_RESERVE_S = float(os.environ.get("NVU_CONNECT_RESERVE_S", "5"))
+    MIN_ATTEMPT_TIMEOUT = 5
+    if remaining_budget < MIN_ATTEMPT_TIMEOUT:
+        _log("NV-GLM52-BUDGET", f"tier={tier_model} mode={mode_name} k{key_idx+1} chain budget "
+                                 f"{chain_budget_s}s remaining {remaining_budget:.1f}s < {MIN_ATTEMPT_TIMEOUT}s, abort chain")
+        result.all_keys_exhausted = True
+        result.final_error_json = {"error": {"type": "glm52_chain_budget_exhausted",
+                                              "message": f"chain budget {chain_budget_s}s exhausted",
+                                              "mode": mode_name}}
+        result.final_resp_status = 408
+        result.key_cycle_attempts = all_attempts
+        result.elapsed_ms = int((time.time() - t_start) * 1000)
+        return result
+    per_attempt_timeout = max(MIN_ATTEMPT_TIMEOUT,
+                             min(upstream_timeout_override if upstream_timeout_override else UPSTREAM_TIMEOUT,
+                                 remaining_budget - CONNECT_RESERVE_S))
+
+    # R295 header camouflage (与 _try_tier_keys/_try_integrate_keys 完全一致)
+    hdr_extra = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "application/json, text/plain, */*",
+        "X-Requested-With": "XMLHttpRequest",
+        "Origin": "https://build.nvidia.com",
+        "Referer": "https://build.nvidia.com/explore/discover",
+    }
+    headers_out = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {nv_key}",
+        "Content-Length": str(len(req_data)),
+        "Connection": "close",
+        **hdr_extra,
+    }
+
+    _log("NV-GLM52-ATTEMPT", f"tier={tier_model} mode={mode_name} k{key_idx+1} channel={channel} "
+                             f"{'DIRECT' if is_direct else 'via ' + proxy_url} timeout={per_attempt_timeout:.0f}s")
+
+    attempt = {
+        "tier": tier_model,
+        "nv_key_idx": key_idx,
+        "litellm_model": f"{channel}_{nv_model_id}_k{key_idx+1}",
+        "mode": mode_name,
+        "channel": channel,
+        "proxy": proxy_url if proxy_url else "direct",
+        "upstream_type": result.upstream_type,
+        "function_id": function_id,
+    }
+
+    try:
+        throttle_outbound()
+        t_attempt_start = time.time()
+        conn = _make_nvcf_proxy_conn(proxy_url, nvcf_host=nvcf_host, timeout=per_attempt_timeout)
+        connect_elapsed = time.time() - t_attempt_start
+        post_connect_remaining = chain_budget_s - (time.time() - t_start)
+        if post_connect_remaining < MIN_ATTEMPT_TIMEOUT:
+            _log("NV-GLM52-BUDGET", f"tier={tier_model} mode={mode_name} k{key_idx+1} after connect "
+                                    f"({connect_elapsed:.1f}s) remaining {post_connect_remaining:.1f}s, abort")
+            try: conn.close()
+            except Exception: pass
+            attempt["error_type"] = "budget_exhausted_after_connect"
+            attempt["elapsed_ms"] = int(connect_elapsed * 1000)
+            all_attempts.append(attempt)
+            result.all_keys_exhausted = True
+            result.key_cycle_attempts = all_attempts
+            result.elapsed_ms = int((time.time() - t_start) * 1000)
+            return result
+        read_timeout = min(per_attempt_timeout, post_connect_remaining)
+        conn.request("POST", nvcf_path, body=req_data, headers=headers_out)
+        if conn.sock:
+            conn.sock.settimeout(read_timeout)
+        resp = conn.getresponse()
+
+        if resp.status >= 400:
+            error_body = resp.read()
+            try: error_json = json.loads(error_body)
+            except Exception: error_json = {"error": error_body.decode("utf-8", errors="replace")}
+            conn.close()
+            err_str = json.dumps(error_json)
+            should_cycle = resp.status in (401, 403, 429, 408, 500, 502, 503, 504, 202)
+            attempt["error_body"] = err_str[:500]
+            if resp.status in (401, 403):
+                integ_tier = _integrate_tier_name(tier_model) if channel == "integrate" else tier_model
+                mark_key_cooling(integ_tier if channel == "integrate" else tier_model, key_idx,
+                                 duration_s=NV_INTEGRATE_KEY_COOLDOWN_S if channel == "integrate" else KEY_COOLDOWN_S)
+                mark_key_auth_failed(key_idx)
+                attempt["error_type"] = f"{channel}_auth_failed_{resp.status}"
+                _log("NV-GLM52-AUTH-FAIL", f"tier={tier_model} mode={mode_name} k{key_idx+1} {resp.status} auth failed, cycling")
+            elif resp.status == 429:
+                integ_tier = _integrate_tier_name(tier_model) if channel == "integrate" else tier_model
+                mark_key_cooling(integ_tier if channel == "integrate" else tier_model, key_idx,
+                                 duration_s=NV_INTEGRATE_KEY_COOLDOWN_S if channel == "integrate" else KEY_COOLDOWN_S)
+                attempt["error_type"] = f"{channel}_429"
+                _log("NV-GLM52-COOLDOWN", f"tier={tier_model} mode={mode_name} k{key_idx+1} 429, cooling")
+            elif should_cycle:
+                attempt["error_type"] = f"{channel}_{resp.status}"
+            else:
+                # Non-cycling (e.g. 400 DEGRADED) — tier-level, mark degraded
+                if resp.status == 400 and "DEGRADED" in err_str.upper():
+                    _cd = mark_tier_degraded(tier_model)
+                    _log("NV-GLM52-TIER-DEGRADED", f"tier={tier_model} marked DEGRADED cooldown {_cd:.0f}s")
+                attempt["error_type"] = f"{channel}_noncycle_{resp.status}"
+                all_attempts.append(attempt)
+                result.final_error_json = error_json
+                result.final_resp_status = resp.status
+                result.key_cycle_attempts = all_attempts
+                result.elapsed_ms = int((time.time() - t_start) * 1000)
+                # Non-cycling = 不换 key 也不递进 mode? 还是递进? 用户: 故障即递进 mode.
+                # DEGRADED 是 tier 级故障 (同 model 全 key 都会 400), 递进 mode 也无效但符合
+                # "故障即递进" 规则且 all_attempts 已记录, 上层会落 _try_tier_keys 兜底.
+                return result  # 故障 → 上层递进 mode
+            all_attempts.append(attempt)
+            result.key_cycle_attempts = all_attempts
+            result.elapsed_ms = int((time.time() - t_start) * 1000)
+            return result  # 故障 → 上层递进 mode + 换 key
+
+        # 200 — check empty
+        is_empty = _check_empty_200(resp, key_idx, tier_model, is_stream)
+        if is_empty:
+            attempt["error_type"] = f"{channel}_empty_200"
+            all_attempts.append(attempt)
+            integ_tier = _integrate_tier_name(tier_model) if channel == "integrate" else tier_model
+            mark_key_cooling(integ_tier if channel == "integrate" else tier_model, key_idx,
+                             duration_s=NV_INTEGRATE_KEY_COOLDOWN_S if channel == "integrate" else KEY_COOLDOWN_S)
+            _log("NV-GLM52-EMPTY", f"tier={tier_model} mode={mode_name} k{key_idx+1} empty 200, cooling, mode→advance")
+            try: conn.close()
+            except Exception: pass
+            result.key_cycle_attempts = all_attempts
+            result.elapsed_ms = int((time.time() - t_start) * 1000)
+            return result  # empty = 故障 → 上层递进 mode
+
+        # ─── Valid success ───
+        result.success = True
+        result.resp = resp
+        result.conn = conn
+        result.nv_key_idx = key_idx
+        result.nv_model_label = f"{channel}_{nv_model_id}_k{key_idx+1}"
+        # R839: 记录成功 attempt (含 mode) 到 key_cycle_attempts, 供 DB key_cycle_details 查 mode.
+        _succ_attempt = dict(attempt)
+        _succ_attempt["error_type"] = f"{channel}_success"
+        _succ_attempt["elapsed_ms"] = int((time.time() - t_attempt_start) * 1000)
+        all_attempts.append(_succ_attempt)
+        result.key_cycle_attempts = all_attempts
+        result.fallback_tiers_used = [tier_model]
+        # egress info: pexec direct/mihomo 用 egress_info_for_key; integrate 用实际 proxy_url 算.
+        if channel == "pexec":
+            result.egress_route, result.egress_ip = egress_info_for_key(key_idx)
+            # 但 mode 驱动的 proxy 可能与 NVU_PROXY_URLS[key_idx] 不同 (R839 新增美国代理出口),
+            # 覆盖: mode 非 direct 时用 proxy_url 推导 route + NV_INTEGRATE_EGRESS_IPS 兜底.
+            if not is_direct:
+                _port = proxy_url.strip().rsplit(":", 1)[-1] if ":" in proxy_url else "?"
+                result.egress_route = f"glm52-mihomo-{_port}"
+                # 查 NV_INTEGRATE_EGRESS_IPS (与 NV_INTEGRATE_PROXY_URLS 顺序对齐)
+                if NV_INTEGRATE_PROXY_URLS:
+                    try:
+                        _pi = NV_INTEGRATE_PROXY_URLS.index(proxy_url)
+                        result.egress_ip = NV_INTEGRATE_EGRESS_IPS[_pi] if _pi < len(NV_INTEGRATE_EGRESS_IPS) else ""
+                    except ValueError:
+                        result.egress_ip = ""
+        else:
+            _port = proxy_url.strip().rsplit(":", 1)[-1] if proxy_url and ":" in proxy_url else "direct"
+            result.egress_route = f"glm52-integrate-mihomo-{_port}" if not is_direct else "glm52-integrate-direct"
+            if not is_direct and NV_INTEGRATE_PROXY_URLS:
+                try:
+                    _pi = NV_INTEGRATE_PROXY_URLS.index(proxy_url)
+                    result.egress_ip = NV_INTEGRATE_EGRESS_IPS[_pi] if _pi < len(NV_INTEGRATE_EGRESS_IPS) else ""
+                except ValueError:
+                    result.egress_ip = ""
+            elif is_direct:
+                _, result.egress_ip = egress_info_for_integrate_key(key_idx)
+        reset_key429_count(_integrate_tier_name(tier_model) if channel == "integrate" else tier_model, key_idx)
+        metrics["upstream_type"] = result.upstream_type
+        metrics["tier_model"] = tier_model
+        metrics["nv_key_idx"] = key_idx
+        metrics["litellm_model"] = result.nv_model_label
+        metrics["glm52_mode"] = mode_name
+        metrics["egress_route"] = result.egress_route
+        metrics["egress_ip"] = result.egress_ip
+        if all_attempts:
+            metrics["key_cycle_429s_before_success"] = len(all_attempts)
+            metrics["key_cycle_details"] = all_attempts
+        _log("NV-GLM52-SUCCESS", f"tier={tier_model} mode={mode_name} k{key_idx+1} succeeded "
+                                  f"(mode stabilized, next req keeps this mode)")
+        return result
+
+    except socket.timeout as e:
+        attempt_elapsed_ms = int((time.time() - t_attempt_start) * 1000)
+        attempt["error_type"] = f"{channel}_timeout"
+        attempt["elapsed_ms"] = attempt_elapsed_ms
+        all_attempts.append(attempt)
+        _log("NV-GLM52-TIMEOUT", f"tier={tier_model} mode={mode_name} k{key_idx+1} timeout: {attempt_elapsed_ms}ms → mode→advance")
+        result.key_cycle_attempts = all_attempts
+        result.elapsed_ms = int((time.time() - t_start) * 1000)
+        return result
+    except (ConnectionRefusedError, http.client.RemoteDisconnected) as e:
+        attempt_elapsed_ms = int((time.time() - t_attempt_start) * 1000)
+        attempt["error_type"] = f"{channel}_conn_{type(e).__name__}"
+        attempt["elapsed_ms"] = attempt_elapsed_ms
+        all_attempts.append(attempt)
+        _log("NV-GLM52-CONN", f"tier={tier_model} mode={mode_name} k{key_idx+1} conn err: {e} → mode→advance")
+        result.key_cycle_attempts = all_attempts
+        result.elapsed_ms = int((time.time() - t_start) * 1000)
+        return result
+    except Exception as e:
+        error_class = type(e).__name__
+        elapsed_ms = int((time.time() - t_attempt_start) * 1000)
+        attempt["error_type"] = f"{channel}_{error_class}"
+        attempt["error"] = str(e)[:200]
+        attempt["elapsed_ms"] = elapsed_ms
+        all_attempts.append(attempt)
+        is_ssl = error_class in ("SSLEOFError", "SSLError", "SSLZeroReturnError")
+        _log("NV-GLM52-ERR", f"tier={tier_model} mode={mode_name} k{key_idx+1} {error_class}: {e} → mode→advance")
+        result.key_cycle_attempts = all_attempts
+        result.elapsed_ms = int((time.time() - t_start) * 1000)
+        return result
+
+
+def _try_glm52_mode_chain(oai_body, tier_model, request_id, metrics, t_start,
+                          is_stream, all_attempts, upstream_timeout_override):
+    """R839: glm5_2_nv per-key-mode 动态递进. mode 是持久化指针, 故障→递进, 稳住→保持.
+
+    modes = NV_GLM52_MODE_CHAIN (list of (mode_name, channel, ip_strategy), len 5).
+    最多试 NVU_NUM_KEYS + 2 轮 (5 key + 容错). 每 attempt: 当前 key + 当前 mode.
+      - success → 持久化 mode_idx (保持, 不递进) + return success
+      - fault → mode_idx = min(idx+1, len-1) + 换下一个 key
+    全 key+全 mode 失败 → all_keys_exhausted, 持久化最后 mode_idx (下次从最后 mode 起步).
+    """
+    modes = NV_GLM52_MODE_CHAIN
+    result = UpstreamResult()
+    result.is_stream = is_stream
+    result.tier_model = tier_model
+    if not modes:
+        result.all_keys_exhausted = True
+        result.final_error_json = {"error": {"type": "glm52_mode_chain_empty",
+                                              "message": "NV_GLM52_MODE_CHAIN not configured"}}
+        result.key_cycle_attempts = all_attempts
+        result.elapsed_ms = int((time.time() - t_start) * 1000)
+        return result
+
+    mode_idx = glm52_current_mode_idx()
+    if mode_idx >= len(modes):
+        mode_idx = 0  # 持久化值越界 (config 变了) → 回到 mode1
+    start_key = _next_nv_key(tier_model)  # RR 起始 key
+    _log("NV-GLM52-CHAIN", f"tier={tier_model} start_mode_idx={mode_idx} (={modes[mode_idx][0]}) "
+                           f"start_key=k{start_key+1} modes={[m[0] for m in modes]}")
+
+    for attempt in range(NVU_NUM_KEYS + 2):
+        key_idx = (start_key + attempt) % NVU_NUM_KEYS
+        mode_name, channel, ip_strategy = modes[mode_idx]
+        # 跳过冷却/auth-fail 的 key (仍递进 mode? 不: key 冷却 ≠ mode 故障, 换 key 不递进 mode)
+        _integ_tier = _integrate_tier_name(tier_model) if channel == "integrate" else None
+        _ck_tier = _integ_tier if channel == "integrate" else tier_model
+        if is_key_cooling(_ck_tier, key_idx) or is_key_auth_failed(key_idx):
+            _log("NV-GLM52-KEY-SKIP", f"tier={tier_model} mode={mode_name} k{key_idx+1} cooling/auth-failed, next key (no mode advance)")
+            # 不递进 mode, 继续下一个 key (key 冷却不是 mode 的错)
+            continue
+
+        proxy_url = _glm52_resolve_proxy(ip_strategy, attempt)
+        r = _glm52_single_attempt(oai_body, tier_model, request_id, metrics, t_start,
+                                   is_stream, key_idx, mode_name, channel, proxy_url,
+                                   list(all_attempts), upstream_timeout_override)
+        all_attempts = r.key_cycle_attempts
+
+        if r.success and not r.empty_200:
+            # 稳住 → 保持当前 mode (不递进), 持久化供下次请求起步
+            glm52_save_mode_idx(mode_idx)
+            r.fallback_tiers_used = [tier_model]
+            metrics["tier_model"] = r.tier_model
+            metrics["fallback_tiers_used"] = r.fallback_tiers_used
+            metrics["glm52_mode"] = mode_name
+            metrics["nv_key_idx"] = key_idx
+            if r.function_id:
+                metrics["function_id"] = r.function_id
+            func_health.record_result(r.function_id, True)
+            # advance RR (与 pexec 对齐, 保持轮转均匀)
+            _next_nv_key(tier_model)
+            return r
+
+        # budget-abort (chain 预算耗尽): 不递进, 直接全链失败
+        if r.all_keys_exhausted and r.final_error_json and \
+           r.final_error_json.get("error", {}).get("type") == "glm52_chain_budget_exhausted":
+            result.all_keys_exhausted = True
+            result.final_error_json = r.final_error_json
+            result.final_resp_status = r.final_resp_status
+            result.key_cycle_attempts = all_attempts
+            result.elapsed_ms = int((time.time() - t_start) * 1000)
+            glm52_save_mode_idx(mode_idx)  # 下次从当前 mode 起步
+            return result
+
+        # 故障 → mode 递进到下一档 + 换下一个 key
+        func_health.record_result(r.function_id, False)
+        new_mode_idx = min(mode_idx + 1, len(modes) - 1)
+        _log("NV-GLM52-MODE-ADVANCE", f"tier={tier_model} k{key_idx+1} mode={mode_name} fault → "
+                                      f"next key + mode {mode_idx}→{new_mode_idx} (={modes[new_mode_idx][0]})")
+        if new_mode_idx == mode_idx:
+            # R857: advance 停滞(已到末尾 mode, min(idx+1,len-1)=idx). 不卡末尾单IP,
+            # reset 到 mode0(多IP轮换最稳). 修 R843/R856: idx=3 stuck 致 43次 3→3 死循环撞同一坏IP.
+            mode_idx = 0
+            glm52_save_mode_idx(0)
+            _log("NV-GLM52-MODE-STALL-RESET", f"tier={tier_model} mode={mode_name} at chain end → "
+                                               f"reset mode_idx to 0 (={modes[0][0]}), next attempt restarts from mode0")
+        else:
+            mode_idx = new_mode_idx
+
+    # 全 key+全 mode 失败
+    _log("NV-GLM52-CHAIN-FAIL", f"tier={tier_model} all {NVU_NUM_KEYS} keys + modes exhausted, "
+                                f"last_mode={modes[mode_idx][0]}")
+    result.all_keys_exhausted = True
+    result.final_error_json = {"error": {"type": "glm52_chain_all_keys_exhausted",
+                                          "message": f"all keys + all modes failed for {tier_model}",
+                                          "last_mode": modes[mode_idx][0]}}
+    result.final_resp_status = 502
+    result.key_cycle_attempts = all_attempts
+    result.elapsed_ms = int((time.time() - t_start) * 1000)
+    # R844: 全 key+全 mode 失败 → 复位 idx=0 (而非保持最后失败 mode).
+    # 之前保持最后 mode (如 idx=3 integrate_us_single) 致下个请求继续撞同一坏 mode/IP
+    # (7894 坏 IP, 76 次 zombie). mode0=pexec_us_rr 多 IP 轮换更可能分散命中好 IP.
+    # 后端整体恢复由 speedtest cron 重排 chain 实现软重置; 硬故障期复位 0 是逃逸阀.
+    glm52_reset_mode_idx()
+    _log("NV-GLM52-CHAIN-RESET", f"tier={tier_model} all modes failed → reset mode_idx to 0 (next req from {modes[0][0]})")
+    return result
+
+
 
 
 def execute_request(handler, oai_body, mapped_model, request_id, metrics, t_start, upstream_timeout_override=None):
@@ -929,12 +1354,20 @@ def execute_request(handler, oai_body, mapped_model, request_id, metrics, t_star
     start_tier_idx = get_tier_index(mapped_model)
     is_stream = oai_body.get("stream", False)
 
-    # R753: 删除跨 model fallback (FALLBACK_GRAPH). nv_gw 只做单 model 5 key 轮转.
-    # 全挂返 5xx, 由 41xx 适配器切后端 (同模型跨后端, 保持模型一致性).
-    # 保留: func_health.select_healthy_function (intra-model function 选择, 同 model 多 function_id).
+    # R551/R_multi: dynamic surge fallback. tier_order = [mapped_model] + healthy alternatives.
+    # Cross-model fallback controlled by FALLBACK_GRAPH whitelist.
+    # Health check per-function: check alt model's primary function health.
     tier_order = [mapped_model]
-    _log("NV-REQ", f"mapped_model={mapped_model} start_tier={mapped_model} "
-                   f"stream={is_stream} tier_chain={tier_order} (no cross-model fallback, R753)")
+    for alt in FALLBACK_GRAPH.get(mapped_model, []):
+        alt_cfg = NVCF_PEXEC_MODELS.get(alt, {})
+        alt_cands = alt_cfg.get("function_ids") or [alt_cfg.get("function_id")]
+        alt_primary = alt_cands[0] if alt_cands else None
+        if alt_primary and func_health.is_healthy(alt_primary):
+            tier_order.append(alt)
+    if len(tier_order) > 1:
+        _log("NV-REQ", f"mapped_model={mapped_model} start_tier={mapped_model} stream={is_stream} tier_chain={tier_order} (dynamic fallback, health={{...}})")
+    else:
+        _log("NV-REQ", f"mapped_model={mapped_model} start_tier={mapped_model} stream={is_stream} tier_chain={tier_order} (no fallback, 3model)")
 
     for retry_idx in range(2):
         all_attempts = []
@@ -968,6 +1401,29 @@ def execute_request(handler, oai_body, mapped_model, request_id, metrics, t_star
                 _log("NV-FALLBACK", f"Tier {prev_tier} all-failed → "
                                     f"falling back to {tier_model}")
 
+            # R839/R1421: glm5_2_nv per-key-mode 动态切换链 (port from HM2). mode 是持久化指针,
+            # 故障→递进+换key, 稳住→保持. 与 R838b/R572 互斥: 仅 glm5_2_nv + 配置了
+            # NV_GLM52_MODE_CHAIN 时触发, 命中即 return, 不命中落到 R838b/R572/pexec 原逻辑.
+            # NV-GLM52-R839-BRANCH
+            if (is_first_tier and tier_model == "glm5_2_nv" and NV_GLM52_MODE_CHAIN
+                    and not _integrate_is_path_cooling()):
+                chain_result = _try_glm52_mode_chain(oai_body, tier_model, request_id, metrics, t_start,
+                                                       is_stream, all_attempts, upstream_timeout_override)
+                if chain_result.success and not chain_result.empty_200:
+                    chain_result.fallback_tiers_used = [tier_model]
+                    metrics["tier_model"] = chain_result.tier_model
+                    metrics["fallback_tiers_used"] = chain_result.fallback_tiers_used
+                    metrics["glm52_mode"] = chain_result.nv_model_label  # placeholder, _try 内已写 mode
+                    if chain_result.function_id:
+                        metrics["function_id"] = chain_result.function_id
+                    if retry_idx > 0:
+                        _log("NV-STARTUP-RETRY-SUCCESS", f"Startup retry #{retry_idx} succeeded (glm52 mode chain)")
+                        metrics["startup_retry"] = retry_idx
+                    return chain_result
+                # mode chain 全失败 → 落 R838b/R572/pexec 兜底 (现 _try_tier_keys 全 key pexec).
+                _log("NV-GLM52-CHAIN-FALLBACK", f"tier={tier_model} mode chain all-failed → falling back to R838b/R572/pexec")
+                all_attempts = list(chain_result.key_cycle_attempts)
+
             # R838b: per-key 跨链路 — RR 自然分散. peek 当前 RR key (不 advance), 若该 key 在
             # NV_KEY_INTEGRATE_KEYS 则走 integrate (只试该 key), 否则走 pexec (RR 到该 key 起).
             # 这样 K1-4 pexec 与 K5 integrate 按 RR 比例自然分担流量, 实现数据多样性.
@@ -983,7 +1439,6 @@ def execute_request(handler, oai_body, mapped_model, request_id, metrics, t_star
                                                     is_stream, all_attempts, upstream_timeout_override,
                                                     key_filter=[_peek_key])
                 if integ_result.success and not integ_result.empty_200:
-                    # integrate 命中后 advance RR (与 pexec 对齐, 保持轮转均匀)
                     _next_nv_key(tier_model)
                     integ_result.fallback_tiers_used = [tier_model]
                     metrics["tier_model"] = integ_result.tier_model
@@ -992,10 +1447,8 @@ def execute_request(handler, oai_body, mapped_model, request_id, metrics, t_star
                         _log("NV-STARTUP-RETRY-SUCCESS", f"Startup retry #{retry_idx} succeeded (integrate per-key)")
                         metrics["startup_retry"] = retry_idx
                     return integ_result
-                # per-key integrate 失败 → 落到下方 pexec _try_tier_keys 全 key 轮转 (含该 key pexec 兜底).
                 _log("NV-INTEGRATE-PERKEY-FALLBACK", f"tier={tier_model} k{_peek_key+1} integrate failed → falling back to pexec")
                 all_attempts = list(integ_result.key_cycle_attempts)
-                # integrate 失败也 advance RR (避免下次仍 peek 到同一坏 key)
                 _next_nv_key(tier_model)
             # R572: 首选 integrate 直连路径 (仅 first tier + NV_INTEGRATE_MODELS + path 未冷却).
             # integrate 全 key 失败/全 429 → 回退下方 pexec _try_tier_keys (同一 tier_model).
