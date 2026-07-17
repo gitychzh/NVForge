@@ -89,3 +89,43 @@ else:
 - 监控 30min,确认真实大请求 first-byte-timeout max ≤ 45s 后写 memory。
 - 若 45s 仍误杀(出现正常请求被砍),调高 NVU_STREAM_FB_200K_S env。
 - 此修复是 R1648e 切换长跑前的稳定性前置——大请求卡顿不解决,R1648e 切换后 CC 体验会更差。
+
+## 七、深挖补遗:R1672 只治了第 2 段,第 1 段未治 (2026-07-17 14:30-14:40 复现)
+
+部署后真实 283k 请求复现, 完整解剖 (14:34:08, 总 115s):
+```
+14:34:08.7  REQ 283k input
+14:34:08.7  k2 pexec (read_timeout≈66s)
+14:35:10.4  k2 → empty-200 (Content-Length:0)   ← 卡 62s 在 conn.getresponse() 内部
+14:35:10.4  k3 integrate
+14:35:19.3  k3 SUCCESS (返200头)
+14:36:04.3  FIRST-BYTE-DEADLINE 45.0s exceeded   ← R1672 生效 (旧 90s)
+14:36:04.3  → 502, CC retry 同一个 283k → 死循环 1h (DB 8 条全 283274)
+```
+
+**两段叠加 = 115s**:
+- 第 1 段 62s: pexec `conn.getresponse()` (upstream.py:677) 对 283k input hang ~62s
+  才返 empty-200. 卡在 getresponse **内部**, first-byte deadline 救不到 (deadline 从
+  getresponse 返回后才计). read_timeout=min(66, post_connect_remaining)≈66s 拖满.
+  **R1672 没碰这段.**
+- 第 2 段 45s: integrate 200-then-hang, R1672 已 90→45 ✅.
+
+**为什么不能简单缩 pexec getresponse 超时 (层 1 止血走不通)**:
+查正常 >200k 成功请求 ttfb: p90=25.6s, **max=58s**. 给 getresponse 套 20s 短超时会
+**大面积误杀正常大请求**. 第 1 段 62s 大部分是"等 NVCF 真返头"(对大 input 就是慢),
+不全是 hang. 简单缩超时不可行.
+
+**最深根因**: NVCF glm5.2 处理不了 283k(~9万 token) 超大 input — pexec 拖满 timeout
+返 empty-200, integrate 200-then-hang, 两通道都坏, 5 key 轮一遍各浪费 62-66s.
+
+**R1672 净评估**: 总卡死从 ~160s 降到 ~115s (第 2 段 90→45), 部分缓解但治不了第 1 段.
+单点 deadline 调优治不了这个病.
+
+**待决策的治本方案** (未做, 见 memory `r1672-nv-gw-biginput-hang-rootcause`):
+- B(推荐): nv_gw 对 input>250k 连续 N 次 first-byte-timeout 后快速失败 (不走完整
+  mode chain), 死循环 115s/次→~5s 快速拒. 风险中.
+- C(治本但侵入): cc4101 对超大 input 直接拒/降级到 ms_gw (改 CC 可见行为).
+- D(不做): 缩 pexec getresponse 超时, 误杀正常大请求.
+
+**死循环判定信号**: nv_requests 连续多条同 total_input_chars>200k 且 status=502 +
+error_type in (stream_first_byte_timeout, stream_no_content_gap).
