@@ -1,4 +1,4 @@
-# R1714: 修 R1704 引入的 request_id NameError (nv_gw _stream_openai_to_anth / _collect_stream_to_anth)
+# R1715: 修 R1704 引入的 request_id NameError (nv_gw _stream_openai_to_anth / _collect_stream_to_anth)
 
 > 聚焦 HM2 cc4101→40006(glm5.2_nv) 链路. HM1 暂缓(稳定2-3天后再部署).
 
@@ -67,7 +67,7 @@ nv_gw 这里没有 — **抄对了逻辑抄错了变量作用域**.
 - L1237: 同上
 
 对齐 L1671 已有的正确写法. 不碰逻辑, 不碰 breaker record 顺序, 不碰阈值.
-备份: handlers.py.bak.R1714_post (修后版本; .bak.R1714_pre 坏版本已删).
+备份: handlers.py.bak.R1715_post (修后版本; .bak.R1715_pre 坏版本已删).
 
 ## 改后验证
 1. ast 语法 OK (容器内 import ast.parse 通过)
@@ -81,8 +81,8 @@ nv_gw 这里没有 — **抄对了逻辑抄错了变量作用域**.
 - heredoc 里给 f-string 嵌套引号, 用 `\"` 转义在 f-string `{}` 表达式内非法
   (SyntaxError: unexpected character after line continuation character).
   → 必须用单引号 `metrics.get('request_id','?')`, 不用 `\"`.
-- 备份时机: cp 备份前要先确认源文件是好的, 否则备份存坏版本(本轮 .bak.R1714_pre 存了
-  带转义错的版本, 已删换 .bak.R1714_post).
+- 备份时机: cp 备份前要先确认源文件是好的, 否则备份存坏版本(本轮 .bak.R1715_pre 存了
+  带转义错的版本, 已删换 .bak.R1715_post).
 
 ## 不做
 - 不降 big_input 阈值 (留观测轮)
