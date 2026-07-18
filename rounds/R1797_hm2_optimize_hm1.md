@@ -19,5 +19,4 @@
 - `docker exec nv_gw env | grep SSLEOF`: NVU_SSLEOF_RETRY_DELAY_S=0.3 ✓
 - `curl /health`: status=ok ✓
 - 容器重启应用新值
-
 ## ⏳ 轮到HM1优化HM2
