@@ -54,7 +54,6 @@ from .config import (
     egress_info_for_key,
     NV_INTEGRATE_EGRESS_IPS,
     NV_GLM52_MODE_CHAIN, NV_GLM52_SINGLE_US_PROXY, NV_GLM52_RR_US_PROXIES,
-    NVU_GLM52_EXP_BACKOFF, NVU_GLM52_EXP_BACKOFF_STEPS, NVU_GLM52_EXP_BACKOFF_CAP,  # R1928 指数退避 (R1933 补 import 修 NameError: 半成品裸名未入 import 列表, R1932 restart 显形)
     KEY_MODE_BINDING, NV_GLM52_KEY_PROXY_MAP,
     glm52_current_mode_idx, glm52_save_mode_idx, glm52_reset_mode_idx,
     # R1648c: nv→ms fallback (5key 全坏兜底, 仅 glm5_2_nv)
