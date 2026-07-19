@@ -22,5 +22,4 @@
 - `docker exec nv_gw env | grep UPSTREAM_TIMEOUT`: 34 ✓
 - compose comment更新: R1898 36→34 ✓
 - 容器重启后参数一致, 无漂移 ✓
-
 ## ⏳ 轮到HM1优化HM2
