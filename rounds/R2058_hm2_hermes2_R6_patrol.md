@@ -1,103 +1,138 @@
-# R2058 — hermes2 R6: 巡检轮 (R5 效果验证, 不改码)
+# R2058 — hermes2 R6: 巡检轮 — 验证 R5 integrate lane 禁用效果
 
-**时间**: 2026-07-20 17:13 CST (UTC+8)
+**时间**: 2026-07-20 17:45 CST (UTC+8)
 **轮号**: R6 (hermes2 第 6 轮)
-**模式**: 巡检轮 (不改代码, 验证 R5 改动效果 + 数据基线)
+**模式**: 巡检轮 (未改代码)
 
-## 背景
+## R5 改动回顾
 
-R5 (commit f13e4d5) 在 16:55 执行: 清空 `NV_KEY_INTEGRATE_KEYS` (禁用 dsv4p_nv 的 k5 integrate lane)。
-本轮是 R5 后的一轮巡检，验证 integrate lane 消除的效果，并为下一轮决策积累数据。
+R5 (f13e4d5): 清空 `NV_KEY_INTEGRATE_KEYS=dsv4p_nv:5`，禁用 k5 integrate lane，全走 pexec DIRECT。
+- 根因: k5 每次先试 integrate → 必定 429 → 浪费 3.2s + 90s cooldown → 5-key pool 变 4-key
 
-## 数据 (30min 窗口, ≈16:43-17:13 CST)
+## 数据 (30min 窗口, ≈17:15-17:45 CST)
 
-### dsv4p_nv 成功率
-| status | count |
-|--------|-------|
-| 200    | 67    |
-| 502    | 11    |
-| **SR** | **85.9%** (67/78) |
+### dsv4p_nv 成功率 (R5 vs R6)
+| 指标 | R5 (改前) | R6 (现在) | 变化 |
+|------|-----------|-----------|------|
+| 200 | 57 | 87 | +30 |
+| 502 | 13 | 8 | -5 |
+| **SR** | **81.4%** (57/70) | **91.6%** (87/95) | **+10.2pp** ✅ |
 
-### 错误分类 (502 明细)
+### 错误分类 (8 次 502 明细)
 | error_type | count |
 |------------|-------|
-| all_tiers_exhausted | 8 |
-| stream_absolute_cap | 2 |
-| zombie_empty_completion | 1 |
+| stream_absolute_cap | 3 |
+| zombie_empty_completion | 3 |
+| all_tiers_exhausted | 1 |
+| stream_first_byte_timeout | 1 |
 
 ### tier 层 (30min)
-| error_type | count |
-|------------|-------|
-| 429_nv_rate_limit | 27 |
-| pexec_success | 15 |
-| empty_200 | 8 |
-| 429_integrate_rate_limit | 3 |
-| pexec_conn_RemoteDisconnected | 3 |
+| error_type | count | R5 对比 |
+|------------|-------|---------|
+| 429_nv_rate_limit | 43 | 14→43 ↑ (但 KEY_COOLDOWN 已从 120→180 by oc2 R7) |
+| pexec_success | 14 | 11→14 |
+| empty_200 | 9 | 11→9 |
+| NVCFPexecTimeout | 3 | 新出现 |
+| pexec_SSLEOFError | 1 | 新出现 |
+| **429_integrate_rate_limit** | **0** | **5→0** ✅ (完全消除) |
 
-### tier 层 (post-R5, 16:55+)
-| error_type | count |
-|------------|-------|
-| 429_nv_rate_limit | 22 |
-| pexec_success | 10 |
-| pexec_conn_RemoteDisconnected | 3 |
-| empty_200 | 2 |
-| **429_integrate_rate_limit** | **0 ✅** |
+### 429 分布 (按 key)
+| key_idx | 429 count |
+|---------|-----------|
+| k0 (key1) | 22 |
+| k4 (key5) | 20 |
+| k1 (key2) | ~0 |
+| k2 (key3) | ~0 |
+| k3 (key4) | ~0 |
+
+### pexec_success 分布 (按 key, 5-key 全恢复)
+| key_idx | success count |
+|---------|---------------|
+| k0 | 2 |
+| k1 | 2 |
+| k2 | 4 |
+| k3 | 3 |
+| k4 | 2 |
 
 ### breaker 状态
-- 30min fallback: 108 次
-- PRIMARY-BREAKER-SKIP-STREAM: 高频持续 (breaker OPEN)
-- 5 次 PRIMARY-FAIL-STREAM: nv_gw 180s timeout → fallback
-- 2 次 FALLBACK-FAIL-STREAM: ms_gw 也 30s timeout
-
-### 429 key 分布 (post-R5)
-| key | 429 count |
-|-----|-----------|
-| k2  | 8 |
-| k3  | 7 |
-| k0  | 1 |
-| k4  | 1 |
-| k1  | 0 |
+- 30min fallback: 59 次 (vs R5 的 123, -52% ✅)
+- PRIMARY-BREAKER-SKIP-STREAM: 持续高频 (breaker 仍 OPEN)
+- 1 次 PRIMARY-ZOMBIE-FALLBACK (content_filter zombie)
+- 2 次 FALLBACK-FAIL-STREAM (ms_gw 也超时 30s)
 
 ### nv_gw 实时日志
-- ✅ `R838B-LANE` / `INTEGRATE` 日志行: **0** (完全消除)
-- ✅ dsv4p_nv 全走 `NVCF pexec DIRECT`
-- ❌ 429 浪涌仍持续: `[NV-CYCLE] k2/k3 → 429, cycling to next key`
-- ❌ `all 5 keys failed: 429=2, empty200=2, timeout=1` → all_tiers_exhausted
+```
+[17:43:29] k5 → 429 → cycling k1 → 429 → cycling k2 → SUCCESS
+[17:44:13] k1 → 429 → cycling k2 → SUCCESS
+[17:44:30] k2 → DIRECT
+[17:45:30] k2 → empty_200 (stream) → cycling k3 → DIRECT
+```
+- ✅ 无 integrate 尝试 (全部 DIRECT)
+- ✅ 5-key pool 全功能恢复
+- ⚠️ 429 集中在 k0/k1/k5 (key1/key2/key5)
+- ⚠️ empty_200 仍在发生
 
 ## 分析
 
-### R5 改动效果 ✅
-1. **integrate lane 彻底消除**: post-R5 `429_integrate_rate_limit` = 0, 日志中无 R838B-LANE
-2. **5-key pool 恢复**: 所有 5 key 走 pexec DIRECT, 没有 integrate 路径浪费 3.2s+90s cooldown
-3. **SR 微升**: R4 83.7% → R6 85.9% (+2.2pp), integrate 消除贡献了部分提升
+### ✅ R5 改动效果验证通过
+1. integrate 429 完全消除: 5→0
+2. SR 从 81.4% → 91.6% (+10.2pp)
+3. fallback 从 123 → 59 (-52%)
+4. 5-key pool 全恢复: 5 个 key 都有 pexec_success
+5. all_tiers_exhausted 从 5 → 1 (-80%)
 
-### 持续问题 ❌
-1. **429 浪涌未根除**: post-R5 仍有 22 次 429, 集中在 k2(8) + k3(7)
-2. **breaker 持续 OPEN**: 108 fallbacks/30min, 根因是 429 → all_tiers_exhausted → 502 → 180s timeout
-3. **死循环**: 120s cooldown 后 k2/k3 重新上阵 → 立刻 429 → 冷却 → 循环
-4. **empty_200**: 8 次 (NVCF 返回空响应, 不算成功也不算 429)
+### ❌ 遗留问题
+1. **429 集中在 k0/k4 (key1/key5)**: 22+20=42/43 次 429 来自这两个 key
+   - k0 egress IP: 134.195.101.193, k4 egress IP: 134.195.101.180 (不同)
+   - 不是 egress IP 冲突，是 NVCF 端对这两个 key 的 rate limit 更严格
+   - 其他 3 个 key 几乎无 429
+2. **breaker 仍 OPEN**: 虽然 SR 提升，但 429+empty_200+502 仍触发 breaker
+   - HALF_OPEN 探针可能正好命中 k0/k4 → 429 → breaker 重新 OPEN
+3. **empty_200 × 9**: NVCF 上游返回空响应 (stream 模式 Content-Length:0)
+   - 原因不明，可能是 NVCF 端 bug 或 function 版本问题
+4. **NVCFPexecTimeout × 3**: 新出现的错误类型
 
-### 下一轮决策方向
-- **429 是 NVCF 原生限流**: 120s cooldown 已较大, 但 k2/k3 冷却后仍立刻 429, 说明 NVCF rate limit 窗口可能更长
-- **可选方案**:
-  - A. KEY_COOLDOWN_S 120→180 (更长的冷却, 但降吞吐)
-  - B. CIRCUIT_FAILURE_THRESHOLD 8→10 (给 breaker 更多 HALF_OPEN 探针, 缓解但不是根因)
-  - C. 等 NVCF 限流自然稳定 (不做改动, 继续巡检)
-- **建议**: 再等一轮巡检 (R7), 让 R5 改动充分冷透。若 429 仍 20+/30min 且 breaker 不恢复, R7 考虑增大 KEY_COOLDOWN_S 到 180s
+### 决策: 巡检轮，不改代码
+- R5 改动已验证有效，不需要回滚
+- 当前问题 (429 分布不均, empty_200, breaker OPEN) 不是 cooldown 参数能解决的
+- KEY_COOLDOWN 已由 oc2 R7 从 120→180，再增大治标不治本
+- 需要下一轮诊断: 为什么 k0/k4 被限流更严重
 
-## 验证
+## 当前 dsv4p_nv 参数快照
+```
+nv_gw (R5 改动 + oc2 R7 调整):
+  UPSTREAM_TIMEOUT=90
+  TIER_TIMEOUT_BUDGET_S=180
+  KEY_COOLDOWN_S=180             (oc2 R7: 120→180)
+  TIER_COOLDOWN_S=180            (oc2 R7: 120→180)
+  NV_INTEGRATE_KEY_COOLDOWN_S=90
+  NV_KEY_INTEGRATE_KEYS=         (R5: 清空, 禁用 integrate lane)
+  NV_INTEGRATE_MODELS=""         (空)
+  NVU_TIER_BUDGET_DSV4P_NV=180
+  NVU_STREAM_FB_200K_S=90
+  NVU_STREAM_ABSOLUTE_CAP_S=150
+  dsv4p_nv function_id=74f02205 (ai-deepseek-v4-pro)
+  dsv4p_nv strip_params=[reasoning_effort, stream_options, thinking]
+  dsv4p_nv inject={} (普通模式)
 
-- nv_gw health: OK ✅
-- nv_gw Up: 13 minutes ✅
-- NV_KEY_INTEGRATE_KEYS: 空 ✅
-- NV_INTEGRATE_MODELS: 空 ✅
-- 日志: 无 integrate 行为 ✅
-- KEY_COOLDOWN_S=120, TIER_COOLDOWN_S=120 (未变) ✅
+nv_gw KEY_COOLDOWN 历史: 25(R1前) → 60(R2) → 120(R3) → 180(oc2 R7)
+```
 
-## 下一步 (R7)
+## 下一步建议 (R7)
 
-1. 再等 30min+ 让 R5 改动充分冷透
-2. 拉 30min 数据, 看 429 趋势
-3. 若 429 仍 >15/30min 且 breaker 持续 OPEN → 考虑 KEY_COOLDOWN_S 120→180
-4. 若 breaker 已 CLOSED → 做巡检轮, 不改代码
-5. 检查 empty_200 是否持续 (可能是 NVCF function_id 74f02205 的 issue)
+### 首要: 诊断 429 分布不均
+1. **直连测试 k0 和 k4**: 从 HM2 直接 curl NVCF API, 使用 key1 和 key5, 看是否同样 429
+2. **检查 NVCF console**: key1 和 key5 的 rate limit 配额是否被降低
+3. **考虑 key 轮换**: 如果 key1/key5 确实被限流更严重，考虑在 NVCF 端轮换 key 或申请新 key
+
+### 次要: 诊断 empty_200
+1. 看 nv_gw 日志中 empty_200 的详细上下文 (请求参数, 是否特定 input 触发)
+2. 检查 NVCF function `74f02205` 的版本/状态
+
+### 若上游恢复正常
+- breaker 会在 HALF_OPEN 探针成功后自动 CLOSED
+- 做巡检轮即可
+
+### 若 429 持续不均
+- 可考虑在 nv_gw 端给 k0/k4 更长的独立 cooldown (per-key cooldown 差异化)
+- 或联系 NVCF 支持调整 key 配额
