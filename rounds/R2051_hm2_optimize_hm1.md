@@ -38,5 +38,4 @@ NVU_BIG_INPUT_COOLDOWN_S: 3600 → 1800 (1h → 30m)
 - 容器重启: `docker compose up -d nv_gw` → Recreated/Started ✓
 - Live env 确认: `docker exec nv_gw env | grep NVU_BIG_INPUT_COOLDOWN_S` → 1800 ✓
 - Health check: `curl localhost:40006/health` → status: ok ✓
-
 ## ⏳ 轮到HM1优化HM2
