@@ -1,0 +1,120 @@
+# R2111 — NOP R147 (连续第 83 轮冻结)
+
+**时间**: 2026-07-21 03:02 CST (19:02 UTC)
+**作者**: cc2 (HM2), prefix `hm2_cc2`, HM2 only
+**轮型**: NOP 巡检, 0 改动 0 restart (改前必有数据, 改后必有验证 — 本轮无改动故无 restart)
+**基线**: 上一轮 R2110 (cc2 04dd7e3); peer 最新 R2110 hm2_optimize_hm1 (34ab6d2, 改 HM1 TIER_COOLDOWN 不碰 HM2 nv_gw)
+
+## 改前数据 (本 session 拉取, 30min 干净窗口, 当前 CST 02:58)
+
+### 整体 SR (nv_requests, 30min)
+- 30min: 200×110 / 502×29 / 429×3 → **SR = 110/142 = 77.5%**
+- **vs R2110 30min SR 94.4% (118/125) → -16.9pp 断崖下跌, 远跌破 90% 警戒线**
+
+### 按 mapped_model 拆分 (关键: 恶化不在 cc2 链路)
+- **glm5_2_nv (cc2 自己的链路, agent_type=_nv_anthropic)**: 200×33, **SR 100%, 0 个 502** ← 健康持续
+- **dsv4p_nv (其他 agent 走的)**: 200×68 / 502×42 / 429×3 → SR 60.2%, **恶化全在这**
+- → 整体 77.5% 被 dsv4p_nv 拉低; cc2 链路 100%
+
+### 30min 502/429 error_type (status<>200)
+- 502: all_tiers_exhausted×30 + zombie_empty_completion×1
+- 429: all_tiers_exhausted×3
+- 全 `all_tiers_exhausted` 主导 (R2110 是 all_tiers×5+zombie×2), **0 新可配置类** (all_tiers 是 tier-chain 兜底类, NVCF 上游 rate limit / pexec 连接失败两类根因)
+
+### tier 30min (nv_tier_attempts)
+- glm5_2_nv: pexec_success×31 / pexec_conn_RemoteDisconnected×5 / pexec_SSLEOFError×4 (新, R2110 无)
+- dsv4p_nv: 429_nv_rate_limit×10 (回归! R2110 是 0 干净) / NVCFPexecRemoteDisconnected×7
+- **关键新现象**:
+  1. dsv4p_nv 429_nv_rate_limit 回归 (R2110 tier 30min 0 个 429 干净 → 本轮 10) = peer R2108 env 改后的 429 平息只持续约 1 轮, NVCF 对 dsv4p 又限速
+  2. glm5_2_nv 出现 pexec_SSLEOFError×4 (k2/k3/k4 轮转全中, NVCF pexec TLS 中断), R2110 无此类
+
+### glm5_2_nv cc2 链路真实脆弱信号 (nv_gw 日志, 30min)
+- 4 次 `NV-MS-FB-ATTEMPT` for glm5_2_nv (req=23410429/d9c5baab/4be52d75/ab87b7ba @02:44/02:51/02:54/03:01), 全 `all_keys_exhausted` → nv_breaker recorded failure, **state 全 CLOSED**
+- 全 4 次 `NV-MS-FB-SERVED` (ms_gw 兜住) → 0 真中断
+- **nv_breaker recorded failure count: R2110=2 → 本轮=4** (阈值 NVU_MS_FALLBACK_FAIL_THRESHOLD=5, 窗口 300s)
+- **距离 OPEN 切流阈值只剩 1** (4→5 即真 OPEN 切流); 但窗口滚动 300s, 最近 5min recorded=0, 当前未切流
+- 根因: glm5_2_nv pexec tier 层 SSL/RemoteDisconnect 抖动 (NVCF 上游 TLS 中断), 5 key 连环连不上 → all_keys_exhausted → breaker recorded+1
+- 模式: 每 3-7min 累积 1 次; 若接下来 5min 内再来 1 次 (02:51/02:54/03:01 仍在 300s 窗内 → 到 5) 就真 OPEN
+
+### fallback (cc4101 30min)
+- **7 条 FALLBACK-OK, 全兜住, 0 fallback 失败, 0 真中断** (与 R2110 数量一致)
+- 全 7 条 75s `PRIMARY-FAIL-SKIP-CIRCUIT` (header/ttfb timeout 75s < chain budget 120s, cc4101 pre-empted nv_gw retry, NOT counted toward circuit — R1947 已知类 cc4101 bug3 preempt 层)
+- req 样本: 42921716/b223871d/2774a2a8/50b17a02/26a4741c/9df0b402/79408dc9
+- `grep -cE "both failed|ms.*fail|UPSTREAM-ERROR-SEEN"` cc4101 30min = 0 → 确认 0 真中断
+- **用户诉求 "可以报错但不能让 cc2 中断" 仍达成** (0 真中断; 7 条全 ms 兜住)
+
+### breaker 状态
+- cc4101 PRIMARY-BREAKER-OPEN 30min = **0**
+- nv_gw 30min `grep -cE "BREAKER-FAIL|BREAKER.*OPEN|NV-ANTH-BREAKER-FAIL"` = **0**
+- nv_breaker state CLOSED, recorded count = **4** (vs R2110 = 2, +2, 向 OPEN 阈值 5 逼近但未达)
+- **连续第 19 轮验证未真 OPEN 切流** (recorded 但 CLOSED 是机制正常吸收, 不是恶化; 但 count 2→4 是恶化趋势信号, 提高警觉)
+
+### abs_cap (R1918 方案0)
+- 30min = **0** (仍归零, 与 R2110 一致)
+- 6h = 3 (全 7-20 13:11-13:27 UTC 远古偶发, 前一 peer 重启窗口期, 非 R1918 cap_origin 失效, 与当前 CST 03:02 无关)
+
+### BUG-A 修复 (R1913) 生效
+- 30min `NV-GLM52-CHAIN-SKIP-PEXEC2` 触发 **4 次** (vs R2110 5 次 -1, 持续复活触发中, 机制真实生效)
+
+### 6h 窗口 (含远古风暴, 仍失真不采信)
+- 6h nv_requests: 502×1269 + 429×105 + 200×296
+- 6h SR = 296/1670 = 17.7% 失真 (含 peer R2107 重启前 01:52-02:10 dsv4p 429 风暴污染 + 本轮 18:45 起的新 dsv4p 风暴)
+- **6h SR 不采信, 不代表当前 nv_gw 状态**; 等 CST 08:10 后 6h 窗口完全滚出风暴期才采信
+- 注: 即便滚出, 6h 仍会含本轮 18:45-19:02 的 dsv4p 风暴, 需等该段也滚出
+
+### nv_gw /health + StartedAt
+- /health = ok (proxy_role=passthrough, nv_num_keys=5, nvcf_pexec_models=[kimi_nv,dsv4p_nv,glm5_2_nv], nv_default_model=dsv4p_nv, port=40006)
+- nv_gw StartedAt = **2026-07-20T18:10:28Z** (UTC = CST 02:10:28; 连续第 4 轮核实未漂移, R2107 后稳定)
+- cc4101 StartedAt = 2026-07-19T12:10:22Z (0 restart 未变)
+- docker ps "nv_gw Up 48 minutes" 与 StartedAt 02:10 CST 到当前 02:58 (约 48min) 吻合
+
+## 决策: 继续 NOP (连续第 83 轮冻结), 0 改动 0 restart
+
+### 本轮触发但未达解冻红线的判据
+- **整体 30min SR 77.5% 跌破 90% (红线之一)** — 但根因是 **dsv4p_nv NVCF 上游 rate limit 风暴**, 非 cc2 链路
+  - cc2 链路 glm5_2_nv 30min SR 100%, 0 个 502, 我自己的流量健康产出
+  - dsv4p_nv 的 5US 代理是 peer hm2_optimize_hm1 管的 (R2082/R2082b/R2108), **cc2 铁律不碰 peer 改的 5US 代理旋钮**
+  - dsv4p_nv 是 `nv_default_model`, 是 cc4101 默认路由; 其他 agent/peer 走它产生流量, 但 cc2 settings.json 链路走 glm5_2_nv
+- **glm5_2_nv cc2 链路出现真实脆弱信号**: pexec SSLEOFError×4 + RemoteDisconnected×5 → 4 次 all_keys_exhausted → breaker recorded 2→4 向 OPEN(5) 逼近
+  - 但仍 CLOSED 未真 OPEN 切流; 4 次全被 ms 兜住 0 真中断
+  - 根因是 NVCF pexec 上游 TLS 抖动 (SSL EOF = NVCF 中断 TLS 连接), **非 rate limit, 非可配旋钮直接解的结构性问题**
+  - KEY_COOLDOWN/TIER_COOLDOWN 是 peer 改过的旋钮 (60/180), cc2 不碰
+- **指数退避半成品 (R1928 冻结) 不适用本场景**: 它是为 glm5_2_nv per-key 60/120/240 退避 + chain_budget 420 + post-200 软挂换 key 设计; 当前 glm5_2_nv 100% 健康 (对用户侧), 激活它需 3 组件同步 + 24h 观测, 风险/收益不对等, 且 SSLEOFError 不是它能解的 (它是连接级 TLS 中断, 不是 429 rate limit)
+
+### 冻结理由 (连续第 83 轮) 仍成立
+- 半成品 NVU_GLM52_EXP_BACKOFF 未经 in-vivo 验证 (env 开关从未激活, 根本不在容器 env 中)
+- 激活需同步 chain_budget 120→420 + cc4101 PRIMARY_HEADER_TIMEOUT 60→450 + post-200 软挂换 key 未实现 + 24h 观测窗口
+- 当前 cc2 链路 glm5_2_nv 对用户 100% SR, 0 真中断, abs_cap 30min 归零, BUG-A 持续生效 — 边际收益小
+- **风险/收益不对等**: 激活半成品会改 chain_budget (nv_gw) + cc4101 header timeout (跨组件), 重启窗口期有中断风险, 当前闭环吸收的抖动不值得冒险
+
+### 提高警觉 (本轮新出现的恶化趋势, 写进 STATE 下一轮重点盯)
+1. **nv_breaker recorded count 2→4 向 OPEN(5) 逼近**: 下一轮若 30min recorded 达 5 真 OPEN 切流, 需重新评估 (可能需调 NVU_MS_FALLBACK_FAIL_THRESHOLD 或排查 pexec TLS 根因, 但前者是"调高阈值假装不 OPEN"=把死循环请回来, 不可取; 后者 NVCF 上游不可控)
+2. **glm5_2_nv pexec_SSLEOFError 新出现**: 4 次/30min 全 k2/k3/k4 轮转中; 若持续攀升且连到 all_keys_exhausted 使 breaker OPEN, 需关注 NVCF pexec 上游是否系统性 TLS 中断 (非 cc2 旋钮能解, 需记录供 peer/上游排查)
+3. **dsv4p_nv 429_nv_rate_limit 回归**: peer R2108 env 改后只平息 1 轮, 本轮 10 次; 但 5US 代理归 peer 管, cc2 不碰, 仅记录
+4. **整体 30min SR 77.5%**: 若持续 <90% 且 glm5_2_nv 链路也开始 502 (当前 0 个), 才是 cc2 该解冻的信号; 当前 glm5_2_nv 100% 不需动
+
+## 验证
+- 0 改动 0 restart, 无需验证重启后窗口
+- 数据本身即验证: nv_gw /health ok, docker ps 正常, StartedAt 未漂移, env 未变 (peer R2108 改后值, 非 cc2 改)
+
+## env 快照 (docker exec nv_gw env, peer R2108 改后真实值, 本轮 0 变更)
+```
+KEY_COOLDOWN_S=60          (peer R2108 改 25→60, 非 cc2)
+TIER_COOLDOWN_S=180        (peer R2108 改 25→180, 非 cc2)
+MIN_OUTBOUND_INTERVAL_S=10 (peer R2108 改 0→10, 非 cc2)
+KEY_AUTHFAIL_COOLDOWN_S=60
+NVU_BIG_INPUT_FAIL_N=1
+UPSTREAM_TIMEOUT=90
+TIER_TIMEOUT_BUDGET_S=180
+NV_INTEGRATE_KEY_COOLDOWN_S=90
+NVU_BIG_INPUT_COOLDOWN_S=180
+NVU_TIER_BUDGET_GLM5_2_NV=120
+NVU_MS_FALLBACK_FAIL_THRESHOLD=5
+NVU_BREAKER_WINDOW_S=300
+NVU_MS_FALLBACK_SKIP_S=30
+NVU_EMPTY_200_FASTBREAK=3
+NVU_PEXEC_TIMEOUT_FASTBREAK=3
+```
+(注: NVU_GLM52_EXP_BACKOFF 不在 env 中 = 关, 半成品冻结中. chain_budget 仍 120s, 未升 420. 本轮 0 改动, env 与 R2110 完全一致. peer hm2_optimize_hm1 的 R2110 commit 34ab6d2 改的是 HM1 TIER_COOLDOWN, 不碰 HM2 nv_gw env, cc2 视角 env 0 变更.)
+
+HM2 only. 不碰 HM1, 不碰 ms_gw(40007), 不碰 peer 5US 代理.
