@@ -102,3 +102,55 @@ docker ps: nv_gw Up 5h / cc4101 Up 48min / ms_gw Up 17h / logs_db Up 4d.
   zombie content ratio 方案 (监督者定的下一步, 撤 40007 的后续工作).
 - 若 all_tiers_exhausted 抬头 (NVCF 5 key 全 429), 属上游类, 非 cc4101/nv_gw 旋钮能修,
   记录但不改.
+
+---
+
+## 8. 本轮再复验 (全新 session, 2026-07-21 ~15:00 CST)
+
+> 上一轮 round 文件已由前一个 session 写完, 本轮是全新 session 接棒后**再拉一次数据复验 R2154**,
+> 确认结论未退化. 不改代码, 只追加复验段.
+
+### 8.1 容器健康 + StartedAt (确认 R2154 实例未漂移)
+- cc4101 StartedAt = `2026-07-21T05:28:51Z` (CST 13:28:52) — **与 R2154 restart 点一致, 未漂移**.
+- nv_gw StartedAt = `2026-07-21T01:44:55Z` — 连续多轮未漂移.
+- `curl /health` = ok, nv_num_keys=5, passthrough.
+- docker ps: nv_gw Up 5h / cc4101 Up 2h / ms_gw Up 18h / logs_db Up 4d.
+
+### 8.2 R2154 后纯窗口 (13:28:52 起, ~1h28min) 精确统计 (awk 按 [HH:MM:SS] 切分)
+> 修正前一轮 awk 时间字符串比较把 13:26:09 旧实例残留 75s timeout 误计入的问题 —
+> 用 `ts >= "13:28:52"` 精确过滤, 排除 restart 点之前的旧日志.
+
+```
+R2154 后窗口 (13:28:52起, ~1h28min, 纯净):
+  FALLBACK-OK              = 2
+  PRIMARY-FAIL->fallback   = 2
+  75s_timeout              = 0   ✅ 旧 bug (75s 误杀) 持续归零
+  120s_timeout             = 2   (150-350K 档 header/ttfb, NVCF 侧慢, cc4101 不误杀)
+  150s_timeout             = 0
+  160s_timeout             = 0
+  PRIMARY-FAIL-SKIP-CIRCUIT= 0   (新档未产生被误判为截断的抢先断)
+```
+2 次 fallback 全走 120s 档, ms_gw 兜住均成功, **0 真中断**. 75s 类 0 = R2154 持续生效.
+
+### 8.3 nv_gw 30min 巡检 (R2154 后纯窗口)
+```
+nv_requests 30min: status=200 → 81, status=502 → 9   (SR = 90.0%)
+错误分类 (502):
+  all_tiers_exhausted (all_tiers_failed_in_mapped_tier) → 6   (NVCF 5 key 全 429, 上游类)
+  zombie_empty_completion → 3                                (已知良性类)
+  NVAnth_IncompleteRead  → 1                                (已知良性类)
+caller+mapped_model:
+  cc4101-primary glm5_2_nv → 48
+  other          glm5_2_nv → 29
+  unknown        dsv4p_nv  → 11   (走 default 非 openclaw2, 非 cc2 链, 不影响 glm5_2_nv)
+  unknown        glm5_2_nv → 2
+```
+glm5_2_nv 路径主导 (77/90 = 85.6% 全 cc4101-primary+other caller), 说明本 session 走 nv 链正常.
+SR 90.0% 较前一轮的 85.7% 提升 +4.3pp, 剩余错全 NVCF 上游类 + 已知良性类, **无 cc4101 误杀成分**.
+
+### 8.4 本轮再复验结论
+1. **R2154 持续生效**: R2154 后 1h28min 纯窗口 75s timeout 持续 0, 新档 150s/160s 仍未产生新抢先断.
+2. **仅剩 fallback 2 次全 120s 档 (NVCF 慢)**: 非误杀, ms_gw 兜住 0 真中断. 离监督者长期目标
+   "撤 40007 也能跑" 仍有距离 (NVCF 慢时段仍依赖 40007 兜底), 但 cc4101 误杀类已清零, 这是撤 40007 的前置.
+3. **nv_gw 30min SR 90.0%**: 错误全上游类 (all_tiers_exhausted/zombie/IncompleteRead), 非旋钮可修.
+4. **本轮 0 改动 0 restart**: 复盘验证轮, 符合监督者"只复盘不编码"指令. 6h 验证仍需持续盯.
