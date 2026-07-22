@@ -68,6 +68,11 @@ class OaiSseToAnthropicConverter:
         # token accumulators (from SSE usage chunks)
         self.input_tokens = 0
         self.output_tokens = 0
+        # R2223 t1: NVCF 上游真实返回 prompt_tokens_details.cached_tokens (实测命中,
+        # 如 40834 prompt 里 384 cached). oai_to_anth 此前只读 prompt_tokens/completion_tokens,
+        # cache_creation/read_input_tokens 全程硬编码 0 报给 cc4101 → cc2 jsonl usage 缓存
+        # 命中全 0 (R2192 抓包铁证). 透传真实 cached_tokens 让 cc2 看到 cache_read 真实值 (纯增益).
+        self.cache_read_tokens = 0
         # content accumulators (caller uses these for zombie/empty detection)
         self.content_chars = 0
         self.reasoning_chars = 0
@@ -118,7 +123,7 @@ class OaiSseToAnthropicConverter:
                     "stop_reason": None, "stop_sequence": None,
                     "usage": {"input_tokens": input_tokens_est, "output_tokens": 0,
                               "cache_creation_input_tokens": 0,
-                              "cache_read_input_tokens": 0},
+                              "cache_read_input_tokens": self.cache_read_tokens},
                 },
             })
             self.message_start_sent = True
@@ -143,6 +148,12 @@ class OaiSseToAnthropicConverter:
                 self.input_tokens = pt
             if ct > 0:
                 self.output_tokens = ct
+            # R2223 t1: NVCF 返回 prompt_tokens_details.cached_tokens (实测可命中).
+            # 透传给 cc4101, 让 cc2 usage 看到 cache_read 真实值.
+            _ptd = chunk_usage.get("prompt_tokens_details") or {}
+            _ct = _ptd.get("cached_tokens") or 0
+            if _ct:
+                self.cache_read_tokens = _ct
 
         # ensure message_start goes out before any delta (use upstream msg id if present)
         if not self.message_start_sent:
@@ -298,8 +309,13 @@ class OaiSseToAnthropicConverter:
         # 非 `{"content": "#` 绕过了 R1832 过滤 (R1836 30min 2 命中 nec83bc5ac/4e8fb7a9
         # 全 restart 后). 故扩前缀检查盖第二种自反馈路径 (bash command), marker 列表不变.
         # 仍纯观测, 绝不降级不中断.
-        SELF_FB_MARKERS = ("# cc2 自优化交接棒 STATE", "# R18")
-        SELF_FB_PREFIXES = ('{"content": "#', '{"command": "')
+        # R2180: 更新自反馈过滤 (marker+prefix 老化). 旧 marker "# R18" 只匹配 R18xx 轮号,
+        # 轮号进 R21xx 后失效; 旧 prefix 没覆盖 Write 工具的 {"file_path": " 前缀 (cc2 改用
+        # Write 写 STATE/round 后模型生成的 args 前缀). 6h 实测 8 命中全漏网打印 (R2174-R2179).
+        # 改: marker 用通用文本 (非轮号) + prefix 加 file_path. R1839 真降级已兜住危害
+        # (final_stop=end_turn, session 不中断), 此处只是观测噪音过滤, 让真非自反馈畸形凸显.
+        SELF_FB_MARKERS = ("cc2 自优化", "hm2_cc2", "openclaw2 自优化", "交接棒 STATE", "STATE.md", "hm2_oc2")
+        SELF_FB_PREFIXES = ('{"content": "#', '{"command": "', '{"file_path": "')
         real_bad = []
         for tid, raw in bad:
             r = raw or ""
@@ -413,6 +429,8 @@ class OaiSseToAnthropicConverter:
                     usage_delta = {"output_tokens": real_output}
                     if real_input > 0:
                         usage_delta["input_tokens"] = real_input
+                    if self.cache_read_tokens > 0:
+                        usage_delta["cache_read_input_tokens"] = self.cache_read_tokens
                     out += _sse_bytes("message_delta", {
                         "type": "message_delta",
                         "delta": {"stop_reason": final_stop, "stop_sequence": None},
@@ -463,6 +481,8 @@ class OaiSseToAnthropicConverter:
             usage_delta = {"output_tokens": real_output}
             if real_input > 0:
                 usage_delta["input_tokens"] = real_input
+            if self.cache_read_tokens > 0:
+                usage_delta["cache_read_input_tokens"] = self.cache_read_tokens
             out += _sse_bytes("message_delta", {
                 "type": "message_delta",
                 "delta": {"stop_reason": final_stop, "stop_sequence": None},
