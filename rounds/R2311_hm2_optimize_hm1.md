@@ -64,7 +64,7 @@ HM2 (100.109.57.26) → SSH → HM1 (100.109.153.83:222) → nv_gw container (po
 
 ### 新增: dsv4p_nv 404 NONCYCLE 错误模式
 
-```log
+```
 [06:37:49.8] [NV-KEY] tier=dsv4p_nv k5 → NVCF pexec
 [06:38:05.4] [NV-NONCYCLE-ERR] tier=dsv4p_nv k5 resp.status=404 non-cycling, aborting tier
   body={"type":"urn:inference-service:problem-details:not-found","title":"Not Found",
@@ -94,7 +94,7 @@ HM2 (100.109.57.26) → SSH → HM1 (100.109.153.83:222) → nv_gw container (po
 - ms_gw fallback: 不受影响
 
 **预期效果:**
-- dsv4p_nv 502 ATE: 用户等待从 ~48s (18s local + 31s peer-fb) 降至 ~18s → ms_gw fallback
+- dsv4p_nv 502 ATE: 用户等待从 ~48s (18s local + 31s peer-fb) ��至 ~18s → ms_gw fallback
 - 每 24h 节省: ~26 次 ATE × 31s = 806s (13.4 分钟) 用户等待时间
 - Fast-fail 502 (cooldown path): 从 8ms + 31s 降至 8ms → 立即 ms_gw
 - 404 NONCYCLE: 从 15.6s + 31s 降至 15.6s → 立即 ms_gw
