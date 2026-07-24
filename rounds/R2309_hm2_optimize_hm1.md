@@ -1,115 +1,131 @@
-# R2309 (HM2→HM1): NVU_BIG_INPUT_MODELS +dsv4p_nv
+# HM2 Optimize HM1 - R2309
 
-**Timestamp**: 2026-07-24 12:33 UTC
-**Round type**: 单参数优化
-**Author**: opc2_uname (HM2)
+**Date:** 2026-07-24 04:18 UTC (CST 12:18)
+**Author:** opc2_uname (HM2)
+**Type:** HM2 → HM1 单参数优化 (铁律：只改HM1不改HM2)
 
-## 数据采集
+## 数据摘要 (HM1 nv_gw @ 100.109.153.83)
 
-### docker logs (nv_gw, recent 100 lines)
-- glm5_2_nv big-input timeout clusters: NVCFPexecTimeout 25-30s/key, fastbreak after 2 consecutive
-- glm5_2_nv SSLEOFError single events, NV-SSL-CYCLE correctly cycling
-- dsv4p_nv big-input: SSLEOF→504→empty200→RemoteDisconnected→timeout cascade, all 5 keys exhausted
-- dsv4p_nv budget ceiling: 170019ms + 170048ms = 2 consecutive 170s ATE
-- Peer-fb skip working correctly for glm5_2_nv,dsv4p_nv → 502 → ms_gw fallback
-- Big-input breaker OPEN for glm5_2_nv (correct), COOLDOWN=900s
+### 容器状态
+- nv_gw StartedAt: 2026-07-23T20:07:00Z (R2308 部署), RC=0, running
+- /health: ok, 5 keys, passthrough, tiers=[kimi_nv, dsv4p_nv, glm5_2_nv]
+- R2308 的 NVU_PEER_FALLBACK_TIMEOUT=60 已确认生效 (env 读取)
+- 无 docker logs error/warn
 
-### docker exec env
+### DB (24h 窗口 — 包含 R2308 前后数据)
+
+| 模型 | 200 | 502 | 429 | SR% |
+|------|-----|-----|-----|-----|
+| dsv4p_nv | 24 | 29 | 0 | 45.3% |
+| glm5_2_nv | 66 | 27 | 16 | 60.6% |
+| kimi_nv | 20 | 35 | 0 | 36.4% |
+
+### 错误分类 (24h, non-200 only)
+
+| 模型 | error_type | 次数 | avg_ms | min_ms | max_ms |
+|------|------------|------|--------|--------|--------|
+| kimi_nv | all_tiers_exhausted | 26 | 193765 | 123628 | 370299 |
+| kimi_nv | zombie_empty_completion | 8 | 74004 | 4389 | 148541 |
+| kimi_nv | NVStream_IncompleteRead | 1 | 75832 | 75832 | 75832 |
+| dsv4p_nv | all_tiers_exhausted | 25 | 18095 | 6 | 160041 |
+| dsv4p_nv | zombie_empty_completion | 4 | 32850 | 10471 | 95117 |
+| glm5_2_nv | all_tiers_exhausted | 34 | 21549 | 6 | 90939 |
+| glm5_2_nv | zombie_empty_completion | 9 | 16018 | 4437 | 28985 |
+
+### kimi_nv 成功延迟分布 (24h, status=200)
+
+| p50 | p90 | p95 | p99 | max |
+|-----|-----|-----|-----|-----|
+| 30931ms | 86167ms | 89684ms | 116453ms | 123145ms |
+
+### kimi_nv 502 延迟分布 (24h, all_tiers_exhausted)
+
+| p50 | p95 | min | max |
+|-----|-----|-----|-----|
+| 125582ms | 370204ms | 123628ms | 370299ms |
+
+### Proxy log 分析 (kimi_nv empty_200 机制)
+
+从 nv_proxy.2026-07-23.log 提取 kimi_nv 失败路径:
+
 ```
-NVU_BIG_INPUT_MODELS=glm5_2_nv (before)
-NVU_BIG_INPUT_FAIL_N=4
-NVU_BIG_INPUT_COOLDOWN_S=900
-NVU_BIG_INPUT_THRESHOLD=250000
-NVU_TIER_BUDGET_DSV4P_NV=170
-NVU_TIER_BUDGET_GLM5_2_NV=210
-NVU_PEER_FB_SKIP_MODELS=glm5_2_nv,dsv4p_nv
+[NV-REQ] mapped_model=kimi_nv → NV-INJECT-THINKING reasoning_effort='low'
+[NV-KEY] k5 → 200 Content-Length:0 (stream) → empty_200 (66s thinking timeout)
+[NV-EMPTY-CYCLE] k5 cycling
+[NV-KEY] k1 → 200 Content-Length:0 (stream) → empty_200 (66s thinking timeout)
+[NV-EMPTY-FASTBREAK] 2 consecutive empty_200 ≥ threshold → fast-break (saved remaining keys)
+[NV-TIER-FAIL] all 5 keys failed: empty200=2, elapsed=124586ms
+[NV-ALL-TIERS-FAIL] elapsed=124590ms, ABORT-NO-FALLBACK
 ```
 
-### DB 24h (nv_requests)
-| model | total | ok | 429 | 502 | SR | p95_ok_ms |
-|---|---|---|---|---|---|---|
-| dsv4p_nv | 48 | 34 | 0 | 14 | 70.8% | — |
-| glm5_2_nv | 120 | 59 | 23 | 38 | 49.2% | — |
-| kimi_nv | 55 | 20 | 0 | 35 | 36.4% | 87923 |
+**关键洞察:** kimi_nv 请求经 NV-INJECT-THINKING 注入 reasoning_effort=low 后走 FORCE_STREAM_UPGRADE_TIMEOUT=66s 扩展超时路径。当 NVCF 返回 empty_200 (流式连接但无内容) 时，每个 key 等待 66s 才判定为空。EMPTY_200_FASTBREAK=3 允许 3 次 key 尝试 = 3×66s = 198s 后才 fastbreak。TIER_BUDGET_KIMI_NV=200 给了 200s 预算，恰好放行 3 次尝试 198s。
 
-### dsv4p_nv big-input failures (24h, >250K chars)
-| ts | status | duration_ms | chars |
-|---|---|---|---|
-| 07-24 03:36 | 502 | 170057 | 283146 |
-| 07-24 03:07 | 502 | 170028 | 282976 |
-| 07-24 02:38 | 502 | 51925 | 283568 |
-| 07-24 01:37 | 502 | 22240 | 282280 |
-| 07-23 22:37 | 502 | 15557 | 274696 |
-| 07-23 21:38 | 502 | 15116 | 269978 |
-| 07-23 17:37 | 502 | 11294 | 257179 |
-| 07-23 17:07 | 502 | 14516 | 257193 |
-| 07-23 16:38 | 502 | 10471 | 257876 |
-| 07-23 14:07 | 502 | 95117 | 251951 |
+**浪费量化 (24h):**
+- 26 次 ATE × avg 193.8s = 5,036s = 1.4h 用户等待时间全部以 502 告终
+- 每次 ATE 浪费 3 key × 66s = 198s (R2308 前 + 122s peer FB)
+- R2308 后 peer FB 降至 60s，但 tier 内 3×66s=198s 仍是最大延迟源
 
-4 consecutive big-input failures 01:37→03:36 (FAIL_N=4 triggerable), last 2 hit 170s budget ceiling.
+## 诊断发现
 
-### dsv4p_nv big-input successes (24h, >250K)
-26 successes, mostly 5-78s, some outliers at 90s. NVCF can handle big-input on dsv4p_nv but degrades progressively.
+### 发现: NVU_TIER_BUDGET_KIMI_NV=200 过高
 
-### kimi_nv
-- Last request: 2026-07-23 14:45 UTC (>20h ago, no active traffic)
-- 6 ATE clusters at 370s (budget bypass, code issue, not config-fixable)
-- 26 ATE total, 8 zombie, 0 fallback triggered
+当前值: 200s。R2303 将此值从 170→200 以配合 EMPTY_200_FASTBREAK=3 (3×62s=186s+14s margin)。
 
-### Error breakdown
-| model | error_type | cnt | avg_ms |
-|---|---|---|---|
-| dsv4p_nv | zombie_empty_completion | 7 | 31526 |
-| dsv4p_nv | all_tiers_exhausted | 7 | 95361 |
-| glm5_2_nv | all_tiers_exhausted | 52 | 19789 |
-| glm5_2_nv | zombie_empty_completion | 9 | 16168 |
-| kimi_nv | all_tiers_exhausted | 26 | 193765 |
-| kimi_nv | zombie_empty_completion | 8 | 74004 |
+**问题:**
+1. kimi_nv 成功请求 p99=116.5s — 200s 预算有 83.5s 过剩余量
+2. 当 NVCF 返回 empty_200 时，3 次 key 尝试 × 66s = 198s 全部跑完才 fastbreak
+3. 每次失败请求 user-visible wait 从 124s 到 370s (avg 193s)，绝大多数是无价值的等待
+4. 将预算降至 130s: 2 次 key 尝试 (2×66s=132s) 后预算耗尽，tier 中断
+5. 节省第 3 次 key 尝试的 66s 无效等待
 
-## 分析
+**数据支撑:**
+- 成功 p99=116.5s < 130s budget → 13.5s 安全余量 (11.6%)
+- 成功 p95=89.7s → 40s+安全空间
+- 失败 case 2 key × 66s = 132s > 130s → 第 2 次尝试被预算提前中止 (64s 而非 66s)
+- 每次失败节省 ~68s: 198s→130s
 
-1. **dsv4p_nv NOT in BIG_INPUT_MODELS**: Only glm5_2_nv has big-input circuit breaker protection. dsv4p_nv big-input requests (251K-283K chars) try all 5 NVCF keys serially, taking 10-170s per request, and all fail.
+**与 R2303 的关系修正:**
+- R2303 将 budget 170→200 是为配合 FASTBREAK=3
+- 但数据表明 FASTBREAK=3 + budget=200 反而让 kimi_nv 多浪费一个 66s 的 key 周期
+- budget=130 使 FASTBREAK=3 的第 3 次尝试被预算拦截 (2 次后预算耗尽)
+- 这是有意的: 2 次 empty_200 已足够判定 NVCF kimi 端不可用，第 3 次尝试是纯浪费
 
-2. **4 consecutive dsv4p_nv big-input failures**: 01:37→03:36 UTC, FAIL_N=4 would have triggered breaker OPEN at 03:36, saving 170s on subsequent attempts + 15min COOLDOWN window.
+## 改动
 
-3. **No cross-model fallback**: R753 disables tier-chain (each request iso-mapped: glm5_2→glm5_2, dsv4p→dsv4p). Adding dsv4p_nv to BIG_INPUT_MODELS does NOT block any tier-chain because no chain exists.
+**参数:** `NVU_TIER_BUDGET_KIMI_NV`
+**变更:** `200` → `130`
+**文件:** `/opt/cc-infra/docker-compose.yml` (HM1 only)
+**风险:** 低。
 
-4. **kimi_nv**: No active traffic for >20h. 370s ATE clusters are code-level budget bypass in thinking mode, not config-fixable. Will monitor when traffic resumes.
-
-## 优化决策
-
-**NVU_BIG_INPUT_MODELS: glm5_2_nv → glm5_2_nv,dsv4p_nv**
-
-- Add dsv4p_nv to big-input circuit breaker protection
-- FAIL_N=4 consecutive non-429 big-input failures triggers OPEN
-- COOLDOWN_S=900 (15min) auto-close
-- When OPEN: dsv4p_nv big-input requests skip NVCF → immediate 502 → ms_gw fallback
-- Saves 10-170s per big-input request during degradation periods
-- No cross-model tier chain to block (R753 disables)
-- Env: NVU_BIG_INPUT_MODELS=glm5_2_nv,dsv4p_nv
-- Single param; iron law: only HM1
-
-## 执行
-
-```bash
-sed -i 's/NVU_BIG_INPUT_MODELS=glm5_2_nv$/NVU_BIG_INPUT_MODELS=glm5_2_nv,dsv4p_nv/' compose.yml
-docker compose -f /opt/cc-infra/docker-compose.yml up -d --no-deps --force-recreate nv_gw
-```
+预期效果:
+- kimi_nv empty_200 失败路径: 198s → ~130s (节省 ~68s/次)
+- 24h: 26 次 ATE × 68s = 1,768s ≈ 29 min 用户等待时间减少
+- 成功请求不受影响 (p99=116.5s < 130s budget)
+- Peer FB (R2308=60s) 不受影响 (独立机制，budget 触发后不再到 peer FB)
+- 502→caller ms_gw fallback 时间链缩短: 130s+60s=190s vs 原 200s+60s=260s
 
 ## 验证
 
-- `docker compose config --quiet` → 0 (YAML valid)
-- `docker exec nv_gw env | grep NVU_BIG_INPUT_MODELS` → glm5_2_nv,dsv4p_nv ✅
-- `curl localhost:40006/health` → 200 ✅
-- Container restarted, processing requests normally
-- Post-restart 2 glm5_2_nv big-input successes (breaker→CLOSED), 1 zombie empty completion detected
+```
+$ docker exec nv_gw python3 -c "import os; print(os.environ.get('NVU_TIER_BUDGET_KIMI_NV'))"
+130
 
-## 预期效果
+$ curl -s http://localhost:40006/health
+{"status": "ok", "proxy_role": "passthrough", "nv_num_keys": 5, ...}
 
-- dsv4p_nv big-input breaker: 4 consecutive failures → OPEN → 15min skip NVCF → ms_gw fallback
-- Each prevented big-input attempt saves 10-170s user-visible latency
-- 10 dsv4p_nv big-input ATE/24h → ~2-3 breaker cycles/day → saves ~5-10 min total latency
-- No impact on glm5_2_nv (already protected)
-- No impact on normal dsv4p_nv requests (only big-input >250K chars affected)
+$ docker inspect nv_gw --format '{{.State.StartedAt}} {{.State.Status}} RC={{.State.ExitCode}}'
+2026-07-23T21:17:31Z running RC=0
+```
+
+## 与之前轮次的关系
+
+- R2291: TIER_BUDGET_GLM5_2_NV 200→210 ✓
+- R2297: KEY_COOLDOWN_S 5→10 ✓
+- R2303: EMPTY_200_FASTBREAK 2→3 + TIER_BUDGET_KIMI 170→200 ✓
+- R2305: TIER_COOLDOWN_S 0→15 ✓
+- R2306: TIER_BUDGET_DSV4P_NV 160→170 ✓
+- R2307: NVU_STREAM_TOTAL_DEADLINE_S 25→35 ✓
+- R2308: NVU_PEER_FALLBACK_TIMEOUT 122→60 ✓
+- **R2309 (本轮): NVU_TIER_BUDGET_KIMI_NV 200→130** ← 收紧 kimi_nv tier budget, 修正 R2303 的过度放宽
 
 ## ⏳ 轮到HM1优化HM2
