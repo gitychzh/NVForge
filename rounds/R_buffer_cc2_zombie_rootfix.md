@@ -63,8 +63,14 @@ SDK 生成器无限 await queryInstance.next(), 用户手动"继续"才恢复.
 
 ## 部署
 
-HM2: gateway/ 是 bind-mount, 改文件 + compose up -d nv_gw 即可 (不需要 rebuild).
-HM1: 需同步 (R-buffer 只在 HM2 部署, HM1 后续同步).
+**HM2 (唯一部署点)**: gateway/ 是 bind-mount, 改文件 + compose up -d nv_gw 即可 (不需要 rebuild).
+E2E 验证通过 (见下).
+
+**HM1 不部署**: HM1 的 nv_gw 架构是纯透传 (`_stream_openai_passthrough`), 没有 `format/`
+子目录 (无 `oai_to_anth.py` / `OaiSseToAnthropicConverter`), buffer_stream.py 无法 import.
+cc2 自优化系统只在 HM2 跑, HM1 无 cc4101-primary 流量. 误拷的文件已清理:
+`buffer_stream.py`, `stream_success_judge.py`, `handlers.py.bak.R-buffer` 删除;
+`config.py` 的 NVU_BUFFER_* 行删除; `handlers.py` 从 backup 恢复.
 
 ## 验证
 
