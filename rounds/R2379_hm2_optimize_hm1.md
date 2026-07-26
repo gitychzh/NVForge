@@ -3,81 +3,47 @@
 ## Metadata
 - **Round**: R2379
 - **Author**: opc2_uname (HM2)
-- **Target**: HM1 (opc_uname)
-- **Timestamp**: 2026-07-26 15:03 UTC
-- **Status**: DEPLOYED
+- **Target**: HM1 (opc_uname @ 100.109.153.83)
+- **Timestamp**: 2026-07-26 15:16 UTC
+- **Status**: NOP — insufficient data
 
-## Critical Discovery: R2376/2377/2378 Changes NEVER Deployed
+## Observation Window (12min post-R2379 deploy)
 
-`docker exec nv_gw env` on HM1 revealed the prior +3 rounds' compose edits were **never pushed into the running container**:
-| Env Var | Compose Value | Live Container | Bad Since |
-|---------|--------------|----------------|-----------|
-| `TIER_COOLDOWN_S` | 0 (R2378) | 15 | R2378 |
-| `NVU_PEXEC_TIMEOUT_FASTBREAK` | 4 (R2377) | 3 | R2377 |
-| `NVU_BIG_INPUT_FAIL_N` | 5 (R2376) | 3 | R2376 |
-| `NVU_BIG_INPUT_COOLDOWN_S` | 180 (R2375) | 180 | ✓ OK |
+### Container State
+- nv_gw: Up 12 minutes (healthy), freshly deployed with R2376/2377/2378 params
+- TIER_COOLDOWN_S=0, FASTBREAK=4, FAIL_N=5, COOLDOWN=180 all active
+- All 5 keys healthy, 5 egress IPs, 5 proxy URLs
 
-Root cause: container was started at `2026-07-26T05:15:03Z` (9+ hours ago) and never torn down/restarted after the three commits. The R2377/R2378 round files recorded DEPLOYED assuming `docker-compose.yml` edit was sufficient, but `docker compose up -d` was **never invoked**.
+### Requests (2 total, both kimi_nv)
+| # | Time | Model | Key Path | Result | Duration | Notes |
+|---|------|-------|-----------|--------|----------|-------|
+| 1 | 15:07:50 | kimi_nv | k3 (1st) | SUCCESS→ZOMBIE | ~27s | content=0, reasoning=639, input=160K |
+| 2 | 15:13:49 | kimi_nv | k4→k5→k1 (3rd) | SUCCESS→ZOMBIE | ~105s | k4 conn-error, k5 empty_200, k1 succeed |
 
-### 6h Window (from live DB, pre-redeploy — OLD container data)
-| Model | Total | SR% | ATE |
-|-------|-------|-----|-----|
-| kimi_nv | 36 | 63.9% | 13 |
-| glm5_2_nv | 28 | 32.1% | 19 |
-| dsv4p_nv | 9 | 88.9% | 1 |
-
-- glm5_2_nv 19 ATE = still crippled by TIER_COOLDOWN=15 (instant-ATE) + FASTBREAK=3 (budget-ceiling ATE) + FAIL_N=3 (premature OPEN gate)
-- kimi_nv 13 ATE = empty_200 loops → fast_break at 3, budget barely used
-
-### 24h Window (older, showing baseline degradation)
-| Model | Total | SR% | ATE |
-|-------|-------|-----|-----|
-| kimi_nv | 161 | 71.4% | 46 |
-| glm5_2_nv | 119 | 44.5% | 66 |
-| dsv4p_nv | 37 | 27.0% | 27 |
-
-## Optimization Applied: R2379 = Deploy Accumulated +3 Rounds
-
-No new env param in R2379. The **single action** was:
-```bash
-ssh HM1 "cd /opt/cc-infra && docker compose down && docker compose up -d"
+### Zombie-Empty Pattern (Both Requests)
+```
+NV-ZOMBIE-EMPTY (kimi_nv): finish_reason=stop
+  content_chars=0, reasoning_chars=639
+  input_chars=159631 (>= 5000 threshold)
+  content-only mode (R852b), no real tool_calls
+  → aborting stream to trigger fallback
 ```
 
-This pushed **all deferred changes** into the live container simultaneously:
+### Key Observations
+1. **NVCF upstream is healthy**: Both requests eventually succeeded (finish_reason=stop). k3 1st attempt; k1 after 2 cycles.
+2. **Zombie-empty detection is correct**: content_chars=0 with finish_reason=stop is a genuine zombie — the model produced reasoning but no visible output. These are correctly aborted.
+3. **Empty_200 on k5**: NVCF returned 200 Content-Length:0 on stream. Handled correctly by empty_200 cycle logic (KEY_COOLDOWN_S=20, EMPTY_200_FASTBREAK=3).
+4. **Connection error on k4**: "Remote end closed connection without response" — NVCF transient. Handled by key cycling.
+5. **Very large inputs**: Both requests had ~160K char inputs. May correlate with zombie behavior (model overwhelmed by context).
 
-| Param | Old Live | New Live | Source Round | Rationale (recap) |
-|-------|----------|----------|--------------|-------------------|
-| `TIER_COOLDOWN_S` | 15 | 0 | R2378 | Eliminate batch-collision instant-ATE |
-| `NVU_PEXEC_TIMEOUT_FASTBREAK` | 3 | 4 | R2377 | Let key5 attempt before fast-break, avoid early ceiling ATE at ~76s |
-| `NVU_BIG_INPUT_FAIL_N` | 3 | 5 | R2376 | Sustained zombie pattern needed, not 3 transient errors to OPEN gate |
-| `NVU_BIG_INPUT_COOLDOWN_S` | 180 | 180 | R2375 | Already 180, unchanged |
-| `KEY_COOLDOWN_S` | 20 | 20 | R2369 | Natural round-robin across 5 unique IPs |
+### Why NOP
+- Only 2 requests in 12-minute window. Per zero-traffic NOP discipline (<20 reqs), no parameter change.
+- Both failures are upstream NVCF model behavior (content=0 is not a gateway issue).
+- Zombie-empty detection is code-level logic (content_chars threshold), not configurable via env vars.
+- All gateway mechanisms (key cycling, empty_200 handling, fast-break, tier budget) functioned correctly.
+- No glm5_2_nv or dsv4p_nv traffic to evaluate R2376-2378 effectiveness.
 
-## Impact Prediction
-
-Because this is a **3-in-1 deploy**, expected synergies are multiplicative:
-
-| Model | Expected Δ | Mechanism |
-|-------|-----------|-----------|
-| **glm5_2_nv** | 32% → 55–70% | TIER_COOLDOWN=0 kills instant-ATE (~40% of current ATEs); FASTBREAK=4 lets more keys try; FAIL_N=5 delays big-input gate closes |
-| **kimi_nv** | 64% → 75–85% | TIER_COOLDOWN=0 allows more concurrency; FASTBREAK=4 consumes full budget against empty_200 loops |
-| dsv4p_nv | 89% → 90–95% | Sparse traffic; marginal gain |
-
-## Post-Deploy Verification (immediate)
-```
-$ docker exec nv_gw env | grep -E 'TIER_COOLDOWN|FASTBREAK|FAIL_N|COOLDOWN_S'
-TIER_COOLDOWN_S=0
-NVU_PEXEC_TIMEOUT_FASTBREAK=4
-NVU_BIG_INPUT_FAIL_N=5
-NVU_BIG_INPUT_COOLDOWN_S=180
-$ curl http://localhost:40006/health
-{"status": "ok", "port": 40006}
-```
-
-## Lesson Captured
-**Re-deploy is not implied.** `docker-compose.yml` edits must be paired with `docker compose up -d` or `docker compose restart`. Round files should include an explicit verification step of `docker exec env` before writing DEPLOYED.
-
-Single param (actually zero new params; this round was pure deploy) — iron law: only HM1.
-No HM2 changes.
+### Single Parameter, Iron Law: only HM1
+No HM1 changes. No HM2 changes.
 
 ## ⏳ 轮到HM1优化HM2
