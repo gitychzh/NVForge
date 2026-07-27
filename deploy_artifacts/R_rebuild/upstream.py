@@ -61,7 +61,7 @@ from .config import (
     NVU_CALLER_RETRY_INTERVALS,
     glm52_current_mode_idx, glm52_save_mode_idx, glm52_reset_mode_idx,
     # R1648c: nv→ms fallback (5key 全坏兜底, 仅 glm5_2_nv)
-    NVU_MS_FALLBACK_ENABLED, NVU_MS_FALLBACK_URL, NVU_MS_FALLBACK_TOKEN,
+    NVU_MS_FALLBACK_ENABLED, NVU_DISABLE_MS_FALLBACK, NVU_MS_FALLBACK_URL, NVU_MS_FALLBACK_TOKEN,
     NVU_MS_FALLBACK_MODEL, NVU_MS_FALLBACK_TIMEOUT, NVU_MS_FALLBACK_MODELS,
 )
 from .logger import _log, _log_metrics, _log_error_detail
@@ -1459,6 +1459,7 @@ def _ms_fallback_request(oai_body, mapped_model, request_id, metrics, t_start):
     成败都不改 breaker (breaker 只记 nv 链 all_keys_exhausted, 不记 ms 成败).
     """
     if not (NVU_MS_FALLBACK_ENABLED and NVU_MS_FALLBACK_URL
+            and not NVU_DISABLE_MS_FALLBACK
             and mapped_model in NVU_MS_FALLBACK_MODELS):
         return False, None
     t_fb_start = time.time()
@@ -1564,7 +1565,7 @@ def execute_request(handler, oai_body, mapped_model, request_id, metrics, t_star
     # 跳过 nv 链直走 ms_gw (省每条等 nv 跑满 5key×mode chain ~120s). HALF_OPEN (冷却过期) 时
     # is_ms_fallback_open() 返 False → 放行 nv 链探活一次 (成功→record_nv_success 重置 CLOSED,
     # 失败→record_nv_failure 重 OPEN). 落在 tier_order 设置前, 命中即 return.
-    if (NVU_MS_FALLBACK_ENABLED and NVU_MS_FALLBACK_URL
+    if (NVU_MS_FALLBACK_ENABLED and NVU_MS_FALLBACK_URL and not NVU_DISABLE_MS_FALLBACK
             and mapped_model in NVU_MS_FALLBACK_MODELS
             and nv_breaker.is_ms_fallback_open()):
         _log("NV-MS-FB-BREAKER-OPEN", f"breaker OPEN for {mapped_model} (req={request_id}), "
@@ -1586,7 +1587,7 @@ def execute_request(handler, oai_body, mapped_model, request_id, metrics, t_star
     # (省 ~115s/次 → ~5s 拒到 ms). 仅 glm5_2_nv (其他模型无 ms 对应). ms 失败则落回 nv 链
     # (HALF_OPEN 探活语义). 成功一次 → CLOSED 重置.
     _bi_input = metrics.get("total_input_chars", 0) or 0
-    if (NVU_MS_FALLBACK_ENABLED and NVU_MS_FALLBACK_URL
+    if (NVU_MS_FALLBACK_ENABLED and NVU_MS_FALLBACK_URL and not NVU_DISABLE_MS_FALLBACK
             and mapped_model in NVU_MS_FALLBACK_MODELS
             and big_input_breaker.is_big_input(_bi_input)
             and big_input_breaker.is_big_input_open()):
@@ -1877,7 +1878,7 @@ def execute_request(handler, oai_body, mapped_model, request_id, metrics, t_star
     # (resp 指向 ms_gw openai 流, handler 层原样 stream/collect, /v1/messages 再经 oai_to_anth 转).
     # 败 → 记 nv breaker failure (连续 N=15 次后 OPEN, 下次直走 ms 省 ~120s 链预算).
     # breaker 只记 nv 链失败, 不记 ms 成败 (ms 是兜底, 不参与 breaker 健康判定).
-    if (NVU_MS_FALLBACK_ENABLED and NVU_MS_FALLBACK_URL
+    if (NVU_MS_FALLBACK_ENABLED and NVU_MS_FALLBACK_URL and not NVU_DISABLE_MS_FALLBACK
             and mapped_model in NVU_MS_FALLBACK_MODELS
             and not final_result.all_429):
         _log("NV-MS-FB-ATTEMPT", f"nv chain all_keys_exhausted for {mapped_model} "
