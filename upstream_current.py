@@ -56,6 +56,9 @@ from .config import (
     NV_GLM52_MODE_CHAIN, NV_GLM52_SINGLE_US_PROXY, NV_GLM52_RR_US_PROXIES,
     NVU_GLM52_EXP_BACKOFF, NVU_GLM52_EXP_BACKOFF_STEPS, NVU_GLM52_EXP_BACKOFF_CAP,  # R1928 指数退避 (R1933 补 import 修 NameError: 半成品裸名未入 import 列表, R1932 restart 显形)
     KEY_MODE_BINDING, NV_GLM52_KEY_PROXY_MAP,
+    NVU_CALLER_KEY_MAP,  # R cc_s3: per-caller fixed key binding
+    NVU_CALLER_RETRY,  # R-keyretry: same-key retry count
+    NVU_CALLER_RETRY_INTERVALS,
     glm52_current_mode_idx, glm52_save_mode_idx, glm52_reset_mode_idx,
     # R1648c: nv→ms fallback (5key 全坏兜底, 仅 glm5_2_nv)
     NVU_MS_FALLBACK_ENABLED, NVU_MS_FALLBACK_URL, NVU_MS_FALLBACK_TOKEN,
@@ -483,8 +486,26 @@ def _try_integrate_keys(oai_body, tier_model, request_id, metrics, t_start,
     return result
 
 
+# ─── R2224: peek 内部换 key 重试包装 (撤 40007 第一步) ─────────────────
+# R1716 peek barrier 软挂时 (首字节超时/零内容/空流), 旧逻辑直接切外部 ms_gw.
+# 本函数: 不污染 RR counter, 显式指定 start_key, 只试 1 个 key, 返回 UpstreamResult.
+# 调用方 (handlers._stream_openai_to_anth peek 软挂分支) 拿到 resp/conn 后需对新流
+# 重新跑 peek barrier 确认健康才 commit message_start (ChatGPT: commit-point 边界).
+# 与 execute_request 的全量 5-key 轮转隔离 (ChatGPT: 独立 peek-retry 小循环, 不进全量轮转).
+def _peek_retry_next_key(oai_body, tier_model, request_id, metrics, t_start,
+                         is_stream, prior_cycle_attempts, start_key_idx,
+                         upstream_timeout_override=None):
+    """Try ONE specific NVCF key (no RR advance) for peek-retry. Returns UpstreamResult."""
+    return _try_tier_keys(oai_body, tier_model, request_id, metrics, t_start,
+                         is_stream, prior_cycle_attempts,
+                         upstream_timeout_override=upstream_timeout_override,
+                         start_key_idx_override=start_key_idx,
+                         max_attempts_override=1)
+
+
 def _try_tier_keys(oai_body, tier_model, request_id, metrics, t_start,
-                   is_stream, prior_cycle_attempts, upstream_timeout_override=None):
+                   is_stream, prior_cycle_attempts, upstream_timeout_override=None,
+                   start_key_idx_override=None, max_attempts_override=None):
     """Try all 5 keys within one tier via NVCF pexec, starting from current RR position.
 
     R38.12: ALL models use NVCF pexec. No LiteLLM branch.
@@ -520,7 +541,14 @@ def _try_tier_keys(oai_body, tier_model, request_id, metrics, t_start,
     pexec_body = _build_pexec_body(oai_body, tier_model, nvcf_config)
 
     # Get starting key from per-tier persistent counter
-    start_key_idx = _next_nv_key(tier_model)
+    # R2224: peek-retry 传入 start_key_idx_override 时用它 (不 advance RR counter,
+    # 避免 peek 软挂换 key 污染全局轮转). 否则走原 _next_nv_key advance 逻辑.
+    if start_key_idx_override is not None:
+        start_key_idx = start_key_idx_override % NVU_NUM_KEYS
+        _log("NV-PEEK-RETRY", f"tier={tier_model} peek-retry: explicit start_key=k{start_key_idx+1} "
+                             f"(no RR advance, override)")
+    else:
+        start_key_idx = _next_nv_key(tier_model)
 
     # R797: per-tier budget override. NVCF ai-glm-5_2 (3b9748d8) DEGRADING — 全 key
     # 直连 504/400 ~62s, 全局 TIER_TIMEOUT_BUDGET_S=180 让 glm5_2_nv 烧满 3 key 才 fail,
@@ -555,7 +583,8 @@ def _try_tier_keys(oai_body, tier_model, request_id, metrics, t_start,
         result.key_cycle_attempts = key_cycle_attempts
         result.elapsed_ms = int((time.time() - t_start) * 1000)
         return result
-    for attempt_idx in range(NVU_NUM_KEYS + 2):
+    _max_attempts = max_attempts_override if max_attempts_override is not None else (NVU_NUM_KEYS + 2)
+    for attempt_idx in range(_max_attempts):
         key_idx = (start_key_idx + attempt_idx) % NVU_NUM_KEYS
         t_attempt_start = time.time()  # R38.14: per-attempt start time for accurate logging
 
@@ -722,6 +751,16 @@ def _try_tier_keys(oai_body, tier_model, request_id, metrics, t_start,
                     elif resp.status == 429:
                         mark_key_cooling(tier_model, key_idx)
                         _log("NV-COOLDOWN", f"tier={tier_model} k{key_idx+1} marked cooling after 429")
+                        # R2259obs: pexec 429 响应头观测. 目的=确认 NVCF pexec 429 限流维度
+                        # (按 model/account 全局, 还是按 IP). 抓 x-ratelimit-* / retry-after.
+                        # ChatGPT 决策 C 步: 抓 1-2 窗口后定 B(pexec retry key_rotate) 还是 D(降级).
+                        try:
+                            _rh = dict(resp.headers) if resp.headers else {}
+                            _rl_keys = {k: v for k, v in _rh.items() if "ratelimit" in k.lower() or "retry-after" in k.lower() or "x-ratelimit" in k.lower()}
+                            _eg = egress_info_for_key(key_idx) if "egress_info_for_key" in globals() else (None, None)
+                            _log("NV-PEXEC-429-HDR", f"tier={tier_model} k{key_idx+1} 429 resp headers: ratelimit/retry={_rl_keys or "(none)"} all={list(_rh.keys())[:12]} egress={_eg}")
+                        except Exception as _e:
+                            _log("NV-PEXEC-429-HDR", f"tier={tier_model} k{key_idx+1} header probe failed: {_e}")
                     _log("NV-CYCLE", f"tier={tier_model} k{key_idx+1} \u2192 "
                                      f"{resp.status} ({cycle_reason}), cycling to next key")
                     consecutive_pexec_timeout = 0  # R347: reset (429/500/502/401/403 != timeout)
@@ -1286,33 +1325,68 @@ def _try_glm52_mode_chain(oai_body, tier_model, request_id, metrics, t_start,
     mode_idx = glm52_current_mode_idx()
     if mode_idx >= len(modes):
         mode_idx = 0  # 持久化值越界 (config 变了) → 回到 mode1
-    start_key = _peek_nv_key(tier_model)  # R1621c: 只 peek 不 advance (修双 advance bug)
-    _log("NV-GLM52-CHAIN", f"tier={tier_model} start_mode_idx={mode_idx} (={modes[mode_idx][0]}) "
-                           f"start_key=k{start_key+1} modes={[m[0] for m in modes]}")
+    # R cc_s3: per-caller fixed key binding. 命中 NVU_CALLER_KEY_MAP 时只用绑定的那一个 key,
+    # 不跨 key 轮转 (max 1 attempt). 用于探测 NVIDIA 单 key 配额. 未命中 → 走原 5-key 轮转.
+    _caller = metrics.get("caller", "") if isinstance(metrics, dict) else ""
+    _bound_key = NVU_CALLER_KEY_MAP.get(_caller) if NVU_CALLER_KEY_MAP else None
+    if _bound_key is not None and 0 <= _bound_key < NVU_NUM_KEYS:
+        start_key = _bound_key
+        # R-keyretry (2026-07-27): 同 key 间隔重试 3 次 (2s→4s→8s).
+        # 用户需求: NVCF key1 失败后不立刻 fallback ms_gw, 同 key 间隔重试,
+        # 3 次全败才 all_keys_exhausted. 每次记详细日志供数据分析.
+        # 回滚: env NVU_CALLER_RETRY=0 → 回退 max_attempts=1.
+        _caller_retry = NVU_CALLER_RETRY
+        _caller_intervals = NVU_CALLER_RETRY_INTERVALS
+        if _caller_retry > 0:
+            _chain_max_attempts = _caller_retry
+            _log("NV-GLM52-CHAIN", f"tier={tier_model} CALLER_BIND caller={_caller} -> fixed key=k{start_key+1} "
+                                   f"(same-key retry={_caller_retry}, intervals={_caller_intervals}s)")
+        else:
+            _chain_max_attempts = 1
+            _log("NV-GLM52-CHAIN", f"tier={tier_model} CALLER_BIND caller={_caller} -> fixed key=k{start_key+1} "
+                                   f"(no cross-key rotation, max_attempts=1)")
+    else:
+        start_key = _peek_nv_key(tier_model)  # R1621c: 只 peek 不 advance (修双 advance bug)
+        _chain_max_attempts = NVU_NUM_KEYS + 2
+        _log("NV-GLM52-CHAIN", f"tier={tier_model} start_mode_idx={mode_idx} (={modes[mode_idx][0]}) "
+                               f"start_key=k{start_key+1} modes={[m[0] for m in modes]}")
 
     # R1621b: 反��调度模型 — key RR 轮流 k1~k5, 每 key 走自己绑定的 mode (非故障才 fallback).
     # 查表: KEY_MODE_BINDING[key_idx] → mode_name → (channel, ip_strategy).
     # 某 key 失败→cooldown 该 key→advance RR→下一 key 走它自己的 mode. 全 5 key 失败才 all_keys_exhausted.
     _mode_lookup = {m[0]: m for m in modes}  # mode_name -> (mode_name, channel, ip_strategy)
-    for attempt in range(NVU_NUM_KEYS + 2):
-        key_idx = (start_key + attempt) % NVU_NUM_KEYS
+    _is_caller_bound = (_bound_key is not None and 0 <= _bound_key < NVU_NUM_KEYS and NVU_CALLER_RETRY > 0)
+    for attempt in range(_chain_max_attempts):
+        if _is_caller_bound:
+            # R-keyretry: 同 key 重试, 不轮转
+            key_idx = start_key
+            # 重试间隔 (第一次不 sleep)
+            if attempt > 0:
+                _iv = _caller_intervals[min(attempt - 1, len(_caller_intervals) - 1)]
+                _log("NV-GLM52-RETRY-SLEEP", f"req={request_id} tier={tier_model} k{key_idx+1} "
+                                              f"attempt={attempt+1}/{_chain_max_attempts} sleeping {_iv}s before retry")
+                time.sleep(_iv)
+        else:
+            key_idx = (start_key + attempt) % NVU_NUM_KEYS
         # R1621b: 每 key 查自己绑定的 mode; 未绑定则用 mode_idx 指针兜底 (向后兼容).
         _bound_mode_name = KEY_MODE_BINDING.get(key_idx)
         if _bound_mode_name and _bound_mode_name in _mode_lookup:
             mode_name, channel, ip_strategy = _mode_lookup[_bound_mode_name]
         else:
             mode_name, channel, ip_strategy = modes[mode_idx]
-        # 跳过冷却/auth-fail 的 key (换下一 key, 每 key 走自己 mode)
-        _integ_tier = _integrate_tier_name(tier_model) if channel == "integrate" else None
-        _ck_tier = _integ_tier if channel == "integrate" else tier_model
-        if is_key_cooling(_ck_tier, key_idx) or is_key_auth_failed(key_idx):
-            _log("NV-GLM52-KEY-SKIP", f"tier={tier_model} mode={mode_name} k{key_idx+1} cooling/auth-failed, next key")
-            continue
+        # 跳过冷却/auth-fail 的 key (caller-bound 同 key 重试时跳过此检查, 不让 cooldown 阻断重试)
+        if not _is_caller_bound:
+            _integ_tier = _integrate_tier_name(tier_model) if channel == "integrate" else None
+            _ck_tier = _integ_tier if channel == "integrate" else tier_model
+            if is_key_cooling(_ck_tier, key_idx) or is_key_auth_failed(key_idx):
+                _log("NV-GLM52-KEY-SKIP", f"tier={tier_model} mode={mode_name} k{key_idx+1} cooling/auth-failed, next key")
+                continue
 
         proxy_url = _glm52_resolve_proxy(ip_strategy, attempt, key_idx)
         r = _glm52_single_attempt(oai_body, tier_model, request_id, metrics, t_start,
                                    is_stream, key_idx, mode_name, channel, proxy_url,
-                                   list(all_attempts), upstream_timeout_override)
+                                   list(all_attempts), upstream_timeout_override,
+                                   attempt_idx=attempt)
         all_attempts = r.key_cycle_attempts
 
         if r.success and not r.empty_200:
@@ -1344,7 +1418,13 @@ def _try_glm52_mode_chain(oai_body, tier_model, request_id, metrics, t_start,
 
         # R1621b: 故障 → cooldown 该 key + 换下一 key (走它自己 mode). 不递进 mode 指针.
         func_health.record_result(r.function_id, False)
-        _log("NV-GLM52-KEY-FAULT", f"tier={tier_model} k{key_idx+1} mode={mode_name} fault → next key (RR advance)")
+        if _is_caller_bound:
+            _remaining = _chain_max_attempts - attempt - 1
+            _log("NV-GLM52-KEY-FAULT", f"req={request_id} tier={tier_model} k{key_idx+1} mode={mode_name} "
+                                       f"fault (attempt={attempt+1}/{_chain_max_attempts}, "
+                                       f"remaining={_remaining}) → same-key retry")
+        else:
+            _log("NV-GLM52-KEY-FAULT", f"tier={tier_model} k{key_idx+1} mode={mode_name} fault → next key (RR advance)")
 
     # 全 key+全 mode 失败
     _log("NV-GLM52-CHAIN-FAIL", f"tier={tier_model} all {NVU_NUM_KEYS} keys + modes exhausted, "
@@ -1670,8 +1750,16 @@ def execute_request(handler, oai_body, mapped_model, request_id, metrics, t_star
                 tier_result.function_id = chain_result.function_id if chain_result.function_id else None
                 _log("NV-GLM52-CHAIN-SKIP-PEXEC2", f"req={request_id} tier={tier_model} STAGE1_CHAIN_FAIL skip _try_tier_keys 2nd round (saves ~120s), go all_keys_exhausted -> ms_fb")
             else:
-                tier_result = _try_tier_keys(oai_body, tier_model, request_id, metrics, t_start,
-                                             is_stream, all_attempts, upstream_timeout_override)
+                # R cc_s3: per-caller fixed key (caller-bound → single key, no rotation).
+                _cb_caller = metrics.get("caller", "") if isinstance(metrics, dict) else ""
+                _cb_key = NVU_CALLER_KEY_MAP.get(_cb_caller) if NVU_CALLER_KEY_MAP else None
+                if _cb_key is not None and 0 <= _cb_key < NVU_NUM_KEYS:
+                    tier_result = _try_tier_keys(oai_body, tier_model, request_id, metrics, t_start,
+                                                 is_stream, all_attempts, upstream_timeout_override,
+                                                 start_key_idx_override=_cb_key, max_attempts_override=1)
+                else:
+                    tier_result = _try_tier_keys(oai_body, tier_model, request_id, metrics, t_start,
+                                                 is_stream, all_attempts, upstream_timeout_override)
 
             if tier_result.success and not tier_result.empty_200:
                 tier_result.fallback_tiers_used = tier_order[:tier_idx + 1]
