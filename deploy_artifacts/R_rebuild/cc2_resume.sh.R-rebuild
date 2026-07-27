@@ -1,0 +1,132 @@
+#!/bin/bash
+# cc2 自优化续轮脚本 — R2203回滚: --continue 与每轮 -p 完整任务注入不兼容(claude 回 No response requested 连续 5 轮空转 00:19-01:11). 改回每轮新 session(-p 不带 --continue). 250K WINDOW 保留(每轮新 session context 从零, 不涨退化区, 无害). 省 2-3min 冷启动需改 prompt 设计(只传增量任务), 架构改动留后.
+# systemd timer 每 1min(上一轮结束后)触发一次
+# 关键防卡死: 用 setsid+timeout 包 claude, 避免 claude fork 的 node 孙子进程卡住 bash wait
+set -e
+cd ~/cc_ps/cc2_repair_self
+export ANTHROPIC_BASE_URL=http://127.0.0.1:4101
+export ANTHROPIC_API_KEY=cc4101-token
+export HTTPS_PROXY=http://127.0.0.1:7880
+export HTTP_PROXY=http://127.0.0.1:7880
+export NO_PROXY=localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000  # R2286 (2026-07-23): 900000->100000. kimi-k2.6 ctx=128K, 1M窗塞爆NVCF(>128K 400/挂死). 100K留28K余量. R2229的1M判断基于glm5.2前提, kimi不成立, 回滚=改回900000. R2229历史: 250000->900000 回修 BUG1(499). R2203 曾把 900000->250000 理由"499 真根因是 NVCF TTFB 慢, auto-compact 假设证伪". **本 R2229 抓证据推翻 R2203 假设**: cc2 6h 499=55 条时序分布 — ttfb 9s/46s/89s/120s/187s 全有, 多条(9076ms/46340ms/89122ms)远未到任何超时墙就 client 主动断 = auto-compact 在流式途中触发中断当前请求. 499 全集中在 145-220K chars 段与 250K WINDOW 吻合. **天然对照实验铁证**: 同机 HM2 同 nv_gw, openclaw2(WINDOW=900000)6h 499=0, cc2(WINDOW=250000)6h 499=55 → WINDOW 越小 499 越多, 根因是 auto-compact 阈值太低非 NVCF. 对齐项目级 settings.json(900000) + openclaw2 resume.sh(900000). 注: resume.sh export 最终生效覆盖 settings.json env 块(R2199"全局 settings.json env 块赢家"判断也需修正: 对 export 启动的进程, export 才是赢家). 验证看下一 session 6h 499 趋势 (本进程环境已定不改当前 session)
+export API_TIMEOUT_MS=850000
+export CLAUDE_STREAM_IDLE_TIMEOUT_MS=850000  # R-deadline650: 600->700. 对齐 cc4101 STREAM_TOTAL_DEADLINE=650s + 50s 余量. buffer 4key x 150s=600s + flush 时间.
+
+STATE=~/cc_ps/cc2_repair_self/STATE.md
+RUNLOG=~/cc_ps/cc2_repair_self/.claude/cc2.log
+PARSELOG=~/cc_ps/cc2_repair_self/.claude/cc2.parse_errors.log
+# R1940-L1 降噪: claude CLI 解析 nv_gw 偶发污染的 SSE 会打 stderr 噪声
+# ('Could not parse message into JSON' / 'From chunk:' / 'API Error: Server error
+# mid-response' / 裸 'Execution error' / setsid failed). 这些并非真崩(每轮 rc=0),
+# 但污染 cc2.log 误触发上游控制器 "stuck activating>15min" 警惕. 全部 stderr 直接进
+# PARSELOG 留痕, 主 RUNLOG 只留 stdout + 轮次标记, 避免进程替换 fifo 卡 bash wait.
+NOISE_RE='^(Could not parse message into JSON|From chunk:|API Error: Server error mid-response|Execution error|setsid:)'
+
+# ===== R2082: 检测上一轮是否被 CC SDK "no visible output" 看门狗中断 =====
+# 若是, 本轮 prompt 注入针对性提示(防 tool-use 死循环反复 Read 不存在文件).
+# cc2 是全新 session, 上一轮中断痕迹只留在该 session 的 jsonl 里.
+LAST_SESSION_DIR="$HOME/.claude/projects/-home-opc2-uname-cc-ps-cc2-repair-self"
+NO_OUTPUT_WARN=""
+if [ -d "$LAST_SESSION_DIR" ]; then
+    LAST_JSONL=$(ls -t "$LAST_SESSION_DIR"/*.jsonl 2>/dev/null | head -1)
+    if [ -n "$LAST_JSONL" ]; then
+        # "no visible output" + 同 promptId 的 isMeta 注入 = SDK 看门狗已触发中断
+        if grep -q "no visible output" "$LAST_JSONL" 2>/dev/null; then
+            NO_OUTPUT_WARN="
+
+⚠⚠⚠ **上一轮中断告警(R2082 自动检测)** ⚠⚠⚠
+检测到上一个 cc2 session 在 'no visible output' 处被 CC SDK 看门狗中断。
+根因模式: 上一轮陷入了反复 Read 同一个**不存在**文件的 tool-use 死循环
+(尤其 /tmp 下的文件 — /tmp 在 session 间会被清空), 每次 Read 返回 is_error,
+但你没察觉还在重试, 累积到 65s 无可见输出 → SDK 强制中断当前 session。
+
+本轮强制铁律(违反则必重蹈覆辙):
+1. **绝对不要 Read /tmp 下的任何文件** — 它们在 session 间不持久。
+2. 若确需查临时产物, 先 \`ls -la /path\` 或 \`find\` 确认文件**真实存在**再 Read。
+3. 一个 Read 返回 is_error=true (File does not exist) → **立即停止重试该路径**,
+   改用 docker exec / cat 日志 / DB 查询等其它方法获取信息。
+4. 连续 2 次 tool_use 失败就要停下来重新规划, 别惯性重试。
+5. 你的目标是产出用户可见的文本结论 + STATE.md 覆写, 不是把工具跑完。
+"
+        fi
+    fi
+fi
+
+# 拼 prompt: 任务框架 + (可选)中断告警 + 当前 STATE 内容
+read -r -d '' PROMPT <<'TASK' || true
+你是 cc2, HM2 nv_gw 自优化 agent, 全新 session(无上轮上下文)。脚下有交接棒 `~/cc_ps/cc2_repair_self/STATE.md` 和持久指令 `~/cc_ps/cc2_repair_self/CLAUDE.md`。严格按顺序跑完一轮:
+
+1. `cat ~/cc_ps/cc2_repair_self/STATE.md` — 看上轮结论/当前轮号/下一步(本轮未预贴入 prompt 以缩短首条消息)
+2. `cat ~/cc_ps/cc2_repair_self/CLAUDE.md` — 读铁律/工作流/数据源/R2192三任务(持久任务, 撤40007前置)
+3. `cd ~/hm_ps/hermes_improve_self && git pull --ff-only origin main`; 按 CLAUDE.md 数据源拉 30min nv_gw 数据(SR/错误分类/fallback率)
+4. 决策本轮改什么(小步快走一轮一点; 数据证稳则巡检轮只记数据不改码)
+5. 执行(改 /opt/cc-infra compose 或 gateway/*.py, 改前 cp .bak.RNN; 改.py 必须 docker compose restart 不是 up -d; 不碰 proxy/ms-gw/); 验证 curl /health + docker ps + 日志
+6. 写 rounds/R<N>_<summary>.md; `git add -A && git commit && git push origin main`
+7. 用 Write 覆写 STATE.md(当前轮号基线/本轮改了什么+依据+验证/下一步建议/最近5轮摘要/参数快照)
+
+铁律见 CLAUDE.md: 改前必有数据, 改后必有验证, 聚焦40006, 不碰40007(重启热备), 写入仓库, 只改HM2, 尽量多走glm5_2_nv少fallback。
+第一步先 cat STATE.md。本轮结论必须落进 STATE.md "上一轮发生了什么" 段让下个 session 接上。
+TASK
+
+# R2301: 不再把 STATE.md 全文预贴入 prompt(旧法让首条 user 消息达14k,
+# 触发 cc SDK 自动 title 生成请求, 该请求把14k当样本喂标题模型 → 落入 NVCF
+# 对"长输入+极短期望输出"系统性 zombie 区间, 21/29 zombie dump 均为此类).
+# 改为让 cc2 步骤1自己 cat STATE.md, prompt 仅留骨架 → title 请求输入<2k, NVCF 不 zombie.
+FULL_PROMPT="$PROMPT$NO_OUTPUT_WARN"
+
+# 新 session (不 resume), print mode, bypass permissions
+# R2082 修复:
+#   1. stderr 改 2>> 直重定向(去掉 tee 进程替换), 防进程替换 fifo 卡 bash wait
+#      (cc2-stuck 同款坑)。stderr 全进 PARSELOG, RUNLOG 只留 stdout + 标记。
+#   2. 降噪 grep 移到 claude 退出后单独跑(把 PARSELOG 里非噪声行补进 RUNLOG)。
+#   3. setsid 加 fallback: setsid 失败(间歇 "failed to execute")则降级裸跑 claude。
+echo "[$(date '+%F %T')] === cc2 新 session 轮开始 ===" >> "$RUNLOG"
+# 先尝试 setsid(隔离进程组防 node 孙子卡 wait); 若 setsid 自身失败则降级
+if timeout -k 15 840 setsid /home/opc2_uname/.npm-global/bin/claude --dangerously-skip-permissions -p "$FULL_PROMPT" --output-format text >> "$RUNLOG" 2>> "$PARSELOG"; then
+    :
+else
+    # setsid 失败降级: 直接跑 claude(无进程组隔离, 但 KillMode=control-group 兜底)
+    echo "[$(date '+%F %T')] setsid 失败, 降级裸跑 claude" >> "$RUNLOG"
+    timeout -k 15 840 /home/opc2_uname/.npm-global/bin/claude --dangerously-skip-permissions -p "$FULL_PROMPT" --output-format text >> "$RUNLOG" 2>> "$PARSELOG" || true
+fi
+RC=$?
+# 降噪: 把 PARSELOG 里本轮新增的非噪声行补进 RUNLOG(真错误留痕主日志)
+tail -50 "$PARSELOG" 2>/dev/null | grep -avE "$NOISE_RE" >> "$RUNLOG" 2>/dev/null || true
+echo "[$(date '+%F %T')] === cc2 轮结束 (rc=$RC) ===" >> "$RUNLOG"
+# ===== R-guard: 悬空 .py 改动兜底 restart (防 cc2/openclaw2 各自 Edit 后不 restart) =====
+# 根因: bind-mount .py 改了但 nv_gw 没 restart -> 跑旧字节码, probe/改动不生效,
+# agent 下一轮判断"没生效"再改一遍 -> 改动堆积; 下次 restart 一次性全激活不可控.
+# 守卫: 每轮 agent 退出后, 若 gateway/*.py 任一 mtime > nv_gw StartedAt, 则 py_compile + restart + 验证.
+GW_DIR=/opt/cc-infra/proxy/nv-gw/gateway
+NV_STARTED=$(docker inspect nv_gw --format "{{.State.StartedAt}}" 2>/dev/null)
+DANGLING=""
+if [ -n "$NV_STARTED" ]; then
+    for f in "$GW_DIR"/*.py; do
+        [ -f "$f" ] || continue
+        # 比较文件 mtime vs 容器启动时间(都转 epoch 秒)
+        FM=$(stat -c %Y "$f" 2>/dev/null)
+        NS=$(date -d "$NV_STARTED" +%s 2>/dev/null)
+        if [ -n "$FM" ] && [ -n "$NS" ] && [ "$FM" -gt "$NS" ]; then
+            DANGLING="$DANGLING $f"
+        fi
+    done
+fi
+if [ -n "$DANGLING" ]; then
+    echo "[$(date "+%F %T")] === R-guard: 检测到悬空 .py 改动, py_compile 检查 ===" >> "$RUNLOG"
+    echo "[$(date "+%F %T")] dangling:$DANGLING" >> "$RUNLOG"
+    if docker exec nv_gw python3 -m py_compile $(echo "$DANGLING" | sed "s#$GW_DIR#/app/gateway#g") 2>>"$PARSELOG"; then
+        echo "[$(date "+%F %T")] === R-guard: py_compile OK, restart nv_gw ===" >> "$RUNLOG"
+        cd /opt/cc-infra && docker compose restart nv_gw >> "$RUNLOG" 2>>"$PARSELOG"
+        sleep 3
+        H=$(curl -s http://localhost:40006/health)
+        echo "[$(date "+%F %T")] === R-guard: restart 后 health=$H ===" >> "$RUNLOG"
+        NEW=$(docker inspect nv_gw --format "{{.State.StartedAt}}" 2>/dev/null)
+        echo "[$(date "+%F %T")] === R-guard: 新 StartedAt=$NEW ===" >> "$RUNLOG"
+    else
+        echo "[$(date "+%F %T")] === R-guard: py_compile FAIL, 不 restart (语法错), 留待人工 ===" >> "$RUNLOG"
+    fi
+else
+    echo "[$(date "+%F %T")] === R-guard: 无悬空 .py, skip ===" >> "$RUNLOG"
+fi
+exit 0
