@@ -1331,20 +1331,11 @@ def _try_glm52_mode_chain(oai_body, tier_model, request_id, metrics, t_start,
     _bound_key = NVU_CALLER_KEY_MAP.get(_caller) if NVU_CALLER_KEY_MAP else None
     if _bound_key is not None and 0 <= _bound_key < NVU_NUM_KEYS:
         start_key = _bound_key
-        # R-keyretry (2026-07-27): 同 key 间隔重试 3 次 (2s→4s→8s).
-        # 用户需求: NVCF key1 失败后不立刻 fallback ms_gw, 同 key 间隔重试,
-        # 3 次全败才 all_keys_exhausted. 每次记详细日志供数据分析.
-        # 回滚: env NVU_CALLER_RETRY=0 → 回退 max_attempts=1.
-        _caller_retry = NVU_CALLER_RETRY
-        _caller_intervals = NVU_CALLER_RETRY_INTERVALS
-        if _caller_retry > 0:
-            _chain_max_attempts = _caller_retry
-            _log("NV-GLM52-CHAIN", f"tier={tier_model} CALLER_BIND caller={_caller} -> fixed key=k{start_key+1} "
-                                   f"(same-key retry={_caller_retry}, intervals={_caller_intervals}s)")
-        else:
-            _chain_max_attempts = 1
-            _log("NV-GLM52-CHAIN", f"tier={tier_model} CALLER_BIND caller={_caller} -> fixed key=k{start_key+1} "
-                                   f"(no cross-key rotation, max_attempts=1)")
+        # R-buf2key: NVCF 层只试 1 次, 失败立刻 all_keys_exhausted → buffer 层换 key5 重试.
+        # 旧 same-key retry 已废: 实测全 429 (0 救回). 换 key 在 buffer 层做.
+        _chain_max_attempts = 1
+        _log("NV-GLM52-CHAIN", f"tier={tier_model} CALLER_BIND caller={_caller} -> fixed key=k{start_key+1} "
+                               f"(NVCF 1 attempt, buffer layer handles key rotation)")
     else:
         start_key = _peek_nv_key(tier_model)  # R1621c: 只 peek 不 advance (修双 advance bug)
         _chain_max_attempts = NVU_NUM_KEYS + 2
@@ -1355,17 +1346,10 @@ def _try_glm52_mode_chain(oai_body, tier_model, request_id, metrics, t_start,
     # 查表: KEY_MODE_BINDING[key_idx] → mode_name → (channel, ip_strategy).
     # 某 key 失败→cooldown 该 key→advance RR→下一 key 走它自己的 mode. 全 5 key 失败才 all_keys_exhausted.
     _mode_lookup = {m[0]: m for m in modes}  # mode_name -> (mode_name, channel, ip_strategy)
-    _is_caller_bound = (_bound_key is not None and 0 <= _bound_key < NVU_NUM_KEYS and NVU_CALLER_RETRY > 0)
+    _is_caller_bound = (_bound_key is not None and 0 <= _bound_key < NVU_NUM_KEYS)
     for attempt in range(_chain_max_attempts):
         if _is_caller_bound:
-            # R-keyretry: 同 key 重试, 不轮转
             key_idx = start_key
-            # 重试间隔 (第一次不 sleep)
-            if attempt > 0:
-                _iv = _caller_intervals[min(attempt - 1, len(_caller_intervals) - 1)]
-                _log("NV-GLM52-RETRY-SLEEP", f"req={request_id} tier={tier_model} k{key_idx+1} "
-                                              f"attempt={attempt+1}/{_chain_max_attempts} sleeping {_iv}s before retry")
-                time.sleep(_iv)
         else:
             key_idx = (start_key + attempt) % NVU_NUM_KEYS
         # R1621b: 每 key 查自己绑定的 mode; 未绑定则用 mode_idx 指针兜底 (向后兼容).
@@ -1419,10 +1403,8 @@ def _try_glm52_mode_chain(oai_body, tier_model, request_id, metrics, t_start,
         # R1621b: 故障 → cooldown 该 key + 换下一 key (走它自己 mode). 不递进 mode 指针.
         func_health.record_result(r.function_id, False)
         if _is_caller_bound:
-            _remaining = _chain_max_attempts - attempt - 1
             _log("NV-GLM52-KEY-FAULT", f"req={request_id} tier={tier_model} k{key_idx+1} mode={mode_name} "
-                                       f"fault (attempt={attempt+1}/{_chain_max_attempts}, "
-                                       f"remaining={_remaining}) → same-key retry")
+                                       f"fault (NVCF 1 attempt, buffer layer will retry with key5)")
         else:
             _log("NV-GLM52-KEY-FAULT", f"tier={tier_model} k{key_idx+1} mode={mode_name} fault → next key (RR advance)")
 
