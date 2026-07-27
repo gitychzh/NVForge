@@ -25,7 +25,7 @@ from .stream_success_judge import (
     StreamState, judge_stream, should_retry, verdict_summary,
     update_state_from_chunk, mark_done, mark_connection_closed,
 )
-from .upstream import execute_request, _try_glm52_mode_chain, UpstreamResult
+from .upstream import execute_request, _try_glm52_mode_chain, _ms_fallback_request, UpstreamResult
 import os
 
 from .config import (
@@ -205,11 +205,21 @@ class BufferStreamSession:
             if self.state.finish_reason and self.state.saw_done:
                 return judge_stream(self.state), None
 
+    # R-buf5key: 5-key 轮转表 — 每项 = (caller_name, key_idx, proxy_desc)
+    # key2=cc4101-primary(mihomo-7895), key3=hermes(7896), key4=openclaw(7897),
+    # key5=opencode(7899), key1=未绑定(7894). 避开 key1(全局备用).
+    _KEY_ROTATION = [
+        ("cc4101-primary", 1, "k2"),   # 原始 key
+        ("opencode",       4, "k5"),   # 不同代理 IP
+        ("hermes",         2, "k3"),   # 第三个代理 IP
+        ("openclaw",       3, "k4"),   # 第四个代理 IP
+    ]
+
     def _execute_and_drain(self, timeout_s, is_first=False):
         """
-        R-buf2key: 直接调 _try_glm52_mode_chain (NVCF only, 不经 ms_gw fallback).
-        第一次用原始 caller (key2), 重试用 "opencode" caller (key5).
-        只有 buffer 2 次全败后, run() 才调 ms_gw fallback 作最后兜底.
+        R-buf5key: 直接调 _try_glm52_mode_chain (NVCF only, 不经 ms_gw fallback).
+        按轮转表依次试 4 个 key (k2→k5→k3→k4), 每个最多 150s.
+        全部失败后, run() 会调 ms_gw fallback 作最后兜底.
         """
         _rid = self.metrics.get("request_id", "?")
 
@@ -217,16 +227,14 @@ class BufferStreamSession:
             # 复用外层已成功获取的 resp/conn（仅 non-intercept 路径）
             resp, conn = self.resp, self.conn
         else:
-            # R-buf2key: 直接调 NVCF (不走 execute_request 的 ms_gw fallback)
+            # R-buf5key: 按轮转表选 key
             _orig_caller = self.metrics.get("caller", "")
-            _retry_key = int(os.environ.get("NVU_CALLER_RETRY_KEY", "4"))
-            if is_first:
-                _use_caller = _orig_caller  # 原始 caller (key2)
-            else:
-                _use_caller = "opencode"  # NVU_CALLER_KEY_MAP["opencode"]=4 → key5
+            _rot_idx = self.attempt % len(self._KEY_ROTATION)
+            _use_caller, _use_key_idx, _key_desc = self._KEY_ROTATION[_rot_idx]
+            if _use_caller != _orig_caller:
                 _log("NV-BUFFER-KEYSWAP",
                      f"({self.request_model}) attempt={self.attempt+1} swapping caller "
-                     f"{_orig_caller}→{_use_caller} (key→k{_retry_key+1}) (req={_rid})")
+                     f"{_orig_caller}→{_use_caller} (key→{_key_desc}) (req={_rid})")
             self.metrics["caller"] = _use_caller
 
             _mapped = self.metrics.get("mapped_model", self.request_model)
@@ -240,7 +248,7 @@ class BufferStreamSession:
             if not (chain_result.success and not chain_result.empty_200):
                 _log("NV-BUFFER-EXEC-FAIL",
                      f"({self.request_model}) NVCF chain failed on "
-                     f"attempt {self.attempt + 1} (req={_rid}), "
+                     f"attempt {self.attempt + 1} key={_key_desc} (req={_rid}), "
                      f"all_keys_exhausted={chain_result.all_keys_exhausted}")
                 return None, "execute_failed"
             resp = chain_result.resp
@@ -386,18 +394,40 @@ class BufferStreamSession:
                      f"({self.request_model}) attempt={attempt + 1} was last, "
                      f"exhausted (req={_rid})")
 
-        # 全部失败，发 error 给 CC
+        # 全部 NVCF key 失败，尝试 ms_gw fallback (最后兜底, 不让 CC 拿 502)
         _log("NV-BUFFER-EXHAUSTED",
-             f"({self.request_model}) all {self.max_retries} attempts failed, "
-             f"sending error to CC "
-             f"(req={_rid})")
+             f"({self.request_model}) all {self.max_retries} NVCF attempts failed, "
+             f"trying ms_gw fallback (req={_rid})")
+
+        _ms_result = self._try_ms_gw_fallback()
+        if _ms_result:
+            self.metrics["status"] = 200
+            self.metrics["finish_reason"] = "stop"
+            self.metrics["upstream_type"] = "ms_fallback"
+            self.metrics["fallback_occurred"] = True
+            self.metrics["fallback_from"] = "nv_gw"
+            self.metrics["fallback_to"] = "ms_gw"
+            self.metrics["duration_ms"] = int((time.time() - self.t_start) * 1000)
+            self.metrics["buffer_attempt"] = self.max_retries
+            self.metrics["buffer_verdict"] = "ms_gw_fallback"
+            _log("NV-BUFFER-MS-FB-OK",
+                 f"({self.request_model}) ms_gw saved request after "
+                 f"{self.max_retries} NVCF failures, "
+                 f"elapsed={self.metrics['duration_ms']}ms (req={_rid})")
+            _log_metrics(self.metrics)
+            return True
+
+        # ms_gw 也失败了，发 error 给 CC
+        _log("NV-BUFFER-MS-FB-FAIL",
+             f"({self.request_model}) ms_gw fallback also failed, "
+             f"sending error to CC (req={_rid})")
 
         err_evt = _sse_bytes("error", {
             "type": "error",
             "error": {
                 "type": "api_error",
-                "message": f"upstream stream incomplete after {self.max_retries} retries "
-                           f"(last verdict: {verdict.value if verdict else reason})",
+                "message": f"upstream stream incomplete after {self.max_retries} NVCF retries "
+                           f"+ ms_gw fallback (last verdict: {verdict.value if verdict else reason})",
             },
         })
         try:
@@ -415,3 +445,80 @@ class BufferStreamSession:
         self.metrics["buffer_total_retries"] = self.attempt + 1
         _log_metrics(self.metrics)
         return False
+
+    def _try_ms_gw_fallback(self):
+        """R-buf5key: 所有 NVCF key 失败后, 调 _ms_fallback_request 取 ms_gw 流,
+        再走 _drain_upstream + converter buffer → flush 给 CC.
+        成功 = True (已 flush), 失败 = False.
+        """
+        _rid = self.metrics.get("request_id", "?")
+        _mapped = self.metrics.get("mapped_model", self.request_model)
+
+        try:
+            from .upstream import _ms_fallback_request
+            _log("NV-BUFFER-MS-FB-ATTEMPT",
+                 f"({self.request_model}) attempting ms_gw fallback "
+                 f"after {self.max_retries} NVCF failures (req={_rid})")
+
+            # 检查剩余时间
+            _remaining = self.total_deadline - time.time()
+            if _remaining < 30:
+                _log("NV-BUFFER-MS-FB-SKIP",
+                     f"({self.request_model}) only {_remaining:.0f}s left, "
+                     f"skipping ms_gw (req={_rid})")
+                return False
+
+            _ms_timeout = min(int(_remaining), 150)
+            ok, ms_result = _ms_fallback_request(
+                self.oai_body, _mapped, _rid, self.metrics, self.t_start
+            )
+            if not ok or ms_result is None:
+                _log("NV-BUFFER-MS-FB-FAIL",
+                     f"({self.request_model}) ms_gw request failed (req={_rid})")
+                return False
+
+            # ms_gw 返回 openai SSE 流, 走同样的 drain → converter → buffer → flush
+            self._reset_for_retry()
+            _log("NV-BUFFER-MS-FB-DRAIN",
+                 f"({self.request_model}) draining ms_gw stream "
+                 f"timeout={_ms_timeout}s (req={_rid})")
+
+            verdict, reason = self._drain_upstream(
+                ms_result.resp, ms_result.conn, _ms_timeout
+            )
+            try:
+                ms_result.conn.close()
+            except Exception:
+                pass
+
+            if verdict is not None and not should_retry(verdict):
+                # flush buffer 给 CC
+                try:
+                    if self.buffered_bytes:
+                        self.handler.wfile.write(self.buffered_bytes)
+                        self.handler.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+
+                fin = self.converter.finish(
+                    interrupted=False, zombie=False,
+                    input_tokens_real=0,
+                    flushed_content_chars=self.state.content_chars,
+                )
+                if fin:
+                    try:
+                        self.handler.wfile.write(fin)
+                        self.handler.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        pass
+                return True
+
+            _log("NV-BUFFER-MS-FB-FAIL",
+                 f"({self.request_model}) ms_gw stream also failed: "
+                 f"verdict={verdict.value if verdict else reason} (req={_rid})")
+            return False
+
+        except Exception as e:
+            _log("NV-BUFFER-MS-FB-ERR",
+                 f"({self.request_model}) ms_gw fallback exception: {e} (req={_rid})")
+            return False
