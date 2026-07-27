@@ -42,9 +42,8 @@ def _get_probe_config(key_idx):
         from .config import (
             NVU_KEYS, NVU_NUM_KEYS,
             NVU_PROXY_URLS,
-            NVCF_GLM52_FUNCTION_ID, NVCF_BASE_URL,
+            NVCF_PEXEC_MODELS, NVCF_BASE_URL,
             NV_GLM52_RR_US_PROXIES,
-            KEY_MODE_BINDING,
         )
         if key_idx >= NVU_NUM_KEYS:
             return None
@@ -58,10 +57,14 @@ def _get_probe_config(key_idx):
         else:
             proxy_url = ""
 
+        # 从 NVCF_PEXEC_MODELS 获取 function_id (不用模块级变量)
+        glm52_cfg = NVCF_PEXEC_MODELS.get("glm5_2_nv", {})
+        function_id = glm52_cfg.get("function_ids", [None])[0]
+
         return {
             "key": NVU_KEYS[key_idx],
             "proxy_url": proxy_url,
-            "function_id": NVCF_GLM52_FUNCTION_ID,
+            "function_id": function_id,
             "host": NVCF_BASE_URL,
         }
     except Exception as e:

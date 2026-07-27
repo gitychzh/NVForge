@@ -1159,8 +1159,12 @@ def _glm52_single_attempt(oai_body, tier_model, request_id, metrics, t_start,
                 _log("NV-GLM52-AUTH-FAIL", f"tier={tier_model} mode={mode_name} k{key_idx+1} {resp.status} auth failed, cycling")
             elif resp.status == 429:
                 integ_tier = _integrate_tier_name(tier_model) if channel == "integrate" else tier_model
-                mark_key_cooling(integ_tier if channel == "integrate" else tier_model, key_idx,
-                                 duration_s=NV_INTEGRATE_KEY_COOLDOWN_S if channel == "integrate" else KEY_COOLDOWN_S)
+                # R-rebuild: let KeyManager use exp backoff (120s→600s) for pexec 429;
+                # integrate keeps its own cooldown since it has separate KEY_COOLDOWN.
+                if channel == "integrate":
+                    mark_key_cooling(integ_tier, key_idx, duration_s=NV_INTEGRATE_KEY_COOLDOWN_S)
+                else:
+                    mark_key_cooling(tier_model, key_idx)
                 attempt["error_type"] = f"{channel}_429"
                 _log("NV-GLM52-COOLDOWN", f"tier={tier_model} mode={mode_name} k{key_idx+1} 429, cooling")
             elif should_cycle:
