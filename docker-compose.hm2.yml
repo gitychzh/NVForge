@@ -443,7 +443,7 @@ services:
       start_period: 10s
       test:
       - CMD-SHELL
-      - python3 -c 'import urllib.request; urllib.request.urlopen("http://localhost:4000/health") || exit 1'
+      - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:4000/health')" || exit 1
       timeout: 5s
     logging:
       driver: json-file
@@ -499,7 +499,7 @@ services:
       start_period: 15s
       test:
       - CMD-SHELL
-      - python3 -c 'import urllib.request; urllib.request.urlopen("http://localhost:40001/health") || exit 1'
+      - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:40001/health')" || exit 1
       timeout: 5s
     logging:
       driver: json-file
