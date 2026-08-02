@@ -20,13 +20,13 @@
 - **NOP 巡检轮**. cc2 primary 2/2 (100% SR), 链路健康, 0 fallback 0 deadline.
 - dsv4p_nv 本轮快照 SR=61.5% (8/13), 较 R422 (76.5%) 降 15pp, 仍在 NVCF function 配额波动区间 (R420=86.4%, R421=76.5%, R422=76.5%, R423=61.5%).
 - dsv4p 错误类型无新增, 与 R268-R422 一致 (一百四十五轮一致).
-- 切换 PRIMARY_UPSTREAM_MODEL 到 glm5_2_nv 是大改: cc2 缓冲 caller 2 req + glm5_2_nv 30min 0 req,
+- 切换 PRIMARY_UPSTREAM_MODEL 到 glm5_2_nv 是���改: cc2 缓冲 caller 2 req + glm5_2_nv 30min 0 req,
   无 buffer 路径数据支撑, 不满足"改前必有数据"铁律 → 暂不切.
 
 ## 根因 (沿用 R278-R422, 非代码缺陷)
 - 非缓冲 caller hermes mapped-tier 直接走 NVCF, function 配额瞬时空位 → 429/all_tiers_exhausted.
 - 5key (k0-k4) 全绑同一 NVCF function, function 级配额耗尽时多 key 同时收 429.
-- buffer 5key 轮转设计���对 key/IP 级隔离, 对 function 级 429 是已知盲区.
+- buffer 5key 轮转设计针对 key/IP 级隔离, 对 function 级 429 是已知盲区.
 - cc2 缓冲 caller 走 buffer 路径不走 mapped-tier, 不受影响 (本轮 2×200 直接成功).
 
 ## 下一步
