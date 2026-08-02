@@ -6,7 +6,7 @@
 - cc2 (cc4101-primary) 30min 仍 0 req (cc2 session 间歇空闲, 无评估样本).
 - dsv4p_nv 全 caller 30min SR=46.2% (6/13), 7×429 all_tiers_exhausted (avg_dur 1411ms), 模式与 R268-R447 一致.
 - 历史波动区间: R437=85.0% → R438=76.5% → R439=78.9% → R440=78.3% → R441=68.4% → R442=53.3% → R443=57.1% → R444=57.1% → R445=66.7% → R446=66.7% → R447=66.7% → R448=46.2%.
-- nv_tier_attempts 30min 0 行 → 429 在 tier ��前被拒 (空 IP, all_tiers_failed_in_mapped_tier).
+- nv_tier_attempts 30min 0 行 → 429 在 tier 层前被拒 (空 IP, all_tiers_failed_in_mapped_tier).
 - nv_gw Up 12h, cc4101 Up About an hour (本轮未重启).
 
 ## 链路数据 (本轮实测 30min 窗口 17:45-18:10 UTC)
