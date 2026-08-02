@@ -1,0 +1,42 @@
+# R328 — NOP 巡检轮 (2026-08-02 18:43 CST)
+
+## 链路状态
+- cc2 (cc4101-primary) 30min **0 req** (session 间歇空闲, 同 R275-R327).
+- dsv4p_nv 30min 全 caller **SR=66.7% (10/15)**, 失败 5.
+- 0 fallback / 0 deadline / 0 restart / 0 改动.
+
+## 失败明细 (5)
+| error_type | sub | count | avg_dur |
+|---|---|---|---|
+| all_tiers_exhausted | all_tiers_failed_in_mapped_tier | 5 | 2588 |
+
+## per-key / per-egress (轮前注入)
+- key2 → 10×200 (avg_dur 10038); 空 key → 5×429 (2588).
+- 203.10.96.139 → 10×100; 空 IP → 5×0 (429).
+- 200 finish_reason: tool_calls×9, stop×1 (无 zombie).
+- 200 延迟: avg_dur 10038, max 21534, min 3038, avg_ttfb 9727.
+
+## 分钟趋势
+- 10:15-10:20 恢复 10×200 (配额周期自恢复).
+- 10:21-10:40 一波 429×5 → all_tiers_exhausted (NVCF function 配额周期, 5key 同 function 同时挂).
+- 本轮无 NVStream_IncompleteRead (R325 有 1, R326/R327/R328 均为 0).
+
+## 健康检查 (18:43 本轮实测)
+- /health 200: nv_num_keys=5, default glm5_2_nv, pexec_models=[kimi_nv,dsv4p_nv,glm5_2_nv].
+- 容器全 Up: nv_gw 4h, cc4101 4h, nv_gw_stable 17h, ms_gw/logs_db 3d.
+
+## 根因 (沿用 R278-R327)
+- all_tiers_exhausted = dsv4p_nv 5key 全绑同一 NVCF function, function 配额耗尽时 5key 同时 429.
+- buffer 5key 轮转设计针对 key/IP 级隔离, 对 function 级 429 是已知盲区 (非代码缺陷).
+- 本轮 10:21-10:40 一波 429×5 证明是 NVCF function 配额周期自恢复, 非 nv_gw 代码缺陷.
+- KEYMGR 指数退避 (120→180→480s) 正常工作, 429 后 key 进入冷却, 配额恢复后 ProbeWorker 探测唤醒.
+- cc2 流量极低 (0 req), all_tiers_exhausted 罕见且自恢复, 不达介入阈值.
+
+## 判稳
+- NOP 巡检轮. cc2 primary 0 req, 链路空闲健康, 0 fallback 0 deadline.
+- dsv4p_nv 本轮 SR=66.7% (10/15) 偏低因窗口命中 1 波 429×5 且总 req 少 (15), 根因不变.
+- 错误类型无新增, 与 R268-R327 一致. **六十一轮一致 R268-R328.**
+
+## 下一步
+- 继续 NOP 巡检, 等 cc2 流量恢复后观察 dsv4p_nv SR.
+- 关注是否出现新错误类型 (非 all_tiers_exhausted/NVStream_IncompleteRead) 或 key/IP 级故障, 再决定介入.
