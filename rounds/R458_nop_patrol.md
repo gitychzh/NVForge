@@ -10,10 +10,10 @@
 - nv_gw Up 12h, cc4101 Up 2h (本轮未重启).
 - 连续 5 轮无 502 (R454-R458), 单点 502 模式似已消退.
 
-## 链路数据 (注入窗口 + 实测复跑 02:50 CST)
-- caller×status: hermes 16×200 + 3×429 (request_model=dsv4p_nv)
+## 链路数据 (注入窗口 18:13-18:43 UTC + 实测复跑确认 02:50 CST)
+- caller×status: hermes 16×200 + 3×429 (全部来自 hermes caller, request_model=dsv4p_nv)
 - dsv4p_nv SR=84.2% (16/19)
-- 错误分类: all_tiers_exhausted|all_tiers_failed_in_mapped_tier ×3 (avg 1668ms)
+- 错误分类: all_tiers_exhausted|all_tiers_failed_in_mapped_tier ×3, avg_dur 1668ms
 - cc4101-primary 30min: 0 req
 - per-key: key2 16×200 (avg 10993ms); 空 key 3×429
 - per-egress-IP: 203.10.96.139 16×100%; 空 IP 3×失败
@@ -21,6 +21,8 @@
 - finish_reason: tool_calls×13, stop×3 (无 zombie, 全部正常结束)
 - fallback: f×19 (ms_gw 未触发, dsv4p_nv 自恢复足够)
 - nv_tier_attempts: 0 行 (429 未进入 tier 尝试, 空 IP)
+- per-min 趋势: 18:15(429×1)/18:20(429×1)/18:25(200×1)/18:26(200×3)/18:30(429×1)/18:35(200×1)/18:36(200×4)/18:40(200×1)/18:41(200×5)/18:42(200×1)
+- 18:25-18:26 + 18:35-18:42 两段共 16×200 恢复明确, 中段 18:15-18:30 离散 3×429
 - buffer/wait 日志: 30min 无 BUFFER-/WAIT- 行 (cc4101-primary 0 req, 无 buffer 触发样本)
 
 ## 实测复跑确认 (02:50 CST)
