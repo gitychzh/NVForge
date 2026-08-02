@@ -1,19 +1,50 @@
-# STATE — cc2 (hm2) 自优化 nv_gw 链路
+# R400: NOP 巡检轮 (cc2 0req, dsv4p_nv SR=97.1% 33/34, all_tiers_exhausted×1 avg 33630ms, 一百二十四轮一致)
 
-## 当前轮: R400 NOP 巡检轮 (2026-08-02 23:30 CST)
-
-## 本轮摘要 (R400)
-- **NOP 巡检轮, 0 改动 0 restart**. cc2 (cc4101-primary) 30min 0 req (session 间歇空闲).
-- dsv4p_nv 30min 全 caller SR=97.1% (33/34): 32×200 key2 (egress 203.10.96.139) + 1×200 key3 + 1×fail (502, all_tiers_exhausted avg 33630ms).
-- 失败全非缓冲 caller hermes mapped-tier 直接失败, cc2 缓冲 caller 不受影响.
-- 错误类型无新增, 与 R268-R399 一致 (**一百二十四轮一致**).
-- /health ok, 容器全 Up (nv_gw 9h, cc4101 9h, ms_gw 3d, logs_db 3d).
-- 链路自恢复 (ProbeWorker + KeyManager decayed reset + buffer 5key 轮转) 持测有效.
+## 当前轮基线 (2026-08-02 23:30 CST, R399 已完成, R400 巡检)
+- 本仓 master: R399 已 commit. hermes 仓: R399 已 push.
+- **架构**: cc4101 `PRIMARY_UPSTREAM_MODEL=dsv4p_nv`. cc2 链路 = cc4101(dsv4p_nv) → nv_gw → NVCF.
+- **本轮 R400 (hm2_cc2)**: NOP 巡检轮. cc2 (cc4101-primary) 30min 0 req (session 间歇空闲).
+  dsv4p_nv 30min 全 caller SR=97.1% (33/34), 失败 1 = all_tiers_exhausted×1
+  (sub=`all_tiers_failed_in_mapped_tier`, avg 33630ms, NVCF dsv4p function 本窗口配额瞬时空位,
+  全非缓冲 caller mapped-tier 直接失败无轮转保护).
+  成功 33×200: key2 32× (hermes mapped, avg 11193ms, egress 203.10.96.139×32) + key3 1× (openclaw, 4445ms, egress 134.195.101.194×1).
+  **cc2 是缓冲 caller (NVU_BUFFER_CALLERS), 走 buffer 5key 轮转路径, 不走 mapped-tier 直接失败, 不受影响.**
+  错误类型无新增 (dsv4p 仍 all_tiers_exhausted, 一百二十四轮一致).
+  cc2 无流量不受影响, 0 fallback 0 deadline. 0 改动 0 restart. **一百二十四轮一致 R268-R400**.
+  ProbeWorker + KeyManager decayed reset 自恢复链实测有效.
 
 ## R-nvonly 核心铁律 (持续生效)
 - 只改 HM2 nv_gw (40006), 不碰 HM1, 不碰 ms_gw 源码.
 - ms_gw fallback 已恢复 (`NVU_DISABLE_MS_FALLBACK=0`, `FALLBACK_UPSTREAM=ms_gw:40007`), 不主动禁用.
 - 改前有数据, 改后必验证, 写入仓库.
+
+## 本轮关键数据 (30min 实时链路分析注入 ~23:28 CST)
+
+### 1. cc2 (cc4101-primary) 30min 0 req
+- session 间歇空闲, 链路空闲健康. 0 fallback 0 deadline.
+- buffer/wait 日志 (BUFFER-/WAIT-) 30min 空 (无 buffer 流量).
+- caller × model × status: 仅 hermes/dsv4p_nv (32×200+1×502) + openclaw/dsv4p_nv (1×200), 无 cc4101-primary 行.
+
+### 2. dsv4p_nv 30min 全 caller SR=97.1% (33/34)
+| caller | request_model | status | count | avg_dur |
+|---|---|---|---|---|
+| hermes | dsv4p_nv | 200 | 32 | 11193 |
+| hermes | dsv4p_nv | 502 | 1 | 33630 |
+| openclaw | dsv4p_nv | 200 | 1 | 4445 |
+
+per-key (nv_key_idx): 空 → 1×fail (502, mapped tier 直接失败时 nv_key_idx 字段为空, 设计行为);
+  key2 → 32×200 (avg 11193ms, egress 203.10.96.139×32); key3 → 1×200 (openclaw, 4445ms, egress 134.195.101.194×1).
+fallback_occurred=f×34 (全部 false, 0 fallback).
+finish_reason 分布: tool_calls×27 + stop×6 (无 zombie/异常长流).
+
+### 3. 30min 错误分类
+| error_type | sub | count | avg_dur |
+|---|---|---|---|
+| all_tiers_exhausted | all_tiers_failed_in_mapped_tier | 1 | 33630 |
+
+### 4. 30min 按分钟趋势 (15:00-15:26 CST)
+- 15:00-15:26 稳定 200 流 (33×200), 15:06 502×1 间夹.
+- 失败仅 15:06 (502), 其余时段全 200, function 配额波动间歇性极低频.
 
 ## dsv4p_nv SR 趋势 (近 10 轮, 全非缓冲 caller, cc2 0 req)
 - R391 0% → R392 44.4% → R393 44.4% → R394 58.3% → R395 71.4% → R396 87.0% → R397 87.5% → R398 93.3% → R399 93.3% → **R400 97.1%**
@@ -31,6 +62,7 @@
 - **NOP 巡检轮**. cc2 primary 0 req, 链路空闲健康, 0 fallback 0 deadline.
 - dsv4p_nv 本轮 SR=97.1% (33/34), 较 R399 93.3% 上升 (样本极小自然波动, 趋势持续高位).
 - dsv4p 错误类型无新增, 与 R268-R399 一致 (一百二十四轮一致).
+- /health ok, 容器全 Up (nv_gw 9h, cc4101 9h, ms_gw 3d, logs_db 3d).
 
 ## 下一步
 - 继续 NOP 巡检, 等 cc2 流量恢复后观察 dsv4p_nv buffer 路径行为.
