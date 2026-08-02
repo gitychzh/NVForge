@@ -1,27 +1,18 @@
-# STATE — cc2 自优化 nv_gw 链路 (R-nvonly 方向)
+# R341 — NOP 巡检轮 (cc2 0req, dsv4p_nv SR=78.3% 18/23, all_tiers_exhausted×5, 根因不变)
 
-## 当前轮基线 (2026-08-02 19:38 CST, R341 NOP 巡检轮)
+## 时间
+- 2026-08-02 19:38 CST (轮前链路分析注入 ~19:38)
+
+## 接棒
 - 本仓 master: 上轮 R340 (087e16c) 已 push. 主仓 hm2 侧 R340 (139303e) 已 push, 本轮 R341.
-- **架构 (主仓 139303e)**: cc4101 `PRIMARY_UPSTREAM_MODEL=dsv4p_nv`.
+- 架构 (主仓 139303e): cc4101 `PRIMARY_UPSTREAM_MODEL=dsv4p_nv`.
   cc2 链路 = cc4101(dsv4p_nv) → nv_gw → NVCF.
-- **本轮 R341 (hm2_cc2)**: NOP 巡检轮. cc2 (cc4101-primary) 30min 0 req (session 间歇空闲).
-  dsv4p_nv 30min 全 caller SR=78.3% (18/23), 失败 5 = 5× all_tiers_exhausted
-  (4×429 NVCF function 配额周期多波 + 1×502 RemoteDisconnected transport hang, 自恢复).
-  本轮无 NVStream_IncompleteRead. 错误类型无新增, 与 R268-R340 一致.
-  cc2 无流量不受影响, 0 fallback 0 deadline. 0 改动 0 restart.
-  **六十三轮一致 R268-R341**.
 
-## R-nvonly 核心铁律 (持续生效)
-- 只改 HM2 nv_gw (40006), 不碰 HM1, 不碰 ms_gw 源码.
-- ms_gw fallback 已恢复 (`NVU_DISABLE_MS_FALLBACK=0`, `FALLBACK_UPSTREAM=ms_gw:40007`), 不主动禁用.
-- 改前有数据, 改后必验证, 写入仓库.
-
-## 本轮关键数据 (30min 实时链路分析注入 ~19:38 CST)
+## 本轮数据 (30min 实时链路分析注入 ~19:38 CST)
 
 ### 1. cc2 (cc4101-primary) 30min 0 req
 - 同 R275-R340, session 间歇空闲, 链路空闲健康. 0 fallback 0 deadline.
 - buffer/wait 日志 (BUFFER-/WAIT-) 30min 空 (无 buffer 流量).
-- 30min caller×model×status 总览: hermes|dsv4p_nv|200×18, 429×4, 502×1.
 
 ### 2. dsv4p_nv 30min 全 caller SR=78.3% (18/23)
 | caller | model | status | count |
@@ -30,7 +21,7 @@
 | hermes | dsv4p_nv | 429 | 4 |
 | hermes | dsv4p_nv | 502 | 1 |
 
-per-key (dsv4p): key2 → 18×200 (avg_dur 10655); 空 key → 4×429 (1412) + 1×502 (34101, transport-level hang, 空IP/0%).
+per-key (dsv4p): key2 → 18×200 (avg_dur 10655); 空 key → 4×429 (1412) + 1×502 (34101, transport-level hang).
 per-egress: 203.10.96.139 → 18×100%; 空 IP → 5×0.
 finish_reason (200): tool_calls×17 + stop×1 (无 zombie).
 分钟趋势: 11:10-11:35 持续 18×200; 11:16/11:20/11:25/11:26/11:27/11:30/11:35 多波 429 + 11:27 1×502 (function 级降级周期).
@@ -85,3 +76,6 @@ fallback 0/23.
 - cc4101: FALLBACK_UPSTREAM_URL=http://ms_gw:40007/v1/chat/completions, CC4101_STREAM_TOTAL_DEADLINE_S=470, PRIMARY_HEADER_TIMEOUT=400, PRIMARY_UPSTREAM_MODEL=dsv4p_nv, UPSTREAM_TIMEOUT=130.
 - nv_gw: NVU_DISABLE_MS_FALLBACK=0, UPSTREAM_TIMEOUT=90, TIER_TIMEOUT_BUDGET_S=180, TIER_COOLDOWN_S=180, KEY_COOLDOWN_S=30, NVU_BUFFER_MAX_RETRIES=5 (5×90s=450s), NVU_BUFFER_TOTAL_DEADLINE_S=450, NV_INTEGRATE_KEY_COOLDOWN_S=90, NVU_BUFFER_CALLERS=cc4101-primary,openclaw2.
 - deadline 链: 90s/buffer-attempt × 5 = 450s buffer < 470s cc4101 < 500s SDK idle (API_TIMEOUT_MS=600000).
+
+## 改动
+- 0 改动 0 restart. NOP 巡检轮.
