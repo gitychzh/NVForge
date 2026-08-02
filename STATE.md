@@ -1,39 +1,31 @@
-# R423 — NOP 巡检轮 (2026-08-03 00:55 CST)
+# R431 — NOP 巡检轮 (2026-08-03 01:25 CST)
 
-## 摘要
-- NOP 巡检轮, 0 改动 0 restart. cc2 (cc4101-primary) 30min 2 req 全 200 (session 间歇空闲).
-- DB 快照 (00:53): dsv4p_nv 全 caller 30min SR=61.5% (8/13), 全来自非缓冲 caller hermes + 2×cc2 primary.
-  - 8×200: key2×6 + key0×1 + key1×1, egress 203.10.96.139×6 + 1 空, avg 8167ms (ttfb 8674, max 15596, min 3279), finish tool_calls×5 + stop×3.
-  - 5×all_tiers_exhausted (avg 1852ms, 无 key/IP 归属, mapped-tier 直接失败).
-  - 5×429 (16:30/16:35/16:40/16:45/16:50 限速模式, hermes caller 非 cc2).
-  - 30min fallback: f×13 (0 fallback 发生).
-  - 分钟趋势: 16:25-16:26 连续出 6×200 → 16:30-16:50 5×429 限速窗口 → 16:44 恢复 2×200.
-- cc2 (cc4101-primary) 30min: 2×200 (avg 3414ms), 0 fail, 100% SR — 链路健康.
-- glm5_2_nv 30min 0 req — 无健康数据.
-- 30min nv_tier_attempts: 0 行 (无缓冲 caller 流量, 无 tier 尝试日志).
-- 30min buffer/wait/keymanager 日志: 无 (cc2 缓冲流量极低, 2×200 直接成功不进 buffer).
-- 错误类型无新增, 与 R268-R422 一致 (**一百四十五轮一致**).
-- 链路自恢复 (ProbeWorker + KeyManager decayed reset + buffer 5key 轮转) 持测有效.
-- 容器健康: nv_gw /health=ok, 5key, nv_num_keys=5; nv_gw Up 10h, cc4101 Up 9min, ms_gw Up 3d, logs_db Up 3d.
+## 本轮改了什么
+- 0 改动 0 restart. NOP 巡检轮.
 
-## 判稳
-- **NOP 巡检轮**. cc2 primary 2/2 (100% SR), 链路健康, 0 fallback 0 deadline.
-- dsv4p_nv 本轮快照 SR=61.5% (8/13), 较 R422 (76.5%) 降 15pp, 仍在 NVCF function 配额波动区间 (R420=86.4%, R421=76.5%, R422=76.5%, R423=61.5%).
-- dsv4p 错误类型无新增, 与 R268-R422 一致 (一百四十五轮一致).
-- 切换 PRIMARY_UPSTREAM_MODEL 到 glm5_2_nv 是大改: cc2 缓冲 caller 2 req + glm5_2_nv 30min 0 req,
-  无 buffer 路径数据支撑, 不满足"改前必有数据"铁律 → 暂不切.
+## 依据
+- cc2 (cc4101-primary) 30min 0 请求 (session 间歇空闲, 与 R430 同模式), 0 错误 0 fallback.
+- dsv4p_nv 全 caller 30min SR=80.0% (12/15), 3×429 all_tiers_exhausted (avg 2191ms),
+  较 R430 的 63.6% 回升, 在历史波动区间内 (R420=86.4% → R429=69.2% → R430=63.6% → R431=80.0%).
+- per-key (dsv4p 200): k2×11, k3×1 = 12×200; 3×429 无 key 归属 (空 IP = 全 key cooling 时进不来).
+- per-egress-IP: 203.10.96.139 11/11=100%, 134.195.101.194 1/1=100%, 空 IP 3req 全 429.
+- 时间分布: 16:50/16:55/17:00 三连 429, 17:05-17:16 连续 12×200 恢复.
+- 200 延迟 avg 10226ms, max 16649ms, avg_ttfb 9694ms (正常波动).
+- 200 finish_reason: tool_calls×8, stop×4 (无 zombie/end_turn 异常).
+- 30min buffer/wait/keymanager 日志: 无 (cc4101-primary 0 req 未触发 buffer caller).
+- 错误类型无新增, 与 R268-R430 一致 (一百六十余轮一致).
+- glm5_2_nv 30min 0 req → 切 PRIMARY_UPSTREAM_MODEL 不满足"改前必有数据"铁律, 暂不切.
 
-## 根因 (沿用 R278-R422, 非代码缺陷)
-- 非缓冲 caller hermes mapped-tier 直接走 NVCF, function 配额瞬时空位 → 429/all_tiers_exhausted.
-- 5key (k0-k4) 全绑同一 NVCF function, function 级配额耗尽时多 key 同时收 429.
-- buffer 5key 轮转设计���对 key/IP 级隔离, 对 function 级 429 是已知盲区.
-- cc2 缓冲 caller 走 buffer 路径不走 mapped-tier, 不受影响 (本轮 2×200 直接成功).
+## 验证
+- 容器健康: nv_gw (11h), cc4101 (33min), nv_gw_stable (23h), ms_gw/logs_db Up.
+- curl /health: status=ok, nv_num_keys=5, nv_default_model=glm5_2_nv.
+- 0 restart → 无需 py_compile / 复测.
 
 ## 下一步
 - 继续 NOP 巡检, 等 cc2 流量恢复后观察 dsv4p_nv buffer 路径行为.
 - 关注新错误类型 (非 all_tiers_exhausted) 或 key/IP 级故障, 再决定是否介入.
-- dsv4p_nv 小时级 SR 持续 <70% + cc2 缓冲流量恢复后再评估是否切换 cc4101 PRIMARY_UPSTREAM_MODEL.
-- all_tiers_exhausted 持续 >=5/h 再评估 buffer/KeyManager 参数.
+- dsv4p_nv 小时级 SR 持续 <70% + cc2 缓冲流量恢复后再评估是否切换 PRIMARY_UPSTREAM_MODEL.
+- all_tiers_exhausted 持续 >=5/h 且后半段不恢复 再评估 buffer/KeyManager 参数.
 
 ## 参数快照 (本轮未改)
 - nv_gw: NVU_DISABLE_MS_FALLBACK=0, UPSTREAM_TIMEOUT=90, TIER_TIMEOUT_BUDGET_S=180,
