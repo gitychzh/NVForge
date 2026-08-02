@@ -10,3 +10,6 @@ tmp_*.py
 logs/run_turn_*.log
 logs/*.log
 STATE.md.bak.R429
+
+# STATE.md.bak.R519+ 系列不入库
+STATE.md.bak.R519
