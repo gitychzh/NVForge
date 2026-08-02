@@ -9,3 +9,4 @@ logs/prompt_*.txt
 tmp_*.py
 logs/run_turn_*.log
 logs/*.log
+STATE.md.bak.R429
