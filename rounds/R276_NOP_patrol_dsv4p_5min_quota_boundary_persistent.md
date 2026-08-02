@@ -1,41 +1,31 @@
-# STATE — cc2 自优化 nv_gw 链路 (R-nvonly 方向)
+# R276 — NOP 巡检轮 (dsv4p_nv 5min 配额边界持续, cc2 无流量不受影响)
 
-## 当前轮基线 (2026-08-02 15:26 CST, R276 NOP 巡检轮)
-- 本仓 master: 本轮 R276. (主仓 hermes_improve_self main 收 round 文件.)
-- **架构变化 (主仓 b4527f9, 非本轮)**: cc4101 `PRIMARY_UPSTREAM_MODEL` 已从
-  `glm5_2_nv` 切到 `dsv4p_nv`. cc2 链路现 = cc4101(dsv4p_nv) → nv_gw → NVCF.
-- **本轮 R276 (hm2_cc2)**: NOP 巡检轮. cc2 (cc4101-primary) 30min 0 req (session 间歇空闲).
-  hermes caller dsv4p_nv 30min 15/19=78.9%, 4 失败全 hermes (非 cc2), 同一 NVCF function
-  `12acbc62-3a9e-461f-8139-142e914b6f16`, 5min 等间隔 (07:10/07:15/07:20/07:25 UTC = 15:10/15:15/15:20/15:25 CST),
-  失败分钟内 ok=0 → NVCF dsv4p_nv 配额 5min 边界周期性耗尽, 非一次性风暴.
-  本轮 07:25 新增一边界点失败 (R275 只记到 07:20) → 印证"持续 5min 周期"非"风暴尾巴".
-  3h 趋势: 429 失败稳定 3-5/h (15/3h) 全 hermes 全边界点. cc2 无流量不受影响.
-  0 fallback, 0 stream_total_deadline. 0 改动 0 restart.
+**日期**: 2026-08-02 15:26 CST
+**上轮**: R275 (NOP 巡检轮)
+**改动**: 0 改动, 0 restart, 0 py_compile
 
-## R-nvonly 核心铁律 (持续生效)
-- 只改 HM2 nv_gw (40006), 不碰 HM1, 不碰 ms_gw 源码.
-- ms_gw fallback 已恢复 (`NVU_DISABLE_MS_FALLBACK=0`, `FALLBACK_UPSTREAM=ms_gw:40007`), 不主动禁用.
-- 改前有数据, 改后必验证, 写入仓库.
-
-## 本轮关键数据 (30min 实时 DB 复查 ~15:26)
+## 轮前链路数据 (30min 实�� DB)
 
 ### 1. cc2 (cc4101-primary) 30min 0 req
-- 同 R275, session 间歇空闲, 链路空闲健康. 0 fallback 0 deadline.
+- 同 R275, session 间歇空闲, 链路空闲健康. 0 fallback, 0 stream_total_deadline.
+- cc2 primary 在 `NVU_BUFFER_CALLERS` 保护下, 无流量即无风险.
 
-### 2. dsv4p_nv 30min SR=78.9% (15/19), 失败全 hermes 边界点
-| created_at (UTC) | caller | req_id | function_id | dur_ms |
+### 2. dsv4p_nv 30min SR=78.9% (15/19), 4 失败全 hermes caller 全 5min 边界点
+| ts (UTC) | caller | status | error_type | req |
 |---|---|---|---|---|
-| 07:10:31 | hermes | eab966c9 | 12acbc62... | 1551 |
-| 07:15:32 | hermes | ffb0c128 | 12acbc62... | 1590 |
-| 07:20:33 | hermes | 39c58630 | 12acbc62... | 2701 |
-| 07:25 | hermes | de233fd3 | 12acbc62... | ~1.5s |
-- 5min 等间隔, 同 NVCF function, duration 1.5-2.7s 极快失败 (pexec peek path 非 buffer).
-- nv_tier_attempts 0 条 (hermes 非 NVU_BUFFER_CALLERS, 走 pexec 一击即败).
+| 07:10 | hermes | 429 | all_tiers_exhausted | eab966c9 |
+| 07:15 | hermes | 429 | all_tiers_exhausted | ffb0c128 |
+| 07:20 | hermes | 429 | all_tiers_exhausted | 39c58630 |
+| 07:25 | hermes | 429 | all_tiers_exhausted | de233fd3 |
+- 4 失败全整 5min 边界点 (07:10/07:15/07:20/07:25 UTC = 15:10/15:15/15:20/15:25 CST), 等间隔 5min.
+- 全 hermes caller, 非 cc2. hermes 不在 `NVU_BUFFER_CALLERS`, 走 pexec peek path 一击即败.
+- nv_tier_attempts **0 条** (hermes 非 buffer caller, 无 buffer 5key 轮转发生).
+- error_type `all_tiers_exhausted` + duration ~1.5-2.7s 极快失败 (pexec peek 一击即败非 buffer path).
 
 ### 3. NVCF 5min 配额边界铁证 (持续, 非一次性风暴)
-- 失败发生的整 5min 桶内 ok=0 (07:10/07:15/07:20/07:25 全 0 成功).
-- 说明 NVCF dsv4p_nv function 配额在 5min 窗口边界点耗尽, 等下一窗口刷新恢复.
-- R275 记 3 失败 (07:10/07:15/07:20), 本轮新增 07:25 → "持续 5min 周期"非"风暴尾巴".
+- 失败全整 5min 桶边界, 桶内 ok=0 → NVCF dsv4p_nv function `12acbc62-3a9e-461f-8139-142e914b6f16`
+  配额在 5min 窗口边界点耗尽, 等下一窗口刷新恢复.
+- R275 记 3 失败 (07:10/07:15/07:20), 本轮新增 07:25 → 印证"持续 5min 周期"非"风暴尾巴".
 
 ### 4. 3h 周期性趋势 (确认持续性)
 | UTC 小时 | ok | 429 | 502 | 总 fail | SR |
@@ -44,8 +34,8 @@
 | 05:00 | 50 | 5 | 1 | 6 | 89.3% |
 | 06:00 | 52 | 3 | 6 | 9 | 85.2% |
 | 07:00 | 14 | 4 | 0 | 4 | 77.8% |
-- 429 失败稳定 3-5/h, 累计 15/3h, 全 hermes caller, 全整 5min 边界点.
-- 06:00 的 6 个 502 是上轮 R274 注入窗口残留, 非 R275/R276 新增.
+- 429 失败稳定 3-5/h (15/3h), 全 hermes 全整 5min 边界点.
+- 06:00 出现 6 个 502 (上轮 R274 注入窗口的残留, 非 R275/R276 新增).
 - 非 nv_gw 代码缺陷, NVCF 侧硬配额机制.
 
 ### 5. 为何 cc2 不受影响
