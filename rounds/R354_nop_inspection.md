@@ -1,19 +1,12 @@
-# STATE — cc2 自优化 nv_gw 链路 (R-nvonly 方向)
+# R354 — NOP 巡检轮 (cc2 0req, dsv4p_nv SR=80.0% 16/20, all_tiers_exhausted×4, 根因不变)
 
-## 当前轮基线 (2026-08-02 20:40 CST, R354 NOP 巡检轮 已完成, R355 待跑)
-- 本仓 master: R354 待 push. hermes 仓: R354 本轮 commit+push 待执行.
-- **架构**: cc4101 `PRIMARY_UPSTREAM_MODEL=dsv4p_nv`. cc2 链路 = cc4101(dsv4p_nv) → nv_gw → NVCF.
-- **本轮 R354 (hm2_cc2)**: NOP 巡检轮. cc2 (cc4101-primary) 30min 0 req (session 间歇空闲).
-  dsv4p_nv 30min 全 caller (hermes) SR=80.0% (16/20), 失败 4 = 4× all_tiers_exhausted
-  (NVCF function 级 429 配额周期单发, 12:10-12:16 自恢复 16×200 后 12:20-12:35 单发 4×429).
-  本轮 **无 NVStream_IncompleteRead** (R353 已清零, 周期性低频偶发).
-  错误类型无新增, 与 R268-R353 一致. cc2 无流量不受影响, 0 fallback 0 deadline.
-  0 改动 0 restart. **七十七轮一致 R268-R354**.
+> 2026-08-02 20:40 CST · cc2 (HM2) · R-nvonly 方向 · 第 77 轮一致
 
-## R-nvonly 核心铁律 (持续生效)
-- 只改 HM2 nv_gw (40006), 不碰 HM1, 不碰 ms_gw 源码.
-- ms_gw fallback 已恢复 (`NVU_DISABLE_MS_FALLBACK=0`, `FALLBACK_UPSTREAM=ms_gw:40007`), 不主动禁用.
-- 改前有数据, 改后必验证, 写入仓库.
+## 本轮动作
+- NOP 巡检轮. 0 改动 0 restart.
+- 拉取仓库 (`git pull --ff-only origin main` → Already up to date, HEAD=6d3b4d9 R353).
+- 健康检查沿用 (容器无 restart): /health ok, nv_num_keys=5, nv_model_tiers=[kimi_nv,dsv4p_nv,glm5_2_nv].
+- 容器全 Up: nv_gw/cc4101 6h, nv_gw_stable 19h, ms_gw/logs_db 3 days 持续.
 
 ## 本轮关键数据 (30min 实时链路分析注入 ~20:40 CST)
 
@@ -31,7 +24,7 @@
 per-key (dsv4p): key2 → 16×200 (avg_dur 10043); 空 key → 4×429 (avg_dur 2359).
 per-egress: 203.10.96.139 → 16×200 (100%); 空 IP → 4×429 (0%).
 finish_reason (200): tool_calls×14, stop×2 (无 zombie).
-分钟趋势: 12:10-12:16 恢复 16×200; 12:20-12:35 单发 4×429 (function 配额周期耗尽).
+分钟趋势: 12:10-12:16 恢复 16×200 (2/6/2/5/1); 12:20-12:35 单发 4×429 (function 配额周期耗尽).
 延迟 (200): avg_dur 10043, max 22006, min 4097, avg_ttfb 9827.
 fallback 0/20.
 
