@@ -1,0 +1,64 @@
+# R720 (cc2/HM2): NOP 巡检轮 — cc2 本窗口零流量(cc4101-primary空 连续第5轮零流量) 无数据不动手 + nv_gw全量30min dsv4p_nv97.7%(42/43 hermes全非cc2 稳态91-94%回升) glm5_2_nv66.7%(4/6 比R719 57.1%小幅恢复 五轮趋势0%→50%→57.1%→57.1%→66.7% 缓慢回升中) + 错误NVStream_IncompleteRead×1 all_tiers_exhausted×1 stream_absolute_cap×1(无新类型) + tier IntegrateRD×3(k1/k3/k4) pexec500×1 pexec_conn_RD×4(k2) pexec_success×1(k2) 全NVCF上游配额副作用非nv_gw可控 + per-key k0-k4均衡8-9×200 + per-IP 5US全100% + dsv4p avg10.4s max28.7s ttfb9.7s finish无zombie + fallback f×49全非cc2 + buffer/wait日志无触发 + /health ok 5keys 配置无漂移 容器全Up nv_gw4h/cc41015h/dsv4p5h/nv_gw_stable42h + R661 post-restart~42h+无新错误 + 不改码
+
+## 时间
+2026-08-03 20:07 CST
+
+## 数据 (30min 窗口 ~19:37-20:07 CST, 注入数据)
+
+### nv_gw 全量 30min
+- status 200 × 46, 502 × 3 = SR 93.9% (46/49)
+- 按模型:
+  - dsv4p_nv: 42×200 + 1×502 = SR **97.7%** (42/43) — 兜底链路健康 (R716 93.5%→R717 92.0%→R718 91.3%→R719 93.1%→R720 97.7% 回升)
+  - glm5_2_nv: 4×200 + 2×502 = SR **66.7%** (4/6) — **比 R719 57.1% 小幅恢复** (五轮趋势 0%→50%→57.1%→57.1%→66.7% 缓慢回升中)
+
+### cc2 (cc4101-primary) 30min
+- 0 rows — cc2 本窗口零流量 (连续第 5 轮零流量, R715→R720)
+
+### 错误分类 (30min, 无新错误类型)
+- NVStream_IncompleteRead × 1 (avg_dur 78s) — mid-stream 断流
+- all_tiers_exhausted × 1 (all_tiers_failed_in_mapped_tier, avg_dur 90s) — 5key 全挂
+- stream_absolute_cap × 1 (avg_dur 187s) — 绝对时长封顶 (非新类型, R713 曾见)
+
+### per-key (dsv4p)
+- k0 9×200, k1 8×200, k2 8×200, k3 9×200, k4 8×200 — 均衡
+
+### per-egress-IP (dsv4p)
+- 134.195.101.180 9×100%, 134.195.101.194 9×100%, 134.195.101.120 8×100%, 134.195.101.188 8×100%, 203.10.96.139 8×100% — 5 US IP 全健康
+
+### dsv4p 200 延迟
+- avg 10.4s, max 28.7s, min 3.3s, ttfb 9.7s
+- finish_reason: tool_calls×37, stop×5 (无 zombie)
+
+### tier 错误
+- IntegrateRemoteDisconnected×3 (k1/k3/k4), pexec_500×1 (k2), pexec_conn_RemoteDisconnected×4 (k2), pexec_success×1 (k2) — 全 NVCF 上游配额副作用
+
+### fallback
+- f×49 (全非 cc2, hermes 流量)
+
+### buffer/wait/keymanager 日志
+- 无 (无 buffer 触发, 链路直接 fallback 到 dsv4p)
+
+## 根因
+glm5_2_nv NVCF 上游持续缓慢恢复中 (R719 57.1%→R720 66.7%), cc4101 fallback → dsv4p 兜底, cc2 本窗口零流量 (连续第 5 轮)
+
+## 验证: NOP 无需 restart
+- `curl /health`: nv_gw ok(5keys, glm5_2_nv/dsv4p_nv/kimi_nv) + cc4101 ok(primary=glm5_2_nv) + dsv4p_nv40066 ok(5keys) — 全 ok
+- `docker ps`: nv_gw Up 4h, cc4101 Up 5h, dsv4p_nv40066 Up 5h, nv_gw_stable Up 42h, logs_db Up 4d — 全 Up
+- 配置零漂移 (R661 baseline):
+  - nv_gw: NVU_DISABLE_MS_FALLBACK=1, buffer 5×90s=450s, UPSTREAM_TIMEOUT=90, TIER_COOLDOWN_S=180, TIER_TIMEOUT_BUDGET_S=180
+  - NV_GLM52_KEY_FID_BIND=0:0;2:1;4:2, NV_GLM52_KEY_MODE_BIND=0:pexec_us_rr;1:integrate_us_rr;2:pexec_us_rr;3:integrate_us_rr;4:pexec_us_rr
+  - cc4101: PRIMARY=glm5_2_nv→nv_gw:40006, FALLBACK=dsv4p_nv→dsv4p_nv40066:40066, STREAM_TOTAL=470, HEADER=400, UPSTREAM_IDLE=150, PRIMARY_SKIP_S=30, FAIL_THRESHOLD=3
+  - dsv4p_nv40066: pexec-only, NV_INTEGRATE_MODELS=空, NVU_DISABLE_MS_FALLBACK=1, PEER_FALLBACK=0
+
+## 下一步
+- 持续监控 cc2 SR + fallback 触发率 (目标 SR99%+ fb<10%)
+- glm5_2_nv NVCF 上游缓慢恢复中 (R719 57.1%→R720 66.7%), 继续观察是否突破稳态
+- 若 cc2 流量恢复后 fallback 率 >10% 再深入查 glm5_2_nv tier
+- R661 post-restart ~42h+ 仍无新错误类型, 配置稳定
+
+## 参数快照 (无变化, 沿用 R661)
+- nv_gw: NVU_DISABLE_MS_FALLBACK=1, buffer 5×90s=450s, UPSTREAM_TIMEOUT=90, TIER_COOLDOWN_S=180
+  - per-key FID bind: NV_GLM52_KEY_FID_BIND=0:0;2:1;4:2 (k0/k2/k4 pexec fid1/2/3)
+  - per-key mode bind: NV_GLM52_KEY_MODE_BIND=0:pexec_us_rr;1:integrate_us_rr;2:pexec_us_rr;3:integrate_us_rr;4:pexec_us_rr
+- cc4101: PRIMARY=glm5_2_nv→nv_gw:40006, FALLBACK=dsv4p_nv→dsv4p_nv40066:40066, STREAM_TOTAL=470, HEADER=400, UPSTREAM_IDLE=150
+- deadline 链: 90s×5=450s buffer < 470s cc4101 < 600s API < 900s idle
