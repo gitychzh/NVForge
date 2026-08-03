@@ -1,0 +1,38 @@
+# R666: NOP 巡检轮 — cc2 链路持续健康, R661 修复窗口 4h+ 仍无 IncompleteRead 再现
+
+> **作者**: cc2 (HM2 自优化 agent)
+> **时间**: 2026-08-03 16:35 CST (08:35 UTC)
+> **上轮**: R665 (NOP, R661 修复窗口 2.5h 无再现)
+> **容器**: nv_gw Up 26min, cc4101 Up ~1h, dsv4p_nv40066 Up ~1h
+
+## 判稳结论: NOP (不改码)
+
+R661 (handlers.py:1853 NV-ANTH-COLLECT-BUFRETRY) restart @08:02 UTC 后 ~4.5h 窗口:
+- cc2 (cc4101-primary/glm5_2_nv) 60min: 0 请求 (cc2 自身无流量)
+- cc4101 真实 SR 60min=100% (16/16, fb=1, SR=100%) — fb 成功覆盖
+- 6h 非 200 错误全 hermes caller: all_tiers_exhausted×7 (dsv4p_nv 配额型) + NVStream_IncompleteRead×1 (07:50:34 restart 前)
+- `NVAnthCollect_IncompleteRead` 6h 仅 1 条 (07:20:16 cc4101-primary, restart 前 ~42min), restart 后无再现 → R661 修复目标事件未回归
+- 但因 restart 后 cc4101-primary 流量稀疏, 仍无法直接命中 R661 触发日志, 维持观察
+- /health ok 5keys, 配置无漂移, 容器都 Up → NOP
+
+## 基线 (R666 实测)
+- cc2 (cc4101-primary/glm5_2_nv) nv_gw 60min: 0 req (无流量)
+- cc4101 真实 SR 60min=100% (16/16, fb=1) — 1 次 dsv4p_nv fallback 成功
+- 6h 非 200 分布:
+  - hermes|all_tiers_exhausted×7 (dsv4p_nv 5key 全 429, NVCF 侧配额型, 非 cc2 链路)
+  - hermes|NVStream_IncompleteRead×1 @07:50:34 (restart 前)
+  - cc4101-primary|NVAnthCollect_IncompleteRead×1 @07:20:16 (restart 前, R661 修复目标)
+- 60min tier attempts glm5_2_nv: 0 (无 cc4101-primary 流量)
+- /health ok 5keys, 配置无漂移, 无启动错误, 容器都 Up
+
+## 下一步
+- 等下一波 cc4101-primary 流量 → 查 NV-ANTH-COLLECT-BUFRETRY 日志判断 R661 是否生效
+- 若 IncompleteRead 再现仍落 502 → 深查 handlers.py:1853 触发条件是否命中
+- hermes/dsv4p all_tiers_exhausted 配额型持续 → 关注 dsv4p_nv40066 fallback 路径可用性 (本轮 1 次 fb 成功说明 fallback 健康)
+
+## 参数快照 (无变化, 沿用 R661)
+- nv_gw: NVU_DISABLE_MS_FALLBACK=1, buffer 5×90s=450s, UPSTREAM_TIMEOUT=90, TIER_COOLDOWN_S=180
+  - per-key FID bind: NV_GLM52_KEY_FID_BIND=0:0;2:1;4:2 (k0/k2/k4 pexec fid1/2/3)
+  - per-key mode bind: NV_GLM52_KEY_MODE_BIND=0:pexec_us_rr;1:integrate_us_rr;2:pexec_us_rr;3:integrate_us_rr;4:pexec_us_rr
+- cc4101: PRIMARY=glm5_2_nv→nv_gw:40006, FALLBACK=dsv4p_nv→dsv4p_nv40066:40066, STREAM_TOTAL=470, HEADER=400, UPSTREAM_IDLE=150
+- deadline 链: 90s×5=450s buffer < 470s cc4101 < 600s API < 900s idle
