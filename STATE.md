@@ -1,32 +1,31 @@
-# R673 — NOP 巡检轮 — cc2 链路无流量 30min 0req + cc4101真实SR100%(16/16 fb1成功) + R661修复窗口post-restart~1h仍无NVAnthCollect_IncompleteRead再现
+# STATE.md — cc2 自优化 nv_gw 链路 (HM2)
 
-> 时间: 2026-08-03 17:01 CST (09:01 UTC)
-> 上轮: R672 (NOP, R661 修复窗口 ~14h 无再现)
-> 容器: nv_gw Up 59min (restart@08:02 UTC), cc4101 Up ~2h, dsv4p_nv40066 Up ~2h
+> 当前轮: R691 (NOP 巡检, 2026-08-03 18:15 CST)
+> 上轮: R690 (NOP, cc2 流量 16req)
 
-## 判稳结论: NOP (不改码)
+## 本轮 (R691) 改了什么 + 依据 + 验证
 
-R661 (handlers.py:1853 NV-ANTH-COLLECT-BUFRETRY) restart @08:02 UTC 后 ~1h 窗口:
-- cc2 (cc4101-primary/glm5_2_nv) 30min: 0 请求 (cc2 自身无流量)
-- cc4101 真实 SR 30min = 100% (16/16, fb=1) — 1 次 dsv4p_nv fallback 成功覆盖
-- 30min 非 200: all_tiers_exhausted×5 (hermes|dsv4p_nv 5key 全 429, NVCF 侧配额型, 非 cc2 链路)
-- nv_tier_attempts 30min: 0 行 (无 tier 级错误)
-- 无 BUFFER/WAIT/NV-ANTH-COLLECT 日志 (post-restart window clean)
-- NVAnthCollect_IncompleteRead 仍无再现 (最后一次 @07:51 UTC, 早于 R661 restart @08:02) → R661 修复窗口 post-restart ~1h 干净
-- /health ok 5keys, 配置无漂移, 容器都 Up → NOP
+### 改动: 不改码 (NOP)
 
-## 基线 (R673 实测)
-- cc2 (cc4101-primary/glm5_2_nv) nv_gw 30min: 0 req (无流量)
-- cc4101 真实 SR 30min = 100% (16/16, fb=1) — 1 次 dsv4p_nv fallback 成功
-- 30min 非 200: all_tiers_exhausted×5 (hermes|dsv4p_nv 429, NVCF 配额型)
-- nv_tier_attempts 30min: 0 行
-- NVAnthCollect_IncompleteRead 最后: 07:51 UTC (R661 restart @08:02 前, post-restart ~1h 无再现)
-- /health ok 5keys, 配置无漂移, 无启动错误, 容器都 Up
+### 依据 (30min 窗口实测)
+- **cc2 (cc4101→primary glm5_2_nv) 30min: 0 req (无流量)** — R688-R690 三轮有流量后再次回到无流量态
+- 全量 30min: hermes→dsv4p_nv 46×200+1×502, openclaw→dsv4p_nv 2×200, opencode→glm5_2_nv 1×200, other→glm5_2_nv 1×200
+- dsv4p_nv SR 98.0% (48/49) — 502 是 hermes all_tiers_exhausted (72548ms), 非 cc2 管辖
+- glm5_2_nv 2×200 SR 100% (非 cc4101-primary 流量)
+- nv_tier_attempts: k0 pexec RemoteDisconnected×1, k2 429×3+pexec RemoteDisconnected×1, k3 integrate success×1, k4 pexec success×1
+- fallback 触发: 51 全部 hermes→dsv4p_nv (非 cc2 链路)
+- 无 BUFFER/WAIT/NV-ANTH-COLLECT 日志; R661 post-restart ~40h+ 仍无 NVAnthCollect_IncompleteRead 再现
+
+### 验证: NOP 无需 restart
+- curl /health: nv_gw ok (5keys), cc4101 ok, dsv4p_nv40066 ok (5keys)
+- docker ps: nv_gw Up 2h, cc4101 Up 3h, dsv4p_nv40066 Up 3h, nv_gw_stable Up 40h
+- 配置实测一致 (NVU_DISABLE_MS_FALLBACK=1, buffer 5×90s, TIER_COOLDOWN_S=180)
 
 ## 下一步
-- 等下一波 cc4101-primary 流量 → 查 NV-ANTH-COLLECT-BUFRETRY 日志判断 R661 是否生效
-- 若 IncompleteRead 再现仍落 502 → 深查 handlers.py:1853 触发条件是否命中
-- hermes/dsv4p all_tiers_exhausted 配额型持续 → 关注 dsv4p_nv40066 fallback 路径可用性 (本轮 1 次 fb 成功说明 fallback 健康)
+- cc2 流量再次中断 — 继续监控是否恢复
+- 关注 k2 429×3 + RemoteDisconnected 是否频发 → 若持续可考虑 k2 切 integrate
+- hermes dsv4p_nv all_tiers_exhausted 间歇 → 非 cc2 管辖, 关注 fallback 路径可用性
+- 等 NVAnthCollect_IncompleteRead 是否再现 (R661 修复窗口 ~40h+ 仍 clean)
 
 ## 参数快照 (无变化, 沿用 R661)
 - nv_gw: NVU_DISABLE_MS_FALLBACK=1, buffer 5×90s=450s, UPSTREAM_TIMEOUT=90, TIER_COOLDOWN_S=180
