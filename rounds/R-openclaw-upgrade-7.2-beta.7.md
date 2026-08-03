@@ -47,6 +47,45 @@ HM2 openclaw 从 2026.7.1-2 升级到 2026.7.2-beta.7。同时修复 opclaw4103 
 
 **修复**: 改指 `http://127.0.0.1:40006/v1` (nv_gw)，nv_gw 支持 `/v1/embeddings` 且可用 `nvidia/nv-embed-v1` 模型。apiKey 从 `opclaw-gw-token` 改为 `nv-gw-token`。
 
+### 5. Kernel patch — assertPreparedDispatchLifecycle beta bug
+
+**Bug**: Feishu 群消息 dispatch (如 `/new` 命令) 抛出:
+```
+Error: runChannelInboundEvent prepared turns must declare runDispatchLifecycle when creating runDispatch
+```
+
+**根因**: `kernel-BJBhT2CO.js` 中 `dispatchChannelTurnWithDeliveryOwner` (line ~816) 仅在
+`turnAdoptionLifecycle` 存在时设置 `runDispatchLifecycle`:
+```js
+...turnAdoptionLifecycle ? { runDispatchLifecycle: {...} } : {},
+runDispatch: async () => { ... }
+```
+Feishu channel 的 `resolveTurn` 仅在 adoption flow 时传 `turnAdoptionLifecycle`。当它为
+undefined 时，`runDispatchLifecycle` 未设置但 `runDispatch` 已设置。
+`assertPreparedDispatchLifecycle` (line 998) 无条件 throw，但所有使用处 (427/433/508)
+都用 optional chaining (`?.`)，安全。
+
+**Patch**: 当 `turnAdoptionLifecycle` 也为 undefined 时跳过检查:
+```js
+// Before:
+if (!lifecycle) throw new Error("...");
+// After:
+if (!lifecycle) {
+    if (!turnAdoptionLifecycle) return;
+    throw new Error("...");
+}
+```
+
+**File**: `~/.npm-global/lib/node_modules/openclaw/dist/kernel-BJBhT2CO.js`
+**Backup**: `kernel-BJBhT2CO.js.bak.Ropenclaw_beta7`
+
+### 6. Session cleanup
+
+- 清理 124 个 orphan `.trajectory-path.json` 文件
+- 清理 51 个 `.jsonl.deleted.*` 文件
+- 清理 26 个 `.jsonl.reset.*` 文件
+- 剩余: 1 个 active session + skills-prompts 目录
+
 ## 数据 (改前)
 
 - openclaw 报 "Agent couldn't generate a response" (opclaw4103 timeout 240s > openclaw 180s)
@@ -58,9 +97,11 @@ HM2 openclaw 从 2026.7.1-2 升级到 2026.7.2-beta.7。同时修复 opclaw4103 
 1. **服务状态**: `systemctl --user status openclaw-gateway.service` → active (running), v2026.7.2-beta.7
 2. **日志**: 无 `[memory] embeddings retryable error`，无 error/fail
 3. **Feishu WebSocket**: connected (`ws client ready`)
-4. **E2E**: `openclaw agent --agent main -m "ping测试，请回复pong" --json` → `status: "ok"`, `summary: "completed"`, 9.0s, `fallbackUsed: false`, `stopReason: "stop"`, provider=opclaw4103/dsv4p_nv
-5. **Memory search**: 正常调用 (`doctor.memory.status` 733ms)
-6. **Embeddings endpoint**: `curl http://localhost:40006/v1/embeddings` → 200, 返回 embedding 向量
+4. **E2E CLI**: `openclaw agent --message "hello" --agent main` → "您好，Boss张。" (75ms TTFB, ~7s, 200 OK, stopReason=stop)
+5. **E2E CLI**: `openclaw agent --message "请用一句话介绍你自己" --agent main` → "小二，OpenClaw 正式严谨型 AI 助手，运行于 opclaw4103/dsv4p_nv，负责日常工作执行与链路维护。"
+6. **Memory search**: 正常调用 (`doctor.memory.status` 733ms)
+7. **Embeddings endpoint**: `curl http://localhost:40006/v1/embeddings` → 200, 返回 embedding 向量
+8. **Post-patch logs**: 无 memory embeddings error, 无 workspace migration error, 无 dispatch lifecycle error
 
 ## 参数快照 (opclaw4103)
 
