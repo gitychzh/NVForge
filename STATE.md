@@ -1,94 +1,41 @@
-# R639 — NOP 巡检轮 (2026-08-03 14:36 CST)
+# R649 — glm5_2_nv per-key 混合链路 + dsv4p_nv40066 独立容器 (2026-08-03 15:07 CST)
 
-## 基线 (R639 实测, 06:00-06:31 UTC 窗口)
-- cc2 (cc4101-primary) 30min: 0 req (session 间歇空闲, 无 cc2 评估样本, 同 R626-R638)
-- dsv4p_nv 30min (hermes caller): 13 req, 8×200 + 4×429 + 1×502 (SR=61.5%)
-  - vs R638 58.3% / R637 37.5% / R636 37.5% / R635 37.5% / R634 37.5% / R633 64.7% / R632 73.7% / R631 76.2% / R630 80.8% / R629 86.7% / R628 90.3%
-    → **本轮回升 +3.2pp vs R638 (58.3%), +24pp vs R634-R637 连续 4 轮 37.5%, 仍在 R617-R638 正常波动区间 (37-91%) 内, 配额恢复中, 趋势未恶化**
-  - per-key: k2=8×200 全 first-attempt 命中 (06:05×1 + 06:30×4 + 06:35×3), 空 key=4×429+1×502
-  - per-egress-IP: 203.10.96.139 主力 (单 IP, 同 R630-R638)
-  - finish_reason: tool_calls×7 + stop×1 (健康, 无 zombie)
-  - fallback_occurred=f ×13 (hermes caller 直连 nv_gw)
-  - 200 avg_dur=10841ms (max 16232, min 6675, avg_ttfb=10457), 持平 R638 10739ms 量级
-- 错误分类 1 类 (非新错误):
-  - `all_tiers_exhausted` ×5 (avg_dur 8346ms)
-    - 含 429×4 avg 1725ms 快速 ABORT + 502×1 avg 34830ms 慢响应 (NVCF 慢, peer-fb skip)
-    → R624→...→R633→R634→R635→R636→R637→R638→R639: 3→3→3→3→3→4→5→5→5→6→5→5→5→5→5 (持平正常区间 3-6, 本轮持平 R634-R638)
-- 30min nv_tier_attempts: 0 行 (hermes caller 不走 buffer, KeyManager 层 ABORT)
-- cc_requests stream_total_deadline 6h: 0 (deadline 链健康)
+## 当前轮号基线
+- R649 部署时刻: 2026-08-03 15:07 CST (07:07 UTC)
+- 改动: glm5_2_nv per-key 混合链路 + dsv4p_nv40066 独立容器作 cc4101 fallback
 
-## 6h dsv4p_nv SR 趋势 (小时桶, 实测 R638 记录)
-- 23:00 52.2% → 00:00 42.1% → 01:00 29.4% → 02:00 59.1% → 03:00 56.5% → 04:00 86.8% → 05:00 76.3% → 06:00 53.8%(部分)→06:31 61.5%(本轮)
-- 波动 29-87%, 模式不变: NVCF 账户级配额耗尽 (429 无 retry-after, 全 5key 429 → TIER_COOLDOWN 180s)
-- 04:00 回升 86.8% (高时段配额刷新) → 配额型故障模式确认, 非 nv_gw 侧可改
-- 本轮 06:00 回升 53.8%→61.5% (vs R637 06:00 37.5%) → 配额恢复中, 与 R638 一致
-
-## 持续观察点 (沿用 R638, 不改码) — dsv4p_nv 配额型 429 全挂
-- 6h SR 波动 29-87%, 04:00 回升 86.8%, 06:00 回升 53.8-61.5% → 配额型故障模式确认, 非 nv_gw 侧可改
-- 01:00 单小时 SR=29.4% 触及 R621 升级阈值 (SR<55%), 但:
-  - cc2 视角 0 样本 (铁律1 不满足)
-  - 非持续 (04:00 回升至 86.8%, 06:00 回升至 61.5%)
-  - → 不触发回切 PRIMARY glm5_2_nv
-- KeyManager 指数退避正确 (429 count decay >300s → reset → 180s, 全 key 429 → TIER_COOLDOWN 180s global)
-- 全 5key 429 → TIER_COOLDOWN 180s 全挂, 被 cc4101 fallback ms_gw(glm5_2_ms) 兜住, 用户侧无感
-- 429 resp headers: ratelimit/retry=(none) — NVCF 不提供 retry-after, 配额型 429 确认
-- 502×1 (06:31, 34830ms 慢) = NVCF 慢响应 (other 非 429 非 timeout), peer-fb skip
-  (NVU_PEER_FB_SKIP_MODELS=dsv4p_nv) → 本地 502 返, cc4101 层 ms_gw(glm5_2_ms) 兜底
-  → 设计正确, 非 nv_gw 故障
-
-## 本轮改动
-- 无 (NOP). 根因不变: NVCF 账户级配额耗尽 (429 无 retry-after), 非 nv_gw 侧可改.
+## 本轮改了什么
+- nv_gw 源码 (config.py + upstream.py): 新增 NV_GLM52_KEY_FID_BIND + NV_GLM52_KEY_MODE_BIND (独立 env, 非全局, 仅 glm5_2_nv 读). 修复 function_ids 列表回 3 真实 fid.
+- nv_gw env: MODE_CHAIN=pexec_us_rr,integrate_us_rr; KEY_MODE_BIND=k1/3/5 pexec + k2/4 integrate; FID_BIND=k1/3/5→fid1/2/3; 关 ms/peer fallback (NVU_MS_FALLBACK_ENABLED=0, NVU_PEER_FALLBACK_ENABLED=0, NVU_DISABLE_MS_FALLBACK=1).
+- 新增 dsv4p_nv40066 容器 (port 40066): pexec-only, 5 US IP (7900-7904), 无 fallback, free 5-key. 复用 cc-infra-nv_gw image + 同源码 bind-mount.
+- cc4101: PRIMARY=glm5_2_nv (改自 dsv4p_nv), FALLBACK=dsv4p_nv40066:40066 (改自 ms_gw). depends_on 去 ms_gw 加 dsv4p_nv40066.
 
 ## 依据
-- cc2 0 流量 → 无评估样本, 铁律1 cc2 视角不满足 (同 R626-R638)
-- dsv4p_nv SR=61.5% 回升 +3.2pp vs R638 (58.3%), +24pp vs R634-R637 连续 4 轮 37.5%, 仍在 R617-R638 正常波动区间 (37-91%) 内, 趋势未恶化
-- 6h SR 趋势 29-87% 波动, 04:00 回升 86.8%, 06:00 回升 53.8-61.5% → 配额型故障模式确认
-- all_tiers_exhausted ×5 (R624-R639: 3→...→6→5→5→5→5→5), 持平 R634-R638 仍在正常波动区间 3-6, 无退化
-- KeyManager 指数退避正确, 429 ABORT avg 1725ms (快速, 持平 R638 1725ms 量级)
-- per-key k2 全 first-attempt 命中 + 单 egress IP 主力 = 配额型故障模式未变
-- 30min nv_tier_attempts 0 行 = KeyManager 层 ABORT 非 buffer 路径, hermes caller 不走 buffer
-- stream_total_deadline 6h=0 → deadline 链 (90s×5=450s < 470s cc4101 < 500s SDK) 健康
-- 502×1 peer-fb skip → cc4101 ms_gw 兜底, 设计正确, 非 nv_gw 故障
-- 容器全稳, 配置无漂移, 无介入必要
+- 08-03 多链路测试: integrate+5US IP SR 96% (最稳), pexec fid1 72%/fid2 88%/fid3 52% (全不稳).
+- 容器内无 proxy 0%, 本地 IP 直连 56.7% (单 IP throttling).
+- R639-R648 NOP 确认 dsv4p_nv 24h SR 71%, all_tiers_exhausted 96% (NVCF 配额耗尽, 非 nv_gw 可改).
 
-## 验证
-- 0 restart → 无需 py_compile / curl 复测
-- 容器状态 (链路分析注入): nv_gw Up 37h, cc4101 Up 24h, ms_gw/logs_db Up
-- 配置无漂移 (env 全项匹配 R638 快照)
-- stream_total_deadline 6h=0 (deadline 链铁证)
-- KeyManager 指数退避正确工作 (沿用 R638 日志铁证: 14:20/14:25 429 count decay >300s → reset → 180s)
+## 验证 (07:13-07:25 UTC)
+- 3 容器 health ok: dsv4p_nv40066:40066, nv_gw:40006, cc4101:4101 (primary=glm5_2_nv)
+- per-key 路由铁证 (nv_tier_attempts DB):
+  k1→b1b22d03(pexec), k2→integrate, k3→3b9748d8(pexec), k4→integrate, k5→b6029a96(pexec) ✓
+- dsv4p_nv40066 独立响应 3/3 200 (1-3s) ✓
+- cc4101 端 8 次 glm5_2_nv: 7/8 200 (87.5% 初步)
+- 5min 全 caller SR: 11×200 + 1×429 = 91.7%
 
 ## 下一步
-- dsv4p_nv SR 回升 61.5% (vs R634-R637 37.5%), 仍在正常波动区间内, 配额恢复中, 无恶化
-- **升级标注解除** (R621 设定 SR<55% 或 exhausted>=8 → 切 PRIMARY 回 glm5_2_nv):
-  - 01:00 单小时触及 SR<55% (29.4%), 但非持续 (04:00 回升 86.8%, 06:00 回升 61.5%), cc2 视角 0 样本 → 不触发
-- **持续观察点: dsv4p_nv 配额型 429 全挂** (24h+ 持续, 单 egress IP 主力, NVCF 无 retry-after 头)
-  - 若未来轮次 SR 持续 <55% (连续 3+ 小时) 或 exhausted>=8, 考虑评估切 PRIMARY 回 glm5_2_nv
-  - 或评估多 egress IP 轮换 (当前单 IP 203.10.96.139 主力, 配额可能绑 IP)
-- **建议维持: 联系 NVCF 侧评估 dsv4p_nv 账户配额扩容 / 提供 retry-after 头 / 慢响应根因**
-- 继续 NOP 巡检, 等 cc2 流量恢复后观察 dsv4p_nv buffer 路径行为
+- 等 30min 稳定窗口确认 glm5_2_nv (cc4101-primary) SR ≥ 90%, dsv4p fallback 触发率 < 10%.
+- 观察 integrate path (k2/4) 生产稳定性.
+- 观察 fid2/fid3 (k3/k5) 生产表现 (测试时 fid3 52% 最差, 若持续低则切 integrate).
+- 回切阈值沿用 R621: SR<55% 或 exhausted>=8 持续才回切.
 
-## 参数快照 (R639 未改)
-- nv_gw: NVU_DISABLE_MS_FALLBACK=0, UPSTREAM_TIMEOUT=90, TIER_COOLDOWN_S=180,
-  KEY_COOLDOWN_S=30, NV_INTEGRATE_KEY_COOLDOWN_S=90, MIN_OUTBOUND_INTERVAL_S=10,
-  NVU_FORCE_STREAM_UPGRADE=0, NVU_FORCE_STREAM_UPGRADE_TIMEOUT=150,
-  NVU_BUFFER_MAX_RETRIES=5, NVU_BUFFER_CALLERS=cc4101-primary,openclaw2,
-  NVU_PEER_FB_SKIP_MODELS=glm5_2_nv,dsv4p_nv, NVU_MS_FALLBACK_MODELS=glm5_2_nv,
-  NVU_CALLER_KEY_MAP=hermes:2;openclaw:3;opencode:4,
-  NVU_BUFFER_TIMEOUT_STAIRS=90,90,90,90,90, NVU_BUFFER_TOTAL_DEADLINE_S=450,
-  NVU_BUFFER_PING_INTERVAL_S=30, TIER_TIMEOUT_BUDGET_S=180,
-  NVU_KEYMGR_429_BASE_COOLDOWN=120, NVU_KEYMGR_429_MAX_COOLDOWN=600,
-  NVU_KEYMGR_CONN_BASE_COOLDOWN=30, NVU_KEYMGR_CONN_FAIL_THRESHOLD=3,
-  NVU_KEYMGR_CONN_LONG_COOLDOWN=120, NVU_KEYMGR_CONN_MAX_COOLDOWN=60
-- cc4101: FALLBACK_UPSTREAM_URL=http://ms_gw:40007/v1/chat/completions,
-  FALLBACK_UPSTREAM_MODEL=glm5_2_ms, PRIMARY_UPSTREAM_MODEL=dsv4p_nv,
-  PRIMARY_UPSTREAM_URL=http://nv_gw:40006/v1/messages,
-  CC4101_STREAM_TOTAL_DEADLINE_S=470, PRIMARY_HEADER_TIMEOUT=400,
-  CC4101_PRIMARY_SKIP_S=30, CC4101_PRIMARY_FAIL_THRESHOLD=3,
-  UPSTREAM_TIMEOUT=130, UPSTREAM_IDLE_TIMEOUT=150
+## 参数快照
+- cc4101: PRIMARY=glm5_2_nv@nv_gw:40006, FALLBACK=dsv4p_nv@dsv4p_nv40066:40066, HEADER=400, DEADLINE=470
+- nv_gw: MODE_CHAIN=pexec_us_rr,integrate_us_rr, KEY_MODE_BIND=k1/3/5 pexec+k2/4 integrate, FID_BIND=k1/3/5→fid1/2/3, MS/PEER fallback 全关
+- dsv4p_nv40066: pexec-only, 5 US IP (7900-7904), 无 fallback, free 5-key, port 40066
+- mihomo (宿主 pid 1056): 7894-7904 共 10 端口
 
-## Fallback 配置实测
-- nv_gw: NVU_DISABLE_MS_FALLBACK=0 (ms fallback 启用, 仅覆盖 glm5_2_nv)
-- NVU_MS_FALLBACK_MODELS=glm5_2_nv (不含 dsv4p_nv)
-- NVU_PEER_FB_SKIP_MODELS=glm5_2_nv,dsv4p_nv (dsv4p_nv 跳过 peer fallback)
-- → dsv4p_nv 全挂时 nv_gw 裸返 429/502, cc4101 层 ms_gw(glm5_2_ms) 兜底
+## 回滚
+- compose: cp docker-compose.yml.bak.R-glm52split.20260803_150723 docker-compose.yml
+- 源码: cp config.py.bak.R-glm52split.20260803_150723 config.py; cp upstream.py.bak.R-glm52split.20260803_150723 upstream.py
+- 重启: docker compose up -d nv_gw cc4101 && docker rm -f dsv4p_nv40066
