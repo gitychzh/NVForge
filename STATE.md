@@ -1,43 +1,56 @@
 # STATE.md — cc2 自优化 nv_gw 链路 (HM2)
 
-> 当前轮: R714 (NOP 巡检, 2026-08-03 20:06 CST)
-> 上轮: R713 (NOP, cc2 零流量 dsv4p_nv SR94.1% glm5_2_nv SR0% NVCF上游退化)
+> 当前轮: R764 (NOP 巡检, 2026-08-05 ~06:50 CST)
+> 上轮: R763 (NOP, cc2 30min SR 100%/fb 0%, 第 29 连续 100%)
 
-## 本轮 (R714) 改了什么 + 依据 + 验证
+## 本轮 (R764) 改了什么 + 依据 + 验证
 
 ### 改动: 不改码 (NOP)
 
-### 依据 (30min 窗口 ~19:36-20:06 CST)
-- **cc2 (cc4101-primary) 真实 SR**: 16req 全 200, SR **100%**, fallback 1/16 = **6.3%** (<10% 目标 ✅)
-  - primary 15 + fallback 1 (dsv4p 兜底), 用户可见 SR 100%
-- **nv_gw 全量 30min** (hermes/openclaw caller, 非 cc2):
-  - dsv4p_nv: 29×200 + 2×502 = SR **93.5%** (29/31) — 兜底链路健康
-  - glm5_2_nv: 2×502 = SR **0%** (0/2) — NVCF 上游持续退化 (10:20 起 ~10h), 非 nv_gw 可控
-- **错误分类 (30min)**:
-  - all_tiers_exhausted × 4 — 5key 全挂, glm5_2_nv NVCF 上游配额副作用
-  - (无新错误类型)
-- **tier 错误**: 空窗口 (无新 nv_tier_attempts 记录)
-- **buffer/wait/keymanager 日志**: 无 (无 buffer 触发, 链路直接 fallback 到 dsv4p)
-- **根因**: glm5_2_nv NVCF 上游持续退化 (10:20 起 ~10h), cc4101 fallback → dsv4p 兜底, cc2 用户可见 SR 100%
+### 依据 (created_at 实测校验, ~06:42 CST)
+- **cc2 (cc4101-primary) glm5_2_nv: nv_requests 100×200 (SR=100%), cc_requests 100 total / 100 ok / fb=0** — 连续第 30 轮 100%
+- glm5_2_nv tier: 105 pexec_success + 1 pexec_429 (buffer 吸收, 零穿透 cc2) — 第 18 连续最干净轮
+- **5 key 全 0 错误** (per-key k0=21/k1=24/k2=19/k3=23/k4=19 全 pexec_success)
+- 注入数据噪声 (all_tiers_exhausted×5) 全来自非 cc2 tier (hermes→dsv4f0731_nv/dsv4f_nv), 零穿透 cc2
+  - dsv4f0731_nv SR=90.9% / dsv4f_nv SR=50% 是 hermes caller 自身链路问题, 非 cc2
+- 本轮再次实证: cc2 决策必须以 created_at 实测为准, 注入数据仅作背景参考
 
-### 验证: NOP 无需 restart
-- `curl /health`: nv_gw ok(5keys) + cc4101 ok(primary=glm5_2_nv) + dsv4p_nv40066 ok(5keys)
-- `docker ps`: nv_gw Up 4h, cc4101 Up 4h, dsv4p_nv40066 Up 4h, nv_gw_stable Up 42h, logs_db Up 4d — 全 Up
-- 配置零漂移 (R661 baseline):
-  - nv_gw: NVU_DISABLE_MS_FALLBACK=1, buffer 5×90s=450s, UPSTREAM_TIMEOUT=90, TIER_COOLDOWN_S=180, TIER_TIMEOUT_BUDGET_S=180
-  - NV_GLM52_KEY_FID_BIND=0:0;2:1;4:2, NV_GLM52_KEY_MODE_BIND=0:pexec_us_rr;1:integrate_us_rr;2:pexec_us_rr;3:integrate_us_rr;4:pexec_us_rr
-  - cc4101: PRIMARY=glm5_2_nv→nv_gw:40006, FALLBACK=dsv4p_nv→dsv4p_nv40066:40066, STREAM_TOTAL=470, HEADER=400, UPSTREAM_IDLE=150, PRIMARY_SKIP_S=30, FAIL_THRESHOLD=3
-  - dsv4p_nv40066: pexec-only, NV_INTEGRATE_MODELS=空, NVU_DISABLE_MS_FALLBACK=1, PEER_FALLBACK=0
+### 验证 (NOP 无需 restart)
+- `/health`: nv_gw ok (nv_num_keys=5), cc4101 ok (primary=glm5_2_nv) — 全 ok
+- `docker ps`: nv_gw Up 4h, cc4101 Up 5h, dsv4p_nv40066 Up 10h — 全 Up
+
+## 判稳结论
+- **cc2 nv_gw 链路连续 30 轮 (R735~R764) SR 100%, fb 0%** — 全面达标 (目标 SR 99%+/fb <10%)
+- 本轮 glm5_2_nv tier 1×pexec_429 (buffer 吸收) — 数量极小 (<1%), 不影响 cc2 可见 SR
+- 流量 100 req/30min (上轮 R763 100→本轮 100, 稳定)
+- NOP 巡检轮 — 链路已稳, 无可改项
+
+### SR 趋势
+| 轮 | 30min 窗 SR | 备注 |
+|---|---|---|
+| R761 | 100% (90 nv / 90 cc) | 27th consecutive, 15th cleanest (95 pexec + 1×429) |
+| R762 | 100% (99 nv / 99 cc) | 28th consecutive, 16th cleanest (104 pexec + 1×429, 5key 全 0 错) |
+| R763 | 100% (100 nv / 100 cc) | 29th consecutive, 17th cleanest (105 pexec + 1×429, 5key 全 0 错) |
+| R764 | 100% (102 nv / 102 cc) | **30th consecutive, 18th cleanest (105 pexec + 1×429, 5key 全 0 错)** |
 
 ## 下一步
-- 持续监控 cc2 SR + fallback 触发率 (目标 SR99%+ fb<10%)
-- glm5_2_nv NVCF 上游持续退化中 (10:20 起 ~10h), 依赖 dsv4p 兜底, 非 nv_gw 可控
-- 若 cc2 流量恢复后 fallback 率 >10% 再深入查 glm5_2_nv tier
-- R661 post-restart ~42h+ 仍无新错误类型, 配置稳定
+- 持续监控 cc2 SR + fb 触发率 (目标 SR 99%+/fb <10%)
+- glm5_2_nv tier 间歇 pexec_429 (R761~R764 每轮 1 次) — <1%, 若累积或穿透 cc2 再查 KeyManager 退避状态
+- 注入数据噪声持续出现但 created_at 实测全 0 — 沿 ts 列时区 bug 解释
+- 流量稳定时不动码, 仅 NOP 记数据
+- cc_requests.ts 时区 bug 沿用: 分析用 created_at (R730 起实证)
 
-## 参数快照 (无变化, 沿用 R661)
-- nv_gw: NVU_DISABLE_MS_FALLBACK=1, buffer 5×90s=450s, UPSTREAM_TIMEOUT=90, TIER_COOLDOWN_S=180
-  - per-key FID bind: NV_GLM52_KEY_FID_BIND=0:0;2:1;4:2 (k0/k2/k4 pexec fid1/2/3)
-  - per-key mode bind: NV_GLM52_KEY_MODE_BIND=0:pexec_us_rr;1:integrate_us_rr;2:pexec_us_rr;3:integrate_us_rr;4:pexec_us_rr
-- cc4101: PRIMARY=glm5_2_nv→nv_gw:40006, FALLBACK=dsv4p_nv→dsv4p_nv40066:40066, STREAM_TOTAL=470, HEADER=400, UPSTREAM_IDLE=150
+## 参数快照 (实测 env, 沿 R763, 无变化)
+- nv_gw: NVU_DISABLE_MS_FALLBACK=1, 单 mode MODE_CHAIN=pexec_us_rr, KEY_MODE_BIND=空,
+  KEY_FID_BIND=全 5 key 绑 fid1=b1b22d03,
+  KEY_PROXY_BIND=0:7901;1:7894;2:7897;3:7896;4:7899, RR_US_PROXIES=7901,7894,7897,7896,7899
+  - buffer 5×90s=450s (NVU_BUFFER_MAX_RETRIES=5, NVU_BUFFER_CALLERS=cc4101-primary,openclaw2)
+  - UPSTREAM_TIMEOUT=90, TIER_COOLDOWN_S=180, KEY_COOLDOWN_S=30, NVU_KEYMGR_429_BASE=120/MAX=600
+- cc4101: PRIMARY=glm5_2_nv→nv_gw:40006, FALLBACK=glm5_2_ms→ms_gw:40007,
+  STREAM_TOTAL=470, HEADER=400, UPSTREAM_IDLE=150, UPSTREAM_TIMEOUT=130,
+  PRIMARY_FAIL_THRESHOLD=3, PRIMARY_SKIP_S=30
 - deadline 链: 90s×5=450s buffer < 470s cc4101 < 600s API < 900s idle
+
+## STATE 过时项修正记录 (R735 起, 沿用)
+- ❌ 旧 (CLAUDE.md 顶): "per-key 混合链路 k1/3/5 pexec, k2/4 integrate" → ✅ 新: 单 mode pexec_us_rr, 全 key 绑 fid1=b1b22d03
+- 注: cc2 round 文件 (rounds/) 与 HM2 其他工作流共用目录, R761 起加 `cc2_` 前缀区分
