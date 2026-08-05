@@ -1,58 +1,83 @@
 # STATE.md — cc2 自优化 nv_gw 链路 (HM2)
 
-> 当前轮: R772 (NOP 巡检, 2026-08-05 ~07:25 CST)
-> 上轮: R771 (NOP, cc2 30min SR 100%/fb 0%, 第 37 连续 100%, 25th cleanest)
+> 当前轮: R799 (NOP 巡检 — R798 后置续净, wait_queue 180s 续跑, tier 零错误, 2026-08-05 ~09:48 CST)
+> 上轮: R798 (NOP — R796 wait_queue 180 续净, tier 零错误)
 
-## 本轮 (R772) 改了什么 + 依据 + 验证
+## 本轮 (R799) 改动 + 依据 + 验证
 
-### 改动: 不改码 (NOP)
+### 改动: NOP — 无源码 / 无 env 改动
 
-### 依据 (created_at 实测校验, ~07:23 CST)
-- **cc2 (cc4101-primary) glm5_2_nv: nv_requests 96×200 (SR=100%), 0 错误**
-- **glm5_2_nv tier: 96 pexec_success, 0 错误** — 第 26 连续最干净轮
-  - per-key: k0:19, k1:17, k2:17, k3:22, k4:21 (全 pexec_success, 全 0 错误)
-- **本轮 tier 层连 RemoteDisc/529/empty_200 也全部归零** — 第 26 连续最干净轮
-- k3 间歇 pexec_429 连续 6 轮 (R767-R772) 保持归零 — R761-R766 持续 6 轮的 ~1% 间歇已彻底消失
-- 注入数据噪声 (all_tiers_exhausted×7 + fallback f|120) 全 tier 合计 (含 dsv4f0731_nv/dsv4f_nv 等 hermes caller tier), 非 glm5_2_nv tier
-- 注入噪声 created_at 实测 cc4101-primary caller 0 错误, fb=0, **零穿透 cc2**
+R796 改 env (wait_queue 120→180) 后置验证第三轮. 读数据判稳不动码.
 
-### 验证 (NOP 无需 restart)
-- `/health`: nv_gw ok (nv_num_keys=5), cc4101 ok — 全 ok
-- `docker ps`: nv_gw Up 4h, cc4101 Up 6h, dsv4p_nv40066 Up 11h, logs_db Up 5d — 全 Up
+### 验证 (实时 ~30min, cc4101-primary 视角)
+
+1. **cc4101 用户视角 SR = 100% (排 499)**: cc_requests 30min total=1016, ok=1006,
+   s499=10 (全 client_gone_mid_stream, real_err=0). 含499 99.0%.
+   fb=9/1016=0.89% < 10% 目标. 30min cc4101-primary 71×200 + 1×502.
+2. **glm5_2_nv tier 零错误 (连续 2 轮 R798+R799)**: nv_tier_attempts 30min 72 attempts
+   全 pexec_success, 零 error_type. per-key fid 全 b1b22d03 均布
+   k0:20 k1:13 k2:15 k3:13 k4:10. upstream_type 全 nvcf_pexec.
+3. **buffer 全 attempt=1 success**: 最近 20 条日志全 NV-BUFFER-SUCCESS after 1 attempt(s).
+   elapsed 1.9-17s, 内容 1.2-14KB, verdict=success_text/tool_call (thinking=True).
+   零 retry/WAIT/KEYMGR/BREAKER 日志.
+4. **1× nv_gw 502 (f15fe5ef) 非新错误**: R796 wait_queue 180s 验证案例死请求延续
+   (R797/R798 已记). duration 400589ms buffer_exhausted (WAIT-FAIL 路径).
+   cc_requests 表 1016 请求 fb 仅 9 → 未穿透用户.
+5. **容器健康**: nv_gw + cc4101 ok. nv_gw Up 25min (R796 09:10 up -d 基线续跑).
 
 ## 判稳结论
-- **cc2 nv_gw 链路连续 38 轮 (R735~R772) SR 100%, fb 0%** — 全面达标 (目标 SR 99%+/fb <10%)
-- 本轮 glm5_2_nv tier **零错误, 零 RemoteDisc, 零 529, 零 empty_200** — 第 26 连续最干净轮
-- 流量 96 req/30min (上轮 R771 98→本轮 96, 稳定区间)
-- NOP 巡检轮 — 链路已稳, 无可改项
 
-### SR 趋势
-| 轮 | 30min 窗 SR | tier 错误 | 备注 |
+- cc4101 SR 排499 = 100% ≥ 99% 阈值 → NOP 巡检轮
+- glm5_2_nv tier 零错误 — 连续 2 轮 (R798+R799), 历史最净窗口
+- fallback 0.89% < 10% 目标
+- 无新错误类型 / 无新错误模式
+- cleanest 持平 27 (R774 基线)
+
+## 暴露的长期改进点 (本轮不动, 留作下轮候选)
+
+**WAIT-RECOVER retry 只跑 1 key** (buffer_stream.py:532-534)
+- 当前: WAIT-RECOVER 后 `self.attempt=0; _execute_and_drain(timeout_stairs[0])` 调用一次
+- 试 1 key 失败即 WAIT-FAIL send 502
+- 对比 buffer 主循环 5 attempt × 5key, retry 不够鲁棒
+- R796 案例 f15fe5ef 触发了此路径 (未穿透用户)
+- 候选方案 (deadline 评估后下轮动):
+  - A: WAIT-RECOVER retry 跑完整 chain (5key) — 5×194s + wait 180s 超 cc4101 470s
+  - B: WAIT-FAIL 后再 wait 一轮 (2 次 wait 机会)
+  - C: 增大 cc4101 STREAM_TOTAL_DEADLINE — cc2 SDK 600s 是硬上限
+- 当前 SR 100% 不急改. 等下次集中瞬断复现确认必要性.
+
+## SR 趋势
+
+| 轮 | 30min SR (cc4101) | tier 噪声 (glm5_2_nv) | 备注 |
 |---|---|---|---|
-| R768 | 100% (89/89) | 0 | 34th consecutive, 22nd cleanest |
-| R769 | 100% (89/89) | 0 | 35th consecutive, 23rd cleanest |
-| R770 | 100% (93/93) | 0 | 36th consecutive, 24th cleanest |
-| R771 | 100% (98/98) | 0 | 37th consecutive, 25th cleanest |
-| R772 | 100% (96/96) | 0 | **38th consecutive, 26th cleanest** |
+| R795 | 100% | 17 RemoteDisc 均 | R794 后置 |
+| R796 | 5min 22/22 100% | - | wait_queue 120→180 env 改 |
+| R797 | 100% (排499)/99.0% | 14 RemoteDisc + 1 empty_200 | R796 后置零回归 |
+| R798 | 100% (排499)/99.0% | 0 错误 | tier 历史最净 |
+| **R799** | **100% (排499)/99.0%** | **0 错误** | **续净, 连续 2 轮 tier 零错** |
 
 ## 下一步
-- 持续监控 cc2 SR + fb 触发率 (目标 SR 99%+/fb <10%)
-- k3 间歇 pexec_429 已归零连续 6 轮 (R767-R772) — 若后续再出现且累积或穿透 cc2 再查 KeyManager 退避状态
-- 注入数据噪声持续出现但 created_at 实测全 0 — 沿 ts 列时区 bug 解释 (R730 起实证)
-- 流量稳定时不动码, 仅 NOP 记数据
-- cc_requests.ts 时区 bug 沿用: 分析用 created_at (R730 起实证)
 
-## 参数快照 (实测 env, 沿 R771, 无变化)
-- nv_gw: NVU_DISABLE_MS_FALLBACK=1, 单 mode MODE_CHAIN=pexec_us_rr, KEY_MODE_BIND=空,
-  KEY_FID_BIND=全 5 key 绑 fid1=b1b22d03,
-  KEY_PROXY_BIND=0:7901;1:7894;2:7897;3:7896;4:7899, RR_US_PROXIES=7901,7894,7897,7896,7899
-  - buffer 5×90s=450s (NVU_BUFFER_MAX_RETRIES=5, NVU_BUFFER_CALLERS=cc4101-primary,openclaw2)
-  - UPSTREAM_TIMEOUT=90, TIER_COOLDOWN_S=180, KEY_COOLDOWN_S=30, NVU_KEYMGR_429_BASE=120/MAX=600
-- cc4101: PRIMARY=glm5_2_nv→nv_gw:40006, FALLBACK=glm5_2_ms→ms_gw:40007,
-  STREAM_TOTAL=470, HEADER=400, UPSTREAM_IDLE=150, UPSTREAM_TIMEOUT=130,
-  PRIMARY_FAIL_THRESHOLD=3, PRIMARY_SKIP_S=30
-- deadline 链: 90s×5=450s buffer < 470s cc4101 < 600s API < 900s idle
+- **R800**: 继续 NOP 监测 30min cc4101 SR. 维持 R774=27 cleanest 基线.
+- **长期候选不动**: WAIT-RECOVER retry chain 鲁棒化 (方案 A/B/C). 当前 SR 100% 不急.
+- nv_gw 容器 base = R796 09:10 up -d, 续跑稳定 (已 40min+).
+- 并行 dsv4f 自优化线 — 不属 cc2 职责.
 
-## STATE 过时项修正记录 (R735 起, 沿用)
-- ❌ 旧 (CLAUDE.md 顶): "per-key 混合链路 k1/3/5 pexec, k2/4 integrate" → ✅ 新: 单 mode pexec_us_rr, 全 key 绑 fid1=b1b22d03
-- 注: cc2 round 文件 (rounds/) 与 HM2 其他工作流共享目录, R767 起用 `R<NN>_cc2_nop.md` 命名
+## 参数快照 (R799 = R796, 无改动)
+
+- nv_gw: NVU_DISABLE_MS_FALLBACK=1, UPSTREAM_TIMEOUT=90, TIER_TIMEOUT_BUDGET_S=180, TIER_COOLDOWN_S=180
+- nv_gw: KEY_COOLDOWN_S=30, NVU_CALLER_KEY_MAP=hermes:2;openclaw:3;opencode:4
+- nv_gw: NVU_BUFFER_CALLERS=cc4101-primary,openclaw2, NVU_PEER_FB_SKIP_MODELS=glm5_2_nv,dsv4p_nv
+- nv_gw: NVU_BUFFER_MAX_RETRIES=5, NVU_BUFFER_TIMEOUT_STAIRS=90,90,90,90,90, NVU_BUFFER_TOTAL_DEADLINE_S=450
+- nv_gw: **NVU_WAIT_QUEUE_ENABLED=1, NVU_WAIT_QUEUE_MAX_WAIT=180** (R796, 续净), NVU_PROBE_INTERVAL=15
+- nv_gw: NVU_FORCE_STREAM_UPGRADE=0
+- nv_gw: NV_GLM52_KEY_FID_BIND=0:0;1:0;2:0;3:0;4:0 (全用 fid1=b1b22d03)
+- nv_gw: NV_GLM52_KEY_MODE_BIND= (空), NV_GLM52_MODE_CHAIN=pexec_us_rr
+- nv_gw: NVU_KEYMGR_429_BASE=120, MAX=600; NVU_KEYMGR_CONN_BASE=30, MAX=60, FAIL_THRESHOLD=3, LONG=120
+- nv_gw: DB 列加 (R794) function_id + egress_ip/egress_route + 复合索引
+- nv_gw: StartedAt 2026-08-05 09:10:54 CST (R796 up -d 重建, 续跑)
+- cc4101: PRIMARY=glm5_2_nv→nv_gw:40006, FALLBACK=ms_gw:40007(env), STREAM_TOTAL=470, HEADER=400
+- 链路: cc2→cc4101(4101)→nv_gw(40006, glm5_2_nv)→NVCF
+
+## 数据采集时间戳
+- 2026-08-05 09:48 CST (数据窗口 ~09:18-09:48)
