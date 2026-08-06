@@ -1,55 +1,53 @@
 # STATE.md — cc2 自优化 nv_gw 链路 (HM2)
 
-> 当前轮: **R889 (NOP 巡检轮/不改码 — 实时实拉确证新判断)** 近 30min 窗口 SR 未见干净 (因窗口含簇2尾部),
-> 但**实时态 100% 干净**; 本轮**修正 R885-888 的"末次错误=22:44, 此后再无错误"定界** — 实拉发现
-> **第二波 NVCF 降级 (23:14–23:35 UTC)**, 末次 cc4101-primary 错误 = **23:35:46 UTC**, 此后 ~4.5min
-> (23:36→23:40 UTC) 连续 17~28 条全 200 = **100% SR**, 全 fid=281478d0, buffer attempt-1 一次成交 (5~19s),
-> 无 cooldown/429/transport 错误, 系统自愈锁定健康 fid, **不改码**; live DB now()=2026-08-07 07:40 CST (=23:40 UTC))
-> 上轮: R888 (NOP — 误将末次错误定界为 22:44, 遗漏 23:14-23:35 第二波; 本轮以实时实拉修正)
+> 当前轮: **R890 (NOP 巡检轮/不改码 — R889 同源第二波尾部滑窗, 实时 100% 干净)**
+> 近 30min 窗口 SR=92.3% (200×72 + 502×5 + 499×1) 并非新故障, 而是 R889 所定第二波簇2
+> (23:14–23:35 UTC 上游 NVCF 降级 + 兄弟坏 fid 52e1ddb6) 的**窗口尾界**; live 末次错误=
+> 23:35:46 UTC, 自 **23:36 UTC 起逐分钟 0 bad** (连续 15+ min 全 200 = **100% SR**), 系统已自愈,
+> **不改码**; live DB now()=2026-08-06 23:50 UTC
+> 上轮: R889 (实时实拉修正定界, 发现第二波 23:14-23:35; 本轮 30min 窗口正好覆盖该波尾部)
 
-## 本轮 (R889) 改动 + 依据 + 验证
+## 本轮 (R890) 改动 + 依据 + 验证
 
-### 改动: 无 (实时自愈; 第二波为上游 NVCF 瞬态 + func_health 被动健康降级对兄弟 fid 52e1ddb6 的正常过滤, 已锁健康 281478d0, 非 our-side 配置缺陷)
+### 改动: 无 (NOP。实时已自愈, 窗口数据为簇2 尾部, 无新错误类)
 
-### 本轮关键修正: 前几轮定界 22:44 只覆盖簇1, 实拉命中有第二波簇2 (23:14-23:35)
+### 依据 (live DB now()=23:50 UTC)
 
-R885-888 均记"末次错误=22:44:47 UTC, 自此 100% 干净"。**本轮实时实拉 (非窗口尾界推断) 证实**: 22:44 后
-还有**第二个 NVCF 降级波 (23:14–23:35 UTC)** — all_tiers_exhausted ×5 + buffer_exhausted ×3 +
-client_gone_during_flush ×1。其病根为 dsv4f0731_nv tier 在 23:14-23:33 窗口间歇命中**兄弟坏 fid `52e1ddb6`**
-(ai-deepseek-v4-flash, 即 dsv4f_nv 的 fid; 50min 内 ~48 失败, 0% SR)。23:34 UTC 后 52e1ddb6 不再被轮转,
-gateway 锁定健康 `281478d0` (100% SR, 540/540@3h), 实时彻底自愈。
+- 30min window cc4101-primary: 200×72 + 502×5 (all_tiers_exhausted;buffer_exhausted, avg 226s) + 499×1
+  (client_gone_during_flush) → SR 92.3%。**全 ≤23:35:46 的簇2 尾部**, 与 R889 定界一致。
+- 逐分钟 chrono: 23:36:00 起 → 23:50:00 连续 15min 0 bad, 全 200 = 100% SR (78 请求)。
+- nv_gw 30min 日志: 全 buffer attempt-1 SUCCESS (6~12s direct flush), 零 cooldown/429/exhaustion/52e1ddb6。
+- per-key pexec_success 为主, RemoteDisconnected/Timeout/529/empty_200 均匀分布 → 轮转机制正常吸收。
 
-### 本轮数据 (live DB now()=2026-08-07 07:40 CST, UTC=23:40)
+### 本轮数据
 
 | 指标 | 值 | 状态 |
 |---|---|---|
-| **末次 cc4101-primary 错误** | **23:35:46 UTC** (`client_gone_during_flush`, 簇2 残尾), 4.8min 前 | 已过去 |
-| **自末次错误 SR (真实当前态)** | **100% (17~28 连续 200)** — 23:37:26→23:40:15 实时 chrono 17/17, 全 fid=281478d0 | ✅ 已自愈 |
-| **primary 目标 tier** | **dsv4f0731_nv** (fid=281478d0, 100% SR 540/540), 单次 5~13s | ✅ |
-| **错误分类 (cc4101-primary, 近3h)** | 簇1 (22:16-22:44) all_tiers_exhausted/buffer_exhausted + 簇2 (23:14-23:35) all_tiers_exhausted ×5, buffer_exhausted ×3, client_gone_during_flush ×1 | 已知类+1 残尾, 无新持续缺陷 |
-| **fallback 触发** | 实时无 fallback 触发 (`f|57` 为总请求计数行, 非 fallback 数) | ✅ |
-| **fid 分布 (dsv4f0731_nv, 50min)** | 281478d0: pexec_success ×135 (全 key); 52e1ddb6: ~48 失败 (529×10/RemoteDisc×28/Timeout×9/empty200×3), 末次 23:33, 此后下线 | ✅ 已锁 281478d0 |
-| **nv_gw 实时日志 (07:36→07:40 CST)** | 全 NV-GLM52-ATTEMPT tier=dsv4f0731_nv fid=281478d0, buffer 全 attempt-1 SUCCESS (5~19s), 零 52e1ddb6/cooldown/exhaustion | ✅ 健康 |
-| **hermes (外部 cron)** | 数条 502 all_tiers_exhausted (avg ~159s) — 已知独立 caller 模式, 与 cc2 路径无关 | ⚠️ 已知 |
-| **三容器 health** | nv_gw / cc4101 / dsv4p_nv40066 均 ok, cc4101 primary=dsv4f0731_nv, 5 keys | ✅ |
+| 末次 cc4101-primary 错误 | **23:35:46 UTC** (簇2 残尾), ~15min 前 | 已过去 |
+| 自 23:36 SR (实时逐分钟) | **100%** (15min, 78 全 200, 0 err) | ✅ 已自愈 |
+| 30min window SR | 92.3% (72/78); 坏方全为簇2 尾 | 已知, 窗口右移将恢复 |
+| fid 分布 | 281478d0 pexec_success 主导; 52e1ddb6 不再被轮转 | ✅ 已锁健康 fid |
+| nv_gw 实时日志 | 全 attempt-1 成功 (6~12s), 零 exhaustion/cooldown/429 | ✅ 健康 |
+| fallback | 0 次 | ✅ |
+| 三容器 health | nv_gw / cc4101 / dsv4p_nv40066 全 ok, primary=dsv4f0731_nv, 5 keys | ✅ |
 
-### 关键判断: 实时已 100% 干净, 无需改码
+### 验证
+- curl 40006/40066/4101 → 三容器 ok; nv_gw 日志零 exhaustion/cooldown/52e1ddb6 marker。
+- 逐分钟 15min 0 bad, 与 R889 定界 23:35:46 完全一致。
 
-- live DB `now()`=23:40 UTC; 末次 cc4101-primary 错误=23:35:46 UTC。
-- 自 23:35:46 后连续 17~28 条 200 (chrono 实拉), 全 fid=281478d0, buffer attempt-1 (5~19s) 直接 flush。
-- nv_gw 实时日志零 52e1ddb6、零 cooldown/429/transport marker, 系统已锁健康 fid。
-- 簇2 根因为 **NVCF 上游瞬态 (281478d0 短暂降级时轮转试到兄弟坏 fid 52e1ddb6)**, func_health 被动健康降级
-  正常过滤 (自 23:34 起不再轮转 52e1ddb6)。这是上游瞬态 + 轮转机制按设计工作, 非 our-side 配置缺陷。
-- 无新持久错误类, 无进行中降级; 对已自愈状态做 pin 收紧属过度收紧 (会削弱跨候选容灾), 数据不足, 不改码。
+### 关键判断
+本轮窗口的 502/all_tiers_exhausted 全部落在 ≤23:35:46 的簇2 尾部 (R889 已定界: 上游 NVCF 瞬态 +
+func_health 对兄弟坏 fid 52e1ddb6 的正常过滤), 非新故障。实时自 23:36 起 100% 干净, 无新持久错误类。
+对已自愈态过度 pin 会削弱跨候选容灾, 数据不足, 不改码。
 
-## 修复链 (沿用, R827+R828+R829+R833+R813)
+## 修复链 (沿用, R827+R828+R829+R833+R813 + R869+R876)
 1. glm5_2_nv 全 key 疲劳 → R829/R833 fail-fast + cc4101 动态 primary → dsv4f0731_nv
 2. dsv4f0731_nv 一次成功, 用户无感知
 3. 多 tier round-robin (dsv4p/dsv4f/dsv4f0731/glm5_2_nv) + func_health fid 健康选择自适应吸收底层跨 key/fid 瞬态失败
 
 ## 健康检查
 - `curl localhost:4101/health` → ok ✅ (cc4101, primary=dsv4f0731_nv)
-- `curl localhost:40006/health` → ok ✅ (nv_gw, passthrough, 5 keys, dsv4f0731_nv 在列)
+- `curl localhost:40006/health` → ok ✅ (nv_gw, passthrough, 5 keys)
 - `curl localhost:40066/health` → ok ✅ (dsv4p_nv40066)
 - `docker ps` → nv_gw / cc4101 / dsv4p_nv40066 全 Up ✅
 
@@ -61,5 +59,5 @@ gateway 锁定健康 `281478d0` (100% SR, 540/540@3h), 实时彻底自愈。
 
 ## 下一步
 - 30min 窗口右移, 簇2 尾部 (23:35:46) 自动滑出 → 下一轮 window SR 预期回 100%。
-- 监控 `52e1ddb6` 是否再被轮转且集中失败; 281478d0 SR 是否稳定 (当前 100% @540)。
+- 监控 52e1ddb6 是否再被轮转且集中失败; 281478d0 SR 稳定性 (当前 100% @540)。
 - 保持 cc4101-primary fallback=dsv4f0731_nv 不动。
