@@ -1,30 +1,30 @@
 # STATE.md — cc2 自优化 nv_gw 链路 (HM2)
 
-> 当前轮: R854 (NOP 巡检轮 — 近窗 primary SR=100%，30-min 残留 hermes 周期客户端特征，不改码, 2026-08-07 04:31 CST)
-> 上轮: R853 (NOP — 近窗 cc4101-primary SR=100% 119×200 零错误, 不改码)
+> 当前轮: R855 (NOP 巡检轮 — 近窗 cc4101-primary SR=100% 114×200 零错误, 30-min 残留 hermes 周期客户端 5×all_tiers_exhausted, 不改码, 2026-08-07 04:35 CST)
+> 上轮: R854 (NOP — 近窗 cc4101-primary SR=100% 118×200 零错误, 不改码)
 
-## 本轮 (R854) 改动 + 依据 + 验证
+## 本轮 (R855) 改动 + 依据 + 验证
 
 ### 改动: 无 (NOP 巡检轮 — 近窗全净, hermes 周期客户端错误为外部特征, 修复链自适应吸收正常)
 
-### 本轮数据 (04:31 CST, 实时拉取, DB UTC 对齐)
+### 本轮数据 (04:35 CST, 实时拉取, DB UTC 对齐)
 
-**30min cc4101-primary (cc2 自己路径) SR = 100% (118×200, 零错误).** nv_gw buffer 全走
-dsv4f0731_nv, attempt=1/5 一次成功, 4-11s, success_tool_call, 零 buffer_exhausted 零 WAIT.
-nv_gw/cc4101 双 /health 全 ok.
+**30min cc4101-primary (cc2 自己路径) SR = 100% (114×200, 零错误).** nv_gw buffer 全走
+dsv4f0731_nv, attempt=1/5 一次成功, 1-13s, success_text / success_tool_call, 零 buffer_exhausted 零 WAIT.
+nv_gw/cc4101 双 /health 全 ok (cc4101 primary=dsv4f0731_nv).
 
 | 指标 | 值 | 状态 |
 |---|---|---|
-| **30min cc4101-primary SR** | **100% (118×200, 零错误)** | ✅ |
+| **30min cc4101-primary SR** | **100% (114×200, 零错误)** | ✅ |
 | **primary 目标 tier** | **dsv4f0731_nv** (自适应轮转持有) | ✅ |
-| **buffer 日志** | dsv4f0731_nv attempt=1/5 一次成功, 4-11s, success_tool_call | ✅ 零 buffer_exhausted |
+| **buffer 日志** | dsv4f0731_nv attempt=1/5 一次成功, 1-13s, success_text/tool_call | ✅ 零 buffer_exhausted |
 | **fallback (ms_gw 层)** | 0 次 | ✅ |
 
-### 30min 硬窗口残留 — hermes 周期客户端特征 (沿用 R853 判定)
+### 30min 硬窗口残留 — hermes 周期客户端特征 (沿用 R853/R854 判定)
 
-`all_tiers_exhausted×5` (502, avg 177.5s ≈ 90s×5 buffer deadline 全额耗尽) 全为 **caller=hermes
-(外部客户端, 非 cc4101)**, 时间分布 20:04/20:09/20:16/20:22/20:29 UTC — **严格 ~5-6min 周期**,
-为 cron/定时 hermes 客户端大请求特征, 与 cc2 路径无关. cc2 自身 118×200 + attempt=1/5 一次成交,
+`all_tiers_exhausted×5` (502, avg 178s ≈ 90s×5 buffer deadline 全额耗尽) 全为 **caller=hermes
+(外部客户端, 非 cc4101)**, 严格 ~5-6min 周期 — 为 cron/定时 hermes 客户端大请求在 buffer 峰值
+耗尽时的特征, 与 cc2 路径无关. cc2 自身 114×200 + attempt=1/5 一次成交,
 证明链路/KeyManager 未退化, 修复链正常吸收.
 
 ## 修复链 (沿用, R827+R828+R829+R833+R813)
