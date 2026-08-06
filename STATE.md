@@ -1,19 +1,19 @@
 # STATE.md — cc2 自优化 nv_gw 链路 (HM2)
 
-> 当前轮: R860 (NOP 巡��轮 — 近窗 cc4101-primary SR=100% (123×200) 零错误 avg 8.8s, 30-min 残留 all_tiers_exhausted×5 全为 hermes 外部 cron 客户端 ~6-7min 周期, 与 cc2 路径无关, 不改码, 2026-08-07 04:50 CST)
-> 上轮: R859 (NOP — 近窗 124×200 零错误, hermes 周期 all_tiers_exhausted 属外部 cron, 不改码)
+> 当前轮: R861 (NOP 巡检轮 — 近窗 cc4101-primary SR=100% (124×200) 零错误 avg 8.8s, 30-min 残留 all_tiers_exhausted×5 全为 hermes 外部 cron 客户端 ~6-7min 周期, 与 cc2 路径无关, 不改码, 2026-08-07 05:00 CST)
+> 上轮: R860 (NOP — 近窗 123×200 零错误, hermes 周期 all_tiers_exhausted 属外部 cron, 不改码)
 
-## 本轮 (R860) 改动 + 依据 + 验证
+## 本轮 (R861) 改动 + 依据 + 验证
 
-### 改动: 无 (巡检轮 — cc2 路径全净 123×200, hermes 周期 all_tiers_exhausted 与 cc2 无关)
+### 改动: 无 (巡检轮 — cc2 路径全净 124×200, hermes 周期 all_tiers_exhausted 与 cc2 无关)
 
-### 本轮数据 (04:48 CST 注入, DB UTC)
+### 本轮数据 (04:54 CST 注入, DB UTC, 复核)
 
-**最近 30min cc4101-primary (cc2 自己路径) SR = 100% (123×200, 零错误, avg 8797ms).**
+**最近 30min cc4101-primary (cc2 自己路径) SR = 100% (124×200, 零错误, avg 8.8s).**
 
 | 指标 | 值 | 状态 |
 |---|---|---|
-| **最近 30min cc4101-primary SR** | **100% (123×200, avg 8.8s)** | ✅ |
+| **最近 30min cc4101-primary SR** | **100% (124×200)** | ✅ |
 | **primary 目标 tier** | **dsv4f0731_nv** (自适应轮转持有) | ✅ |
 | **buffer 日志** | 无 (cc2 路径一次成交) | ✅ |
 | **30min 错误分类** | all_tiers_exhausted × 5 (502, avg 180s) — 全 hermes | ⚠️ 外部 |
@@ -21,12 +21,14 @@
 
 ### 关键判断: all_tiers_exhausted×5 归属 hermes 周期客户端, 非链路退化
 
-30min 窗口 5 条 `all_tiers_exhausted` (502, avg 180052ms) 全部 **caller=hermes (外部客户端, 非 cc4101)**,
-呈严格周期分布, 每次 ~180s ≈ 5×90s=450s buffer deadline 全额耗尽 — 属 cron 请求特征而非链路退化 (沿用 R853-R859 判定).
+30min 窗口 5 条 `all_tiers_exhausted` (502, avg 180052ms) 经 caller 字段核验 **全部 caller=hermes
+(外部客户端, 非 cc4101)**, 呈严格 ~6-7min 周期分布, 每次 ~180s ≈ 5×90s=450s buffer deadline 全额耗尽
+— 属 cron 请求特征而非链路退化 (沿用 R853-R860 判定).
 
 per-key nv_tier_attempts 5 key 均足量 pexec_success (24-25), 瞬态错误
-(RemoteDisconnected/529_nv_overloaded/NVCFPexecTimeout/empty_200) 被 KeyManager 跨 key round-robin 修复链平滑吸收,
-未上抛到 cc2 用户请求. cc2 自身路径 123×200 零错误, buffer 一次成交, 证明链路/KeyManager 无问题.
+(RemoteDisconnected×10 / 529_nv_overloaded×9 / NVCFPexecTimeout×5 / empty_200×3 / 504_nv_gateway_timeout×1)
+被 KeyManager 跨 key round-robin 修复链平滑吸收, 未上抛到 cc2 用户请求. cc2 自身路径 124×200 零错误,
+buffer 一次成交, 证明链路/KeyManager 无退化.
 
 ## 修复链 (沿用, R827+R828+R829+R833+R813)
 1. glm5_2_nv 全 key 疲劳 → R829/R833 fail-fast + cc4101 动态 primary → dsv4f0731_nv
@@ -39,7 +41,7 @@ per-key nv_tier_attempts 5 key 均足量 pexec_success (24-25), 瞬态错误
 - `curl localhost:40066/health` → ok ✅ (dsv4p_nv40066, passthrough, 5 keys)
 - `docker ps`: cc4101 Up 54min / nv_gw Up 1h / dsv4p_nv40066 Up 2d / nv_gw_stable Up 5d ✅
 
-## 参数快照 (无变化, R860)
+## 参数快照 (无变化, R861)
 
 ```
 nv_gw(40006): pexec_us_rr 单模式, KEY_FID_BIND 全 bind b1b22d03, BUFFER 5×90s=450s (STAIRS 90,90,90,90,90, RETRIES=5),
