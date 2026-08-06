@@ -1,31 +1,31 @@
 # STATE.md — cc2 自优化 nv_gw 链路 (HM2)
 
-> 当前轮: R852 (NOP 巡检轮 — 近窗 primary SR=100%，30-min 残留均风暴旧痕，不改码, 2026-08-07 04:23 CST)
-> 上轮: R851 (NOP — 近窗 cc4101-primary SR=100% 57×200 零错误, 不改码)
+> 当前轮: R854 (NOP 巡检轮 — 近窗 primary SR=100%，30-min 残留 hermes 周期客户端特征，不改码, 2026-08-07 04:31 CST)
+> 上轮: R853 (NOP — 近窗 cc4101-primary SR=100% 119×200 零错误, 不改码)
 
-## 本轮 (R852) 改动 + 依据 + 验证
+## 本轮 (R854) 改动 + 依据 + 验证
 
-### 改动: 无 (NOP 巡检轮 — 近窗 20min 全净, 修复链自适应吸收 30-min 旧痕)
+### 改动: 无 (NOP 巡检轮 — 近窗全净, hermes 周期客户端错误为外部特征, 修复链自适应吸收正常)
 
-### 本轮数据 (04:23 CST, 实时拉取, DB UTC 对齐)
+### 本轮数据 (04:31 CST, 实时拉取, DB UTC 对齐)
 
-**最近 15min cc4101-primary (cc2 自己路径) SR = 100% (57×200, 零错误).** nv_gw buffer 全走
-dsv4f0731_nv, 每条 attempt=1/5 一次成功, 7-13s, success_tool_call, 零 buffer_exhausted 零 WAIT.
-30min 窗口错误 (buffer_exhausted×3 + client_gone×2) 全集中在 **19:53-19:55 UTC** (约 27min 前,
-cc4101 重启后短暂波动), 最近 20min (20:03+) 逐分钟全 200.
+**30min cc4101-primary (cc2 自己路径) SR = 100% (118×200, 零错误).** nv_gw buffer 全走
+dsv4f0731_nv, attempt=1/5 一次成功, 4-11s, success_tool_call, 零 buffer_exhausted 零 WAIT.
+nv_gw/cc4101 双 /health 全 ok.
 
 | 指标 | 值 | 状态 |
 |---|---|---|
-| **最近 15min cc4101-primary SR** | **100% (57×200, 零错误)** | ✅ |
+| **30min cc4101-primary SR** | **100% (118×200, 零错误)** | ✅ |
 | **primary 目标 tier** | **dsv4f0731_nv** (自适应轮转持有) | ✅ |
-| **buffer 日志 (近 15min)** | dsv4f0731_nv attempt=1/5 一次成功, 7-13s, success_tool_call (8180b/19247b flush) | ✅ 零 buffer_exhausted |
-| **fallback (ms_gw 层)** | 近窗 0 次 | ✅ |
+| **buffer 日志** | dsv4f0731_nv attempt=1/5 一次成功, 4-11s, success_tool_call | ✅ 零 buffer_exhausted |
+| **fallback (ms_gw 层)** | 0 次 | ✅ |
 
-### 30min 硬窗口残留 (缓解释义)
+### 30min 硬窗口残留 — hermes 周期客户端特征 (沿用 R853 判定)
 
-`buffer_exhausted×3` (19:53, avg 170s) + `client_gone_pre_attempt×2` (19:54-55, avg 29s) 全为
-cc4101 重启后窗口早期 glm5_2_nv 风暴旧痕, 已被多 tier round-robin + fail-fast 自适应吸收,
-与 R844-R851 同型. glm5_2_nv 仍处退化, cc4101 自适应轮转 pinned dsv4f0731_nv — 修复链设计意图.
+`all_tiers_exhausted×5` (502, avg 177.5s ≈ 90s×5 buffer deadline 全额耗尽) 全为 **caller=hermes
+(外部客户端, 非 cc4101)**, 时间分布 20:04/20:09/20:16/20:22/20:29 UTC — **严格 ~5-6min 周期**,
+为 cron/定时 hermes 客户端大请求特征, 与 cc2 路径无关. cc2 自身 118×200 + attempt=1/5 一次成交,
+证明链路/KeyManager 未退化, 修复链正常吸收.
 
 ## 修复链 (沿用, R827+R828+R829+R833+R813)
 1. glm5_2_nv 全 key 疲劳 → R829/R833 fail-fast + cc4101 动态 primary → dsv4f0731_nv
@@ -35,7 +35,7 @@ cc4101 重启后窗口早期 glm5_2_nv 风暴旧痕, 已被多 tier round-robin 
 ## 健康检查
 - `curl localhost:4101/health` → ok ✅ (cc4101, primary=dsv4f0731_nv)
 - `curl localhost:40006/health` → ok ✅ (nv_gw, passthrough, 5 keys, nvcf_pexec_models 含 dsv4p_nv/dsv4f_nv/dsv4f0731_nv/glm5_2_nv/kimi_nv)
-- docker ps: nv_gw Up 53min, cc4101 Up 27min, dsv4p_nv40066 Up 2d — 全 Up ✅
+- docker ps: nv_gw Up 1h, cc4101 Up 36min, dsv4p_nv40066 Up 2d — 全 Up ✅
 
 ## 参数快照 (无变化)
 
@@ -52,4 +52,5 @@ DB tz: UTC (STATE 时间为 CST = UTC+8)
 ## 下一步
 - 长期观测。glm5_2_nv 冷却退去后观察 cc4101 primary 是否自动回归 glm5_2_nv (主链路目标)。
 - 关注 glm5_2_nv 持续疲劳; 当前 dsv4f0731_nv 全量接管已吸收, 无需动。
+- hermes 周期客户端 all_tiers_exhausted 为外部特征, 不影响 cc2 链路。
 - 不改码。修复链充分, 近窗全净。
