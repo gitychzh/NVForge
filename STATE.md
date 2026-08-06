@@ -1,39 +1,39 @@
 # STATE.md — cc2 自优化 nv_gw 链路 (HM2)
 
-> 当前轮: R871 (NOP 巡检轮 — 近窗 cc4101-primary SR=100% (126×200) 零错误, 残留 all_tiers_exhausted×5+stream_cap×1 全为 caller=hermes 外部 cron, fallback 0%, 不改码, 2026-08-07 ~05:30 CST)
-> 上轮: R870 (NOP — 近窗 125×200 零错误, hermes 周期 all_tiers_exhausted×5+stream_cap×1 属外部 cron, 不改码)
+> 当前轮: R872 (NOP 巡检轮 — 近窗 cc4101-primary SR=100% (120×200) 零错误, 残留 all_tiers_exhausted×5+stream_cap×1 全为 caller=hermes 外部 cron, fallback 0%, 不改码, 2026-08-07 ~05:40 CST)
+> 上轮: R871 (NOP — 近窗 126×200 零错误, hermes 周期 all_tiers_exhausted×5+stream_cap×1 属外部 cron, 不改码)
 
-## 本轮 (R871) 改动 + 依据 + 验证
+## 本轮 (R872) 改动 + 依据 + 验证
 
-### 改动: 无 (巡检轮 — cc2 路径全净 126×200, hermes 周期 all_tiers_exhausted 与 cc2 无关)
+### 改动: 无 (巡检轮 — cc2 路径全净 120×200, hermes 周期 all_tiers_exhausted 与 cc2 无关)
 
-### 本轮数据 (~05:30 CST, 轮前链路分析注入, DB UTC)
+### 本轮数据 (~05:40 CST, 轮前链路分析注入, DB UTC)
 
-**最近 30min cc4101-primary (cc2 自己路径) SR = 100% (126×200, 零错误).**
+**最近 30min cc4101-primary (cc2 自己路径) SR = 100% (120×200, 零错误).**
 
 | 指标 | 值 | 状态 |
 |---|---|---|
-| **最近 30min cc4101-primary SR** | **100% (126×200)** | ✅ |
+| **最近 30min cc4101-primary SR** | **100% (120×200)** | ✅ |
 | **primary 目标 tier** | **dsv4f0731_nv** (自适应轮转持有, /health 确认) | ✅ |
+| **30min 按模型 SR** | dsv4f0731_nv = 95.2% (120/126) | 与 cc2 路径 100% 一致 |
 | **error 归属** | all_tiers_exhausted×5 + stream_absolute_cap×1 全为 caller=hermes (外部 cron, 非 cc4101) | ✅ 与 cc2 无关 |
-| **非 200 归属** | 6 条 502 全 caller=hermes (cc4101-primary 0 错误) | ✅ |
+| **非 200 归属** | 6 条全 caller=hermes (cc4101-primary 0 错误) | ✅ |
 | **fallback 触发率** | 0 (131 请求 0 fallback) | ✅ |
 | **buffer** | 无 buffer/wait/keymanager 日志 → 全 attempt1 一次成交 | ✅ 无退化 |
-| **per-key nv_tier_attempts** | dsv4f0731_nv 5key 均 ~25 次 pexec_success (共 125 成功), 瞬态错误被跨 key 吸收 | ✅ |
-| **三容器 health** | nv_gw / cc4101 均 ok, primary=dsv4f0731_nv | ✅ |
+| **per-key nv_tier_attempts** | dsv4f0731_nv 5key 均 24 次 pexec_success (共 120 成功), 瞬态错误被跨 key 吸收 | ✅ |
+| **三容器 health** | nv_gw / cc4101 / dsv4p 均 ok, primary=dsv4f0731_nv | ✅ |
 
 ### 关键判断: cc2 路径全净, hermes 周期 all_tiers_exhausted 非本链路问题
 
-30min 窗口链路总览: cc4101-primary 126×200 零错误, 6 条非 200 (502) 经 caller 核验
+30min 窗口链路总览: cc4101-primary 120×200 零错误, 6 条非 200 (502) 经 caller 核验
 **全部 caller=hermes** (外部客户端, 非 cc4101): all_tiers_exhausted×5 + stream_absolute_cap×1.
-本次 DB 时间戳铁证: hermes 错误 21:06→21:16→21:22→21:26→21:31 ≈ 5-6min 严格周期,
-每次 all_tiers_exhausted ~180s ≈ 5×90s=450s buffer deadline 全额耗尽 —
-沿用 R853-R870 判定: 属 hermes 外部 cron 请求特征而非链路退化.
+每次 all_tiers_exhausted avg ~180035ms ≈ 5×90s=450s buffer deadline 全额耗尽 —
+沿用 R853-R871 判定: 属 hermes 外部 cron 请求特征而非链路退化.
 
-per-key nv_tier_attempts (tier=dsv4f0731_nv): 5key 均 ~25 次 pexec_success (共 125 成功),
-瞬态错误 (NVCFPexecRemoteDisconnected×21/NVCFPexecTimeout×5/529_nv_overloaded×3/empty_200×2)
+per-key nv_tier_attempts (tier=dsv4f0731_nv): 5key 均 24 次 pexec_success (共 120 成功),
+瞬态错误 (NVCFPexecRemoteDisconnected×20/NVCFPexecTimeout×5/529_nv_overloaded×2/empty_200×2)
 被 KeyManager 跨 key round-robin 修复链自适应吸收, 未上抛到 cc2 用户请求.
-cc2 自身路径 126×200 零错误, fallback 0%, 无 buffer/wait 日志,
+cc2 自身路径 120×200 零错误, fallback 0%, 无 buffer/wait 日志,
 证明链路/KeyManager 无退化. 不改码.
 
 ## 修复链 (沿用, R827+R828+R829+R833+R813)
@@ -44,8 +44,10 @@ cc2 自身路径 126×200 零错误, fallback 0%, 无 buffer/wait 日志,
 ## 健康检查
 - `curl localhost:4101/health` → ok ✅ (cc4101, primary=dsv4f0731_nv)
 - `curl localhost:40006/health` → ok ✅ (nv_gw, passthrough, 5 keys, nvcf_pexec_models 含 kimi_nv/dsv4p_nv/dsv4f_nv/dsv4f0731_nv/glm5_2_nv)
+- `curl localhost:40066/health` → ok ✅ (dsv4p_nv40066, passthrough, 5 keys)
+- docker ps: nv_gw = Up 2h, cc4101 = Up 2h, dsv4p = Up 2d (nv_gw_stable = Up 5d 对照)
 
-## 参数快照 (无变化, R871)
+## 参数快照 (无变化, R872)
 
 ```
 nv_gw(40006): pexec_us_rr 单模式, KEY_FID_BIND 全 bind b1b22d03 (0:0;1:0;2:0;3:0;4:0), BUFFER 5×90s=450s (STAIRS 90,90,90,90,90, RETRIES=5),
