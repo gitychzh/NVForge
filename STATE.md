@@ -1,38 +1,38 @@
 # STATE.md — cc2 自优化 nv_gw 链路 (HM2)
 
-> 当前轮: R877 (NOP 巡检轮 — 近窗 cc4101-primary SR=100% (112×200) 零错误, 残留 all_tiers_exhausted×5 全为 caller=hermes 外部 cron (DB 复核仅 hermes/502/5), fallback 0%, 无 buffer/wait 退化, 不改码, 2026-08-07 ~06:05 CST)
-> 上轮: R876 (NOP — 近窗 114×200 零错误, all_tiers_exhausted×6 全为 hermes 外部 cron (DB 复核 hermes/502/6), 不改码)
+> 当前轮: R878 (NOP 巡检轮 — 近窗 cc4101-primary SR=100% (104×200) 零错误, 残留 all_tiers_exhausted×5 经 DB 独立核验全为 caller=hermes 外部 cron (502×5, avg ~179s), fallback 0%, buffer 全 attempt1 一次成交, 不改码, 2026-08-07 ~06:10 CST)
+> 上轮: R877 (NOP — 近窗 112×200 零错误, all_tiers_exhausted×5 全为 hermes 外部 cron (DB 复核仅 hermes/502/5), 不改码)
 
-## 本轮 (R877) 改动 + 依据 + 验证
+## 本轮 (R878) 改动 + 依据 + 验证
 
-### 改动: 无 (巡检轮 — cc2 路径全净 112×200, hermes 周期 all_tiers_exhausted 与 cc2 无关)
+### 改动: 无 (巡检轮 — cc2 路径全净 104×200, hermes 周期 all_tiers_exhausted 与 cc2 无关)
 
-### 本轮数据 (~06:05 CST, 轮前链路分析注入 + DB 独立复核, DB UTC)
+### 本轮数据 (~06:10 CST, 轮前链路分析注入 + DB 独立复核, DB UTC)
 
-**最近 30min cc4101-primary (cc2 自己路径) SR = 100% (112×200, 零错误).**
+**最近 30min cc4101-primary (cc2 自己路径) SR = 100% (104×200, 零错误).**
 
 | 指标 | 值 | 状态 |
 |---|---|---|
-| **最近 30min cc4101-primary SR** | **100% (112×200)** | ✅ |
+| **最近 30min cc4101-primary SR** | **100% (104×200)** | ✅ |
 | **primary 目标 tier** | **dsv4f0731_nv** (自适应轮转持有, /health 确认) | ✅ |
-| **30min 按模型 SR** | dsv4f0731_nv = 94.9% (111/117, 注入快照); DB 复核 cc4101-primary 112×200 | 与 cc2 路径 100% 一致 (差值=hermes) |
-| **error 归属** | all_tiers_exhausted×5 全为 caller=hermes (外部 cron, 非 cc4101), DB 独立核验 | ✅ 与 cc2 无关 |
+| **30min caller×status (独立 DB)** | cc4101-primary 104×200; hermes 1×200 + 5×502 | cc2 路径全净 |
+| **error 归属** | all_tiers_exhausted×5 全为 caller=hermes (外部 cron, 非 cc4101), avg 179448ms ≈ buffer deadline 全额耗尽 | ✅ 与 cc2 无关 |
 | **非 200 归属** | 仅 `hermes/502/all_tiers_exhausted×5` (DB 独立复核), cc4101-primary 0 错误 | ✅ |
-| **fallback 触发率** | 0 (117 请求 0 fallback) | ✅ |
-| **buffer/wait** | 30min nv_gw 日志无 BUFFER-/WAIT- 输出, 无 multi-attempt 退化 | ✅ |
-| **per-key nv_tier_attempts** | dsv4f0731_nv 5key 均 22-23 次主 fid 281478d0 + 次 fid 52e1ddb6 4-7 次 (双 fid 吸收瞬态) | ✅ |
+| **fallback 触发率** | 0 (0 fallback) | ✅ |
+| **buffer/wait** | cc4101-primary 全 attempt=1/5 一次成交 (9~13s each, success_tool_call), 无 multi-attempt 退化 | ✅ |
+| **per-key nv_tier_attempts** | dsv4f0731_nv 5key pexec_success ~20~22/key, NVCFPexecRemoteDisconnected 瞬态 + Timeout + 529_nv_overloaded 跨 key 吸收 | ✅ |
 | **三容器 health** | nv_gw / cc4101 / dsv4p 均 ok, primary=dsv4f0731_nv | ✅ |
 
 ### 关键判断: cc2 路径全净, hermes 周期 all_tiers_exhausted 非本链路问题
 
-30min 窗口链路总览: cc4101-primary **112×200 零错误**; 非 200 (502×5) 经 **DB 独立 caller 核验**
-**全部 caller=hermes** (外部客户端, 非 cc4101): all_tiers_exhausted×5.
-每次 all_tiers_exhausted avg ~180s ≈ buffer deadline 特征 — 属 hermes 严格 ~6min 周期 cron 请求,
-沿用 R853-R876 判定: 外部客户端周期性全键耗尽/超时, 而非本链路退化.
+30min 窗口独立 DB caller 核验: cc4101-primary **104×200 零错误**; 非 200 (502×5) **全部
+caller=hermes** (外部客户端, 非 cc4101): all_tiers_exhausted×5, avg 179448ms.
+每次 all_tiers_exhausted avg ~179s ≈ buffer deadline 全额耗尽签名 — 属 hermes 外部 cron 周期性
+全键耗尽/超时, 沿用 R853-R877 判定, 而非本链路退化.
 
-per-key 观察: dsv4f0731_nv 每 key 主 fid 281478d0 (22-23 次) + 次 fid 52e1ddb6 (4-7 次) 双 fid
-吸收瞬态, 无单 fid 单点故障. cc2 自身 112×200 零错误, fallback 0%, 无 buffer/wait 退化,
-证明链路/KeyManager 无退化. 不改码.
+buffer 日志确认 cc4101-primary 全 attempt=1/5 一次成交 (9~13s, success_tool_call), 无
+multi-attempt 退化, 证明 KeyManager/跨 key round-robin 修复链健康. cc2 自身 104×200 零错误,
+fallback 0%, 无 buffer/wait 退化, 链路/KeyManager 无退化. 不改码.
 
 ## 修复链 (沿用, R827+R828+R829+R833+R813)
 1. glm5_2_nv 全 key 疲劳 → R829/R833 fail-fast + cc4101 动态 primary → dsv4f0731_nv
@@ -43,9 +43,9 @@ per-key 观察: dsv4f0731_nv 每 key 主 fid 281478d0 (22-23 次) + 次 fid 52e1
 - `curl localhost:4101/health` → ok ✅ (cc4101, primary=dsv4f0731_nv)
 - `curl localhost:40006/health` → ok ✅ (nv_gw, passthrough, 5 keys, nvcf_pexec_models 含 kimi_nv/dsv4p_nv/dsv4f_nv/dsv4f0731_nv/glm5_2_nv)
 - `curl localhost:40066/health` → ok ✅ (dsv4p_nv40066, passthrough, 5 keys)
-- docker ps: nv_gw = Up 2h, cc4101 = Up 2h, dsv4p = Up 2d (nv_gw_stable = Up 5d 对照)
+- docker ps: nv_gw = Up 7h, cc4101 = Up 2h, dsv4p = Up 2d (nv_gw_stable = Up 5d 对照)
 
-## 参数快照 (无变化, R877)
+## 参数快照 (无变化, R878)
 
 ```
 nv_gw(40006): pexec_us_rr 单模式, KEY_FID_BIND 全 bind b1b22d03 (0:0;1:0;2:0;3:0;4:0), BUFFER 5×90s=450s (STAIRS 90,90,90,90,90, RETRIES=5),
