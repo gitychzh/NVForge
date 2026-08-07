@@ -1,47 +1,50 @@
 # STATE.md — cc2 自优化 nv_gw 链路 (HM2)
 
-> 当前轮: **R955 (NOP 巡检轮/不改码 — cc2 主链路连续第 63 轮 100% 干净; 坏请求 502 all_tiers_exhausted 1 全属 hermes 线, caller 归属非 cc2 范围; fallback 0 次)**
-> cc4101-primary (主 nv_gw:40006) 实时 30min = **122/122 = 100% SR, 0 bad** (live 实拉);
-> cc4101-primary 专属错误 = **0 rows** (122 request 全 200);
-> 容器: nv_gw Up 13h, cc4101 Up 8h
-> 上轮: R954 (NOP, 主链 125/125=100%)
+> 当前轮: **R956 (NOP 巡检轮/不改码 — cc2 主链路连续第 64 轮 100% 干净; 坏请求 502 all_tiers_exhausted 1 全属 hermes 线, caller 归属非 cc2 范围; fallback 0 次)**
+> cc4101-primary (主 nv_gw:40006) 实时 30min = **120/120 = 100% SR, 0 bad** (live 实拉);
+> cc4101-primary 专属错误 = **0 rows** (120 request 全 200);
+> 容器: nv_gw Up 9h, cc4101 Up 8h, nv_gw_stable Up 5d(并存), dsv4p_nv40066 Up 2d, dsvf0731_nv40666 Up 18h
+> 上轮: R955 (NOP, 主链 122/122=100%)
 
-## 本轮 (R955) 改动 + 依据 + 验证
+## 本轮 (R956) 改动 + 依据 + 验证
 
-### 改动: 无 (NOP。cc2 主链路连续 63 轮 100% 干净, 主专属错误 0 行; bad 请求全属 hermes 非 cc2)
+### 改动: 无 (NOP。cc2 主链路连续 64 轮 100% 干净, 主专属错误 0 行; bad 请求全属 hermes 非 cc2)
 
-### 依据 (live DB 30min 实拉 ≈2026-08-07 12:00 CST)
+### 依据 (live DB 30min 实拉 ≈2026-08-07 12:03 CST)
 
-- 30min cc4101-primary (主 nv_gw:40006) = **122/122 全 200, 0 bad (100% SR)** (live re-pull)。
-- 总 nv_requests 30min = **152 req, 151 ok (99.3% SR), cc2_bad=0**。
-- 唯一 bad (非 200) = **`caller=hermes` ×1**: `502 all_tiers_exhausted ×1` (avg_dur 174163ms,
+- 30min cc4101-primary (主 nv_gw:40006) = **120/120 全 200, 0 bad (100% SR)** (live re-pull,
+  avg_dur 9303ms)。
+- 总 nv_requests 30min = **149 req, 148 ok (99.3% SR), cc2_bad=0**。
+- 唯一 bad (非 200) = **`caller=hermes` ×1**: `502 all_tiers_exhausted ×1` (avg_dur ~174163ms,
   caller 列归属 hermes, non cc2 主链)。
-- fallback (cc_requests 30min) = **0 次** (121 req, fb=0; 全 status=200, SR=100%)。
-- nv_tier_attempts 30min (dsv4p): 每 key NVCFPexecRemoteDisconnected 2-5 + pexec_success 23-25。
+- fallback (cc_requests 30min) = **0 次** (120 req, fb=0; 全 status=200, SR=100%)。
+- nv_tier_attempts 30min (dsv4p): 每 key NVCFPexecRemoteDisconnected 2-6 + pexec_success 23-25
+  (k0:2/24, k1:3/23, k2:4/25, k3:6/23, k4:4/25)。
   瞬态错误被多 key round-robin + buffer 重试吸收, 全部 resolve 为 200。
-- buffer 日志: cc4101-primary 全 attempt=1 成功 (elapsed 2-12s, verdict success_text/success_tool_call),
-  无 WAIT-/KEYMGR- 错误噪声。
+- buffer 日志 (613 条 BUFFER): cc4101-primary 全 attempt=1 成功 (elapsed 7-10s, verdict
+  success_tool_call, input 68-75k), 无 WAIT-/KEYMGR- 错误噪声。
 
 ### 本轮数据
 
 | 指标 | 值 | 状态 |
 |---|---|---|
-| 主 nv_gw(40006) cc4101-primary | **122/122 = 100% SR, 0 bad** (实拉) | ✅ |
+| 主 nv_gw(40006) cc4101-primary | **120/120 = 100% SR, 0 bad** (实拉) | ✅ |
 | 主链专属错误 (caller=cc4101-primary) | **0 rows** | ✅ |
 | 唯一 bad (非 200) | 502 all_tiers_exhausted ×1 (caller=hermes, avg 174s) | ⚠️ 越界 |
 | bad caller 归属 | 全 caller=hermes; cc2 primary 0 条 | ✅ 隔离 |
-| fallback (cc_requests) | 0 次 (121 req 全 200) | ✅ |
-| tier 瞬态错误 | NVCFPexecRemoteDisconnected 每 key 2-5, 全被吸收 | ✅ |
-| 全局 nv_requests SR | 151/152 = 99.3% | ✅ |
+| fallback (cc_requests) | 0 次 (120 req 全 200) | ✅ |
+| tier 瞬态错误 | NVCFPexecRemoteDisconnected 每 key 2-6, 全被吸收 | ✅ |
+| 全局 nv_requests SR | 148/149 = 99.3% | ✅ |
 
 ### 验证
-- 30min nv_requests cc4101-primary live re-pull = 122/122 (0 bad)。
+- 30min nv_requests cc4101-primary live re-pull = 120/120 (0 bad, avg 9303ms)。
 - 唯一 bad 分组 (caller 列归属): 502 all_tiers_exhausted ×1 caller=hermes, cc2 主链 0 bad。
-- cc_requests fallback = 0 次 (121 req 全 200, SR=100%)。
+- cc_requests fallback = 0 次 (120 req 全 200, SR=100%)。
 - docker logs nv_gw buffer 段: cc4101-primary 全 attempt=1 success, 无错误噪音。
+- health: 4101/40006/40066 全 200。
 
 ### 关键判断
-cc2 主链路连续第 **63** 轮 (R893-R955) 100% SR 干净, 且主链专属错误 0 rows。
+cc2 主链路连续第 **64** 轮 (R893-R956) 100% SR 干净, 且主链专属错误 0 rows。
 唯一 bad 请求 100% 属 hermes (caller 列归属 502 all_tiers_exhausted), fallback 0 次, 无新 cc2 主链错误类。
 **不改码**: ①主链 SR 100% + 专属错误 0 行, 无优化需求; ②坏请求全属 hermes 越 cc2 范围;
 ③多 tier round-robin (dsv4f0731_nv 为首) + func_health 健康选择已达稳态, hermes 的 all_tiers_exhausted 由 hermes 自身 key pool 疲劳所致, 不泄漏进 cc2。
