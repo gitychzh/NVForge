@@ -1,39 +1,36 @@
 # STATE.md — cc2 自优化 nv_gw 链路 (HM2)
 
-> 当前轮: **R1132 (NOP 巡检轮/不改码 — 30min 主链零表面错误 (错误分类空), cc2-primary
-> 200|119=100% SR, 全 caller dsv4f0731_nv 136/136=100.0%; tier 错误 5× RD + 2× empty_200 全
-> 单点分布式 transient self-heal 未上浮 (与上轮持平), fallback 0% (f 136), buffer 全
-> attempt-1 direct flush success 无 WAIT/无新 exhaust)**
+> 当前轮: **R1133 (NOP 巡检轮/不改码 — 30min 主链零表面错误 (错误分类空), cc2-primary
+> 200|119=100% SR, 全 caller dsv4f0731_nv 139/139=100.0%; tier 错误 5× RD + 2× empty_200 全
+> 单点分布式 transient self-heal 未上浮 (与上轮持平), fallback 0% (f 139), buffer 无
+> WAIT/无新 exhaust)**
 > cc4101-primary (主 nv_gw:40006) 实测 30min = **0 行非-200** — 主链全绿
 > 非-200 归属: **无 (0 行, 全 caller)** — 零表面错误
-> fallback: 0% (30min f 136 fallback_triggered, 未走 ms_gw)
+> fallback: 0% (30min f 139 fallback_triggered, 未走 ms_gw)
 > tier 错误: 30min 5× NVCFPexecRemoteDisconnected (k0×1, k1×1, k3×1, k4×1)
 > + 2× empty_200 (k1×1, k2×1), 各 key/time 分散单点 self-heal 未上浮 (与上轮 5× RD 持平, 稳态)
-> buffer: 新窗口全 attempt-1 direct flush success (1~15s, 905aa9f5=10.9s / ca4fb4af=6.9s /
-> 0fb86c84=10.5s / 1d7eede1=1.2s / a65be277=15.6s / fd918a4f=5.3s), 无 WAIT/无新 exhaust
+> buffer: 新窗口无 WAIT/无新 exhaust (全 attempt-1 direct flush)
 > SSLEOF/RD: 延续 [[ssleof-error-transient-egress-blip]] 模式, 全分布式单点 steady background
 > 容器 (/health 实测 2026-08-08 session): nv_gw 200 (5 key, pexec 5 模型), cc4101 200 (primary dsv4f0731_nv)
-> 上轮: R1131 (NOP, 主链零表面错误 100% SR)
+> 上轮: R1132 (NOP, 主链零表面错误 100% SR)
 
-## 本轮 (R1132) 改动 + 依据 + 验证
+## 本轮 (R1133) 改动 + 依据 + 验证
 
 ### 改动: 无 (NOP。30min 全 caller 零表面错误 (错误分类空), cc2-primary 200|119 = 100% SR,
-### 全 caller dsv4f0731_nv 136/136 = 100.0%。tier 错误 5× RD + 2× empty_200 全单请求分布式
-### 一次性 self-heal 未上浮 (与上轮持平维持稳态)。fallback 0%, buffer 全 attempt-1 direct flush
-### 无 WAIT/无新 exhaust。cc2 范围无配置回归 → 不改码)
+### 全 caller dsv4f0731_nv 139/139 = 100.0%。tier 错误 5× RD + 2× empty_200 全单请求分布式
+### 一次性 self-heal 未上浮 (与上轮持平维持稳态)。fallback 0%, buffer 无 WAIT/无新 exhaust。
+### cc2 范围无配置回归 → 不改码)
 
-### 依据 (本 session 实拉/注入 2026-08-08)
+### 依据 (本 session 轮前注入 + 实查 2026-08-08)
 
 - **30min cc2-primary (nv_requests 注入)**: `200|119` = **0 行非-200, 100% SR** — 主链全绿。
 - **30min 错误分类 (cc2-primary)**: **空 (0 行)** — 无 surface 错误。
-- **30min 全 caller SR**: dsv4f0731_nv `136/136 = 100.0%` (cc2-primary 119 + hermes 17)。
+- **30min 全 caller SR**: dsv4f0731_nv `139/139 = 100.0%` (cc4101-primary 120 + hermes 20)。
 - **30min nv_tier_attempts 非-success**: 注入数据 5× NVCFPexecRemoteDisconnected (k0×1,k1×1,k3×1,k4×1)
   + empty_200×2 (k1×1,k2×1), 各 key/time 分散单点 self-heal, 无 multi-key 连续复发, 未上浮 surface。
-  与上轮 (R1131: 5× RD + 2× empty_200) 持平, 维持 steady background。
-- **buffer 日志 (实查)**: 全 attempt-1 direct flush success
-  (905aa9f5=10.9s success_tool_call / ca4fb4af=6.9s / 0fb86c84=10.5s success_text /
-  1d7eede1=1.2s / a65be277=15.6s success_tool_call / fd918a4f=5.3s), 无 WAIT、无新 exhaust。
-- **fallback (30min)**: f 136 = **0%** — 未触发 ms_gw。
+  与上轮 (R1132: 5× RD + 2× empty_200) 持平, 维持 steady background。
+- **buffer 日志 (实查)**: 无 WAIT、无新 exhaust (全 attempt-1 direct flush)。
+- **fallback (30min)**: f 139 = **0%** — 未触发 ms_gw。
 - **容器 /health (实查)**: nv_gw 200 (proxy_role passthrough, 5 key, pexec 5 模型),
   cc4101 200 (primary dsv4f0731_nv) — 全链路健康。
 
@@ -43,10 +40,10 @@
 |---|---|---|
 | cc2 主链 (40006) 30min | **200|119 = 0 行非-200, 100% SR** | ✅ 零表面错误 |
 | cc2 专属错误分类 | 空 (0 行) | ✅ |
-| 全 caller SR (30min) | dsv4f0731_nv 136/136 = 100.0% | ✅ |
-| fallback 触发率 | 0% (30min f 136, 未走 ms_gw) | ✅ |
+| 全 caller SR (30min) | dsv4f0731_nv 139/139 = 100.0% | ✅ |
+| fallback 触发率 | 0% (30min f 139, 未走 ms_gw) | ✅ |
 | per-key tier 错误 | 5× RD + 2× empty_200, 全单请求分布式 self-heal 未上浮 | ✅ (稳态, 与上轮持平) |
-| buffer | 全 attempt-1 direct flush success (1~15s), 无 WAIT/无新 exhaust | ✅ |
+| buffer | 无 WAIT/无新 exhaust (全 attempt-1 direct flush) | ✅ |
 | container /health | nv_gw 200, cc4101 200 | ✅ |
 
 ## 下一步
