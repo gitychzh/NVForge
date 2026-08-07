@@ -1,47 +1,47 @@
 # STATE.md — cc2 自优化 nv_gw 链路 (HM2)
 
-> 当前轮: **R1020 (NOP 巡检轮/不改码 — cc2 主链路连续第 128 轮 100% 干净; 主链专属错误 0 rows; fallback 0)**
-> cc4101-primary (主 nv_gw:40006) 实时 30min = **119/119 = 100% SR, 0 bad** (live 复核);
-> cc4101-primary 专属错误 = **0 rows** (119 request 全 200);
+> 当前轮: **R1021 (NOP 巡检轮/不改码 — cc2 主链路连续第 129 轮 100% 干净; 主链专属错误 0 rows; fallback 0)**
+> cc4101-primary (主 nv_gw:40006) 实时 30min = **117/117 = 100% SR, 0 bad** (live 复核);
+> cc4101-primary 专属错误 = **0 rows** (117 request 全 200);
 > 容器: nv_gw Up 13h, cc4101 Up 13h, dsv4p_nv40066 Up 2d, /health 全 200
-> 上轮: R1019 (NOP, 主链 125/125=100%)
+> 上轮: R1020 (NOP, 主链 119/119=100%)
 
-## 本轮 (R1020) 改动 + 依据 + 验证
+## 本轮 (R1021) 改动 + 依据 + 验证
 
-### 改动: 无 (NOP。cc2 主链路连续 128 轮 100% 干净, 主专属错误 0 rows; 本轮 window 内 6 条 bad 全属 hermes)
+### 改动: 无 (NOP。cc2 主链路连续 129 轮 100% 干净, 主专属错误 0 rows; 本轮 window 内 5 条 bad 全属 hermes)
 
-### 依据 (live 复核 2026-08-07 ~16:40 CST + 注入轮前链路分析)
+### 依据 (live 复核 2026-08-07 ~16:47 CST + 注入轮前链路分析)
 
-- 30min cc4101-primary (主 nv_gw:40006) = **119/119 全 200 = 100% SR, 0 bad** (live `SELECT caller,status,count(*) ... caller='cc4101-primary'`)。
+- 30min cc4101-primary (主 nv_gw:40006) = **117/117 全 200 = 100% SR, 0 bad** (live `SELECT caller,status,count(*) ... caller='cc4101-primary'`)。
 - 主链专属错误 (caller=cc4101-primary, status!=200) = **0 rows** (scoped 错误分组为空)。
-- 本轮 window 内 nv_requests 总 bad = 6 条 (502),
-  经 DB live `SELECT caller,error_type` 判定 6 行全属 hermes (all_tiers_exhausted 3 / NVStream_IncompleteRead 2 / stream_absolute_cap 1)。
-- fallback (cc_requests 30min) = **0 次 / 0.0%** (2026 request, 主链无 fallback 触发)。
+- 本轮 window 内 nv_requests 总 bad = 5 条 (502),
+  经 DB live `SELECT caller,error_type` 判定 5 行全属 hermes (NVStream_IncompleteRead 2 / all_tiers_exhausted 2 / stream_absolute_cap 1)。
+- fallback (cc_requests 30min) = **0 次 / 0.0%** (2021 request, 主链无 fallback 触发)。
 - 主链当前首代模型 = **dsv4f0731_nv**, 无 tier 降级/无 key 疲劳。
-- nv_tier_attempts: 各 key 大量 `pexec_success` (22-25), 偶发 `NVCFPexecRemoteDisconnected` (1-3/key)
-  + `NVCFPexecTimeout` (1/key), 全被 buffer 吸收, attempt=1 全成功, 未穿透 caller。
-- 本轮 6 bad 全属 hermes 越界宿主, 主链 host 分离干净, 无泄漏。
+- nv_tier_attempts: 各 key 大量 `pexec_success` (22-24), 偶发 `NVCFPexecRemoteDisconnected` (2-3/key)
+  + `NVCFPexecTimeout` (1/key), 全被 buffer 吸收, attempt=1 全成功 (elapsed 6-9s), 未穿透 caller。
+- 本轮 5 bad 全属 hermes 越界宿主, 主链 host 分离干净, 无泄漏。
 
 ### 本轮数据
 
 | 指标 | 值 | 状态 |
 |---|---|---|
-| 主 nv_gw(40006) cc4101-primary | **119/119 = 100% SR, 0 bad** (live 查询) | ✅ |
+| 主 nv_gw(40006) cc4101-primary | **117/117 = 100% SR, 0 bad** (live 查询) | ✅ |
 | 主链专属错误 (caller=cc4101-primary) | **0 rows** | ✅ |
-| nv_requests 总 bad (非 200) | 6 条 (502), 全属 hermes, 主链 0 | ✅(主链) |
-| 30min cc_requests | 2026 request, fallback 0 次 (0.0%) | ✅ |
+| nv_requests 总 bad (非 200) | 5 条 (502), 全属 hermes, 主链 0 | ✅(主链) |
+| 30min cc_requests | 2021 request, fallback 0 次 (0.0%) | ✅ |
 | 容器 | nv_gw/cc4101 Up 13h, dsv4p Up 2d, /health 全 200 | ✅ |
 
 ### 验证
-- docker exec logs_db psql: `SELECT caller,status,count(*) ... GROUP BY 1,2` → cc4101-primary 119 行全 200, 6 行 bad 全 caller=hermes。
-- `SELECT caller,error_type,status ... status!=200` → 6 行全 hermes (all_tiers_exhausted 3 / NVStream_IncompleteRead 2 / stream_absolute_cap 1)。
-- `SELECT count(*),sum(fallback_triggered) FROM cc_requests` → 2026/0 (0.0%)。
+- docker exec logs_db psql: `SELECT caller,status,count(*) ... GROUP BY 1,2` → cc4101-primary 117 行全 200, 5 行 bad 全 caller=hermes。
+- `SELECT caller,error_type,status ... status!=200` → 5 行全 hermes (NVStream_IncompleteRead 2 / all_tiers_exhausted 2 / stream_absolute_cap 1)。
+- `SELECT count(*),sum(fallback_triggered) FROM cc_requests` → 2021/0 (0.0%)。
 - health: 40006/4101/40066 全 200; 容器 nv_gw Up 13h, cc4101 Up 13h, dsv4p_nv40066 Up 2d。
 
 ### 关键判断
-cc2 主链路连续第 **128** 轮 (R893-R1020) 100% SR 干净, 主链专属错误 0 rows。
-本轮 6 条 bad (502) 归属全属 hermes 越界宿主 (all_tiers_exhausted 3 / NVStream_IncompleteRead 2 / stream_absolute_cap 1),
-经 caller 铁证与主链 host 分离完全干净 — 主链 119/119 全 200。
+cc2 主链路连续第 **129** 轮 (R893-R1021) 100% SR 干净, 主链专属错误 0 rows。
+本轮 5 条 bad (502) 归属全属 hermes 越界宿主 (NVStream_IncompleteRead 2 / all_tiers_exhausted 2 / stream_absolute_cap 1),
+经 caller 铁证与主链 host 分离完全干净 — 主链 117/117 全 200。
 fallback 0 次 (0.0%), 无新 cc2 主链错误类, 无持久 key 疲劳。
 multi-key round-robin + func_health + buffer (attempt=1 全成功) 完全吸收瞬态错误
 (偶发 RemoteDisconnected/Timeout), 未穿透到 caller, 已达稳态。
