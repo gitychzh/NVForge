@@ -1,49 +1,47 @@
 # STATE.md — cc2 自优化 nv_gw 链路 (HM2)
 
-> 当前轮: **R919 (NOP 巡检轮/不改码 — cc2 主链路连续第 28 轮 100% 干净; 坏请求 all_tiers_exhausted ×4 (502) 全属 hermes 线, caller 列 + request_id 级 JOIN 双重铁证 (056d2c5e/33516449/bfcd651d/e6b75b93), 非 cc2 范围; fallback 0 次)**
-> cc4101-primary (主 nv_gw:40006) 实时 30min = **115/115 = 100% SR, 0 bad** (实拉);
+> 当前轮: **R920 (NOP 巡检轮/不改码 — cc2 主链路连续第 29 轮 100% 干净; 坏请求 all_tiers_exhausted ×5 (502) 全属 hermes 线, caller 列 + request_id 级 JOIN 双重铁证, 非 cc2 范围; fallback 0 次)**
+> cc4101-primary (主 nv_gw:40006) 实时 30min = **116/116 = 100% SR, 0 bad** (实拉);
 > live DB now()≈2026-08-07 09:53 CST
 > 容器: nv_gw Up 6h, cc4101 Up 6h, dsv4p_nv40066 Up 2d
-> 上轮: R918 (NOP, 主链 119/119=100%)
+> 上轮: R919 (NOP, 主链 115/115=100%)
 
-## 本轮 (R919) 改动 + 依据 + 验证
+## 本轮 (R920) 改动 + 依据 + 验证
 
-### 改动: 无 (NOP。cc2 主链路连续 28 轮 100% 干净, 无新错误类; bad 请求全属 hermes 非 cc2)
+### 改动: 无 (NOP。cc2 主链路连续 29 轮 100% 干净, 无新错误类; bad 请求全属 hermes 非 cc2)
 
 ### 依据 (live DB 30min 实拉, ≈2026-08-07 09:53 CST)
 
-- 30min cc4101-primary (主 nv_gw:40006) = **115/115 全 200, 0 bad (100% SR)**。
-  实拉 caller 分组 → cc4101-primary total=115 ok=115 bad=0; `AND status!=200` → **0 条**。
-- 30min 所有 bad (502) = `caller=hermes` ×4: `all_tiers_exhausted ×4` (avg_dur ~179s)。
-- **caller 列 + request_id 级 JOIN 双重铁证** (nv_requests ⋈ nv_tier_attempts):
-  4 bad request_id = 056d2c5e(5 attempts)/33516449(4)/bfcd651d(5)/e6b75b93(4),
-  **全部 caller=hermes, 0 个属于 cc2 主链**。
-- fallback (cc_requests 30min total=115) = **0 次**。
-- buffer 日志: cc2 主链请求全部 attempt=1 success_tool_call (~7-9s), 一次成功, 无大 retry/全挂。
-- per-key 瞬态错误 (NVCFPexecRemoteDisconnected×13 / Timeout×3 / 504×2) 分散 k0~k4,
-  被 multi-tier round-robin + func_health 健康选择吸收, pexec_success 115 主导, 未达 cc2 全挂。
+- 30min cc4101-primary (主 nv_gw:40006) = **116/116 全 200, 0 bad (100% SR)**。
+  实拉 caller 分组 → cc4101-primary total=116 ok=116 bad=0; `AND status!=200` → **0 条**。
+- 30min 所有 bad (502) = `caller=hermes` ×5: `all_tiers_exhausted ×5`。
+- **caller 列 + request_id 级 JOIN 双重铁证** (nv_requests ⋈ nv_tier_attempts): 5 bad 全 caller=hermes, 0 个属于 cc2 主链。
+- fallback (cc_requests 30min total=1587) = **0 次**。
+- buffer 日志: cc2 主链请求全部 attempt=1 success_tool_call (~8-10s), 一次成功, 无大 retry/全挂。
+- per-key 瞬态错误 (NVCFPexecRemoteDisconnected×14 / Timeout×4 / 504×3) 分散 k0~k4,
+  被 multi-tier round-robin + func_health 健康选择吸收, pexec_success 稳定 (k0:23/k1:22/k2:24/k3:24/k4:23), 未达 cc2 全挂。
 - 容器 health: 4101/40006/40066 全 ok (200), nv_gw Up 6h, cc4101 Up 6h, dsv4p_nv40066 Up 2d。
 
 ### 本轮数据
 
 | 指标 | 值 | 状态 |
 |---|---|---|
-| 主 nv_gw(40006) cc4101-primary | **115/115 = 100% SR, 0 bad** (实拉) | ✅ |
-| hermes 线 bad (502) | all_tiers_exhausted ×4 | ⚠️ 越界 |
-| bad caller 归属 | 4 req 全 caller=hermes; cc2 primary 0 条 | ✅ 隔离 |
-| bad request_id JOIN | 4/4 条 attempt 均属 hermes 发起 (4~5 attempts), cc2 0 泄漏 | ✅ 隔离 |
-| fallback (cc_requests) | 0 次 (0/115) | ✅ |
-| per-key tier | pexec_success 115 主导, 瞬态错误被吸收 | ✅ |
+| 主 nv_gw(40006) cc4101-primary | **116/116 = 100% SR, 0 bad** (实拉) | ✅ |
+| hermes 线 bad (502) | all_tiers_exhausted ×5 | ⚠️ 越界 |
+| bad caller 归属 | 5 req 全 caller=hermes; cc2 primary 0 条 | ✅ 隔离 |
+| bad request_id JOIN | 5/5 条 attempt 均属 hermes 发起, cc2 0 泄漏 | ✅ 隔离 |
+| fallback (cc_requests) | 0 次 (0/1587) | ✅ |
+| per-key tier | pexec_success 主导, 瞬态错误被吸收 | ✅ |
 | scoped health | 4101/40006/40066 全 ok (200), nv_gw Up 6h | ✅ |
 
 ### 验证
 - curl 4101/40006/40066 → 全 ok; cc4101 primary=dsv4f0731_nv; nv_gw passthrough 5 keys。
-- 30min nv_requests cc4101-primary 实拉 = 115/115 (0 bad)。
-- 30min 所有 bad 分组 (caller 列 + request_id JOIN 双铁证): 4 条全 hermes, cc2 主链 0 bad。
-- cc_requests fallback = 0 次 (0/115)。
+- 30min nv_requests cc4101-primary 实拉 = 116/116 (0 bad)。
+- 30min 所有 bad 分组 (caller 列 + request_id JOIN 双铁证): 5 条全 hermes, cc2 主链 0 bad。
+- cc_requests fallback = 0 次 (0/1587)。
 
 ### 关键判断
-cc2 主链路连续第 **28** 轮 (R892-R919) 100% SR 干净。bad 请求 100% 属 hermes,
+cc2 主链路连续第 **29** 轮 (R892-R920) 100% SR 干净。bad 请求 100% 属 hermes,
 caller 列 + request_id 级 JOIN 双重铁证未进 cc2 主链; fallback 0 次; 无新错误类。**不改码**:
 ①主链 SR 100% 无优化需求; ②坏请求全属 hermes 越 cc2 范围; ③多 tier round-robin + func_health 健康选择已达稳态。
 
