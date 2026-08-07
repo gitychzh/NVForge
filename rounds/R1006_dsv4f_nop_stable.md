@@ -1,93 +1,87 @@
-# R1006: dsv4f0731_nv40666 — NOP (stable, no action needed)
+# R1006: dsv4f0731_nv — NOP (Stable, No Changes)
 
-**Date**: 2026-08-07 18:38 UTC
-**Container**: dsvf0731_nv40666 (port 40666, DeepSeek V4 Pro via NVCF)
-**Model**: dsv4f0731_nv
+**Date**: 2026-08-08 00:44 UTC  
+**Container**: dsvf0731_nv40666  
+**Target**: dsv4f0731_nv via NVCF pexec
 
-## Current Parameters (unchanged)
+## Current params (unchanged)
 
-| Parameter | Value |
-|-----------|-------|
+| Param | Value |
+|-------|-------|
 | UPSTREAM_TIMEOUT | 90 |
 | TIER_TIMEOUT_BUDGET_S | 180 |
-| NVU_TIER_BUDGET_DSV4F_NV | 180 |
+| TIER_COOLDOWN_S | 180 |
 | KEY_COOLDOWN_S | 30 |
-| TIER_COOLDOWN_S | 90 |
-| NVU_KEYMGR_429_BASE_COOLDOWN | 120 |
-| NVU_KEYMGR_429_MAX_COOLDOWN | 120 |
 | NVU_PEXEC_TIMEOUT_FASTBREAK | 3 |
 | NVU_EMPTY_200_FASTBREAK | 3 |
-| NVU_BUFFER_TIMEOUT_STAIRS | 90,90,90,90,90 |
-| NVU_PROBE_TIMEOUT | 10 |
+| NVU_KEYMGR_429_BASE_COOLDOWN | 120 |
+| NVU_KEYMGR_429_MAX_COOLDOWN | 120 |
+| NVU_KEYMGR_CONN_BASE_COOLDOWN | 30 |
+| NVU_KEYMGR_CONN_MAX_COOLDOWN | 60 |
+| NVU_KEYMGR_CONN_FAIL_THRESHOLD | 3 |
+| NVU_KEYMGR_CONN_LONG_COOLDOWN | 120 |
+| NVU_TIER_BUDGET_DSV4F0731_NV | 180 |
+| NV_KEY_INTEGRATE_KEYS | (empty) |
 
-## Data (30-min window, 18:08–18:38 UTC)
+## 30min data (00:14 - 00:44 UTC)
+
+**Overall**: 141 requests, 141 success (100% SR), 0 errors
 
 | Metric | Value |
 |--------|-------|
-| Total requests | 176 |
-| Success | 174 |
-| Failed | 2 |
-| **SR%** | **98.9%** |
-| Avg latency | 9826ms |
-| P50 latency | 8330ms |
-| P95 latency | 23102ms |
-| Max latency | 30379ms |
+| Success | 141/141 (100%) |
+| Avg/P50/P95 | 12858ms / 9414ms / 36604ms |
+| Max | 76988ms |
 | 429 count | 0 |
-| fallback_occurred | 0 |
-| all_tiers_exhausted | 0 (in window) |
+| key_cycle_429s: 0 | 14 |
+| key_cycle_429s: 1 | 125 |
+| key_cycle_429s: 2 | 2 |
 
-## Error Distribution
+**Per-key 200 latency**:
 
-| Error Type | Count | Avg elapsed |
-|------------|-------|-------------|
-| zombie_empty_completion | 2 | 3047ms |
+| Key | Req | Avg (ms) |
+|-----|-----|----------|
+| k0  | 28  | 12437    |
+| k1  | 28  | 12356    |
+| k2  | 29  | **16772**|
+| k3  | 26  | **8987** |
+| k4  | 30  | 13291    |
 
-Minimal errors — 2 `zombie_empty_completion` (empty 200 responses) on keys 0 and 2, both under 3s. Non-recurring, within normal noise.
+**Upstream type**: 100% nvcf_pexec (141/141)
 
-## Upstream Type
+**Finish reason**: 115 tool_calls, 26 stop
 
-- **nvcf_pexec**: 176/176 requests (100%) — no integrate routing active
+**Errors**: none (all categories empty)
 
-## Finish Reason
+**Fallback**: 0 — no hm4104 fallback logs
 
-- tool_calls: 145 (82.4%)
-- stop: 29 (16.5%)
-- (weighted shift ratio = tool_calls/stop ≈ 5:1 — expected for this model)
+## 6h trend
 
-## Per-Key Performance
+1754 total, 1740 success (99.2%), 14 errors
 
-| Key | Requests | Avg (ms) | P95 (ms) |
-|-----|----------|----------|----------|
-| 0 | 35 | 9536 | 17917 |
-| 1 | 32 | 8056 | 14623 |
-| 2 | 35 | 9716 | 27924 |
-| 3 | 36 | 10121 | 22122 |
-| 4 | 36 | 11867 | 24076 |
+Hourly:
+- 16:00 UTC: 200/200 (100%)
+- 15:00 UTC: 291/291 (100%)
+- 14:00 UTC: 293/294 (99.66%)
+- 13:00 UTC: 77/80 (96.25%)
 
-Key 2 has slightly elevated P95 (27.9s vs 14.6–24.1s range), but no errors on it in current window. Minor variance — no single key shows persistent degradation.
+24h all_tiers_exhausted: 136
 
-## Trends
+## Analysis
 
-- **6h SR**: 97.6% (1691/1733)
-- **3h hourly**: 98.7% → 98.6% → 96.5% → 98.0% — stable, no degradation
-- **24h all_tiers_exhausted**: 301 (across all tiers, not specific to this model)
-- **Fallback (hm4104)**: 0 fallback events in last 5min — model is healthy
+- **100% SR in current window** — the best possible state
+- **No 429s** — key management working well
+- **k2 has higher avg latency** (16772ms) vs others (8987-13241ms) but still well within budget
+- **No tier_attempts** — every request succeeded on the first tier
+- **Minor key cycling**: 125/141 requests cycled exactly 1 key (first key returned 429, second succeeded)
+- The 24h all_tiers_exhausted=136 suggests past pressure that has fully resolved
 
-## Assessment: NOP
+## Decision: NOP
 
-All indicators are green:
-1. **SR 98.9%** — well above 95% threshold
-2. **Zero 429s** — no rate limiting pressure
-3. **Zero pexec timeouts** — upstream stable
-4. **Zero integrate routing** — pexec is handling everything fine
-5. **Zero fallback** — hm4104 adapter sees no issues
-6. **Stable latency** — avg ~10s/P50 ~8s/P95 ~23s, consistent with NVCF pexec profile
-7. **No at-risk keys** — minor variance but no persistent failures
+No changes needed. System is in a healthy, stable state. k2's higher latency is noted but not causing failures. Will monitor for the next round.
 
-No parameter changes needed. The current configuration is working well.
+## Next round focus
 
-## Next Round Suggestion
-
-Monitor and re-evaluate in next cycle. If SR drops below 95% or new error types emerge, investigate:
-- `zombie_empty_completion` frequency increase → consider lowering `NVU_EMPTY_200_FASTBREAK` from 3 to 2
-- P95 latency creep above 30s → consider lowering `UPSTREAM_TIMEOUT` from 90 to 75 (matching P95 + buffer)
+Continue monitoring. If k2 latency persists or worsens relative to other keys, consider:
+- Moving k2 to integrate.api channel
+- Increasing KEY_COOLDOWN_S if per-key 429 rate increases
