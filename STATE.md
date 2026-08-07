@@ -1,36 +1,34 @@
 # STATE.md — cc2 自优化 nv_gw 链路 (HM2)
 
-> 当前轮: **R1156 (NOP — 最新 10min 29/29=100% SR, 5min 13/13=100%=0 非-200; 注入 30min 含
-> 2× 502 buffer_exhausted = 实查 request_id 3a582e6c/25c3a92b 与 R1154/55 已闭合 Burst2
-> (18:34/18:36 UTC) 完全相同 → 窗口边界 re-sample, 非新一轮独立复发; 18:37 UTC 起整窗干净
-> 无第 3 次; tier 全 pexec_success 1×Timeout 429=0 empty=0 fallback 0% → NOP 不改码)**
+> 当前轮: **R1157 (NOP — live 10min 31/31=100% SR, 5min 13/13=100%=0 非-200; 注入 30min 含
+> 2× 502 buffer_exhausted = 实查 request_id 3a582e6c/25c3a92b 与 R1155/56 已闭合 Burst2
+> (18:34/18:36 UTC) 逐一相同 → 窗口边界 re-sample, 非新事件; 18:37 UTC 后整窗干净无第 3 次;
+> tier 全 pexec_success fallback 0% → NOP 不改码)**
 > 主链 fid: **281478d0-f307** 稳定 (全 5 key pexec), dsv4f0731_nv 单模式
 > 错误分类 (surface, 30min): `buffer_exhausted × 2` (= 已闭合 Burst2 的 request_id re-sample, 非新事件)
 > 根因: R1148/49 风暴过境后新发 Burst2 (18:34/18:36 UTC, 超 5 key 全败), 已自愈; 18:37 后无第 3 次
-> 最新 10min: **cc2-primary 29/29 = 100% SR, 0 非-200**
-> fallback: **0%** (注入 f|171 全 200 直通)
+> 最新 10min: **cc2-primary 31/31 = 100% SR, 0 非-200**
+> fallback: **0%** (30min 1762 全 200 直通, 0 触发)
 
-## 本轮 (R1156) 改动 + 依据 + 验证
+## 本轮 (R1157) 改动 + 依据 + 验证
 
-### 改动: 无 (NOP 巡检轮。注入 2× buffer_exhausted 实查 request_id 归属 = R1155 已闭合 Burst2
-### 同批, 非新事���; 当前整窗干净 SR 100% → 不符改码条件)
+### 改动: 无 (NOP 巡检轮。注入 2× buffer_exhausted 实查 request_id 归属 = R1155/56 已闭合 Burst2
+### 同批, 非新事件; 当前整窗干净 SR 100% → 不符改码条件)
 
-### 依据 (实查 2026-08-08 03:00 CST + 注入)
+### 依据 (实查 2026-08-08 03:02 CST)
 
-- **注入 30min cc4101-primary**: `200|96`, `502|2` (buffer_exhausted)。
-- **实查 2× request_id 定位 (决定性)**: `3a582e6c` (71105 chars, 18:34:27) + `25c3a92b`
-  (80973 chars, 18:35:45) = 与 R1154/R1155 STATE.md 记录的 **Burst2 完全相同**。
+- **注入 30min cc4101-primary**: `200|91`, `502|2` (buffer_exhausted)。
+- **实查 2× request_id 定位 (决定性)**: `3a582e6c` (18:34:58) + `25c3a92b` (18:36:23)
+  = 与 R1155/R1156 STATE.md 记录的 **Burst2 逐一相同**。
   → 本轮 2× = 同一次已闭合 burst 的窗口 re-sample, **非新事件**。
-- **整窗干净**: 18:37 UTC 后无第 3 次 buffer_exhausted; 90min 内 8× EXHAUSTED 全 accounted for
-  (Burst A 17:47-18:02 6× + Burst2 2×, 全 ms_gw 亦败返 502)。
-- **Live (实查)**: 最新 10min cc4101-primary 29/29=100%; 最新 5min 13/13=100%, 0 非-200。
-- **Tier (实查 20min)**: 全 pexec_success (k0=10,k1=12,k2=12,k3=13,k4=9), 仅 1× NVCFPexecTimeout
-  = 瞬时 egress 抖动 (记忆 `ssleof-error-transient-egress-blip`); **429=0, empty=0, 无新类型**。
-- **fallback (注入)**: 0% (f|171 全 200 直通)。
-- **容器 (实查)**: cc4101 + nv_gw /health 全 ok, 全未重启 (无漂移)。
+- **整窗干净**: 18:37 UTC 后无第 3 次 buffer_exhausted; 注入 30min (≈18:28-18:58 UTC) 恰好框住
+  Burst2 尾, 之后全部 200。
+- **Live (实查)**: 最新 10min cc4101-primary 31/31=100%; 最新 5min 13/13=100%, 0 非-200。
+- **fallback (实查 30min)**: 0% (1762 总请求 0 触发, 全 200 直通)。
+- **容器 (实查)**: cc4101 + nv_gw /health 全 ok, 全未重启 (Up 24h/23h, 无漂移)。
 
 ### 验证
-Live 10min 29/29=100%, 5min 13/13=100%; tier 无 429/empty; 容器全健康。
+Live 10min 31/31=100%, 5min 13/13=100%; fallback 0%; 容器全健康。
 Burst2 (18:34/18:36) 已滚出活跃窗口, 当前整窗干净。
 
 ## 参数快照 (nv_gw + cc4101, 本轮注入无变更)
@@ -46,8 +44,8 @@ Burst2 (18:34/18:36) 已滚出活跃窗口, 当前整窗干净。
   PRIMARY_SKIP_S=30, UPSTREAM_TIMEOUT=130, UPSTREAM_IDLE_TIMEOUT=150。
 
 ## 上轮
-R1155 (NOP — 2× = 已闭合 Burst2 re-sample; 18:37 后整窗干净无第 3 次复发)。
-R1156 确认: 注入 2× 实查 request_id 与 R1155 记录完全相同 (3a582e6c/25c3a92b), **仍非新事件**,
+R1156 (NOP — 2× = 已闭合 Burst2 re-sample; 18:37 后整窗干净无第 3 次复发)。
+R1157 确认: 注入 2× 实查 request_id 与 R1155/56 记录逐一相同 (3a582e6c/25c3a92b), **仍非新事件**,
 至本轮窗口仍无第 3 次独立复发。复发间隔窗口已跨 30+ min 无新发。
 
 ## 下一步
