@@ -1,16 +1,8 @@
-# STATE.md — cc2 自优化 nv_gw 链路 (HM2)
+# R1032 cc2 NOP — cc2 primary 100% clean (116/116), scoped errors 0 rows; bad 2 hermes (502); fallback 0 (0/118); 140th clean round (R893-R1032)
 
-> 当前轮: **R1032 (NOP 巡检轮/不改码 — cc2 主链路连续第 140 轮 100% 干净; 主链专属错误 0 rows; fallback 0)**
-> cc4101-primary (主 nv_gw:40006) 实时 30min = **116/116 = 100% SR, 0 bad** (live 复核);
-> cc4101-primary 专属错误 = **0 rows** (116 request 全 200);
-> 容器: nv_gw Up 14h, cc4101 Up 13h, dsv4p_nv40066 Up 2d, /health 全 200
-> 上轮: R1031 (NOP, 主链 114/114=100%)
+## 改动: 无 (NOP。cc2 主链路连续第 140 轮 100% 干净, 主专属错误 0 rows; 本轮 window 内 2 条 bad 全属 hermes)
 
-## 本轮 (R1032) 改动 + 依据 + 验证
-
-### 改动: 无 (NOP。cc2 主链路连续第 140 轮 100% 干净, 主专属错误 0 rows; 本轮 window 内 2 条 bad 全属 hermes)
-
-### 依据 (live 复核 2026-08-07 17:16 CST + 注入轮前链路分析 17:15 CST)
+## 依据 (live 复核 2026-08-07 17:16 CST + 注入轮前链路分析 17:15 CST)
 
 - 30min cc4101-primary (主 nv_gw:40006) = **116/116 全 200 = 100% SR, 0 bad** (live `SELECT caller,status,count(*) ... GROUP BY 1,2`)。
 - 主链专属错误 (caller=cc4101-primary, status!=200) = **0 rows** (scoped 错误分组为空)。
@@ -22,7 +14,7 @@
   全被 multi-key round-robin + func_health + buffer 吸收, 未穿透 caller (tier 层 6 条非成功, caller 层主链 0 bad)。
 - buffer 日志: 全窗口主链请求 attempt=1 成功, 延迟 1-15s, 无重试/无 wait/无缓冲耗尽。
 
-### 本轮数据
+## 本轮数据
 
 | 指标 | 值 | 状态 |
 |---|---|---|
@@ -33,7 +25,7 @@
 | nv_tier_attempts 非成功 | RemoteDisconnected x4 / Timeout x1 / empty_200 x1 (全被吸收) | ✅ |
 | 容器 | nv_gw Up 14h, cc4101 Up 13h, dsv4p_nv40066 Up 2d, /health 40006/4101/40066 全 200 | ✅ |
 
-### 验证
+## 验证
 - docker exec logs_db psql: `SELECT caller,status,count(*) ... GROUP BY 1,2` → cc4101-primary 116 行全 200, 无 bad。
 - `SELECT caller,error_type,count(*) ... status!=200 GROUP BY 1,2` → 2 条 bad 全 caller=hermes, 主链专属错误 0 rows。
 - `SELECT count(*),sum(case when fallback_triggered then 1 else 0 end) FROM cc_requests` → 118/0 (0.0%)。
@@ -41,7 +33,7 @@
 - docker logs nv_gw --since 30m grep BUFFER- → 主链请求全 attempt=1 success, elapsed 1-15s, 无重试。
 - health: 40006/4101/40066 全 200; 容器 nv_gw Up 14h, cc4101 Up 13h, dsv4p_nv40066 Up 2d。
 
-### 关键判断
+## 关键判断
 cc2 主链路连续第 **140** 轮 (R893-R1032) 100% SR 干净, 主链专属错误 0 rows。
 本轮 2 条 bad (502) 归属全属 hermes 越界宿主, 经 caller 铁证与主链 host 分离完全干净 — 主链 116/116 全 200。
 fallback 0 次 (0.0%), 无新 cc2 主链错误类, 无持久 key 疲劳。
@@ -53,10 +45,3 @@ multi-key round-robin + func_health + buffer (attempt=1 大多成功) 完全吸�
 ## 下一步
 - 保持 NOP 观察, 主链 dsv4f0731_nv 为首代, 无需参数改动。
 - 后续窗口继续确认 hermes 越界 bad (502) 是否持续与主链隔离 (caller JOIN)。
-
-## 容器健康
-- nv_gw Up 14h, cc4101 Up 13h, dsv4p_nv40066 Up 2d; /health 40006/4101/40066 全 200。
-- 配置快照: PRIMARY_UPSTREAM_MODEL=dsv4f0731_nv, nv_gw nv_default_model=glm5_2_nv,
-  NVU_DISABLE_MS_FALLBACK=0, NVU_BUFFER_MAX_RETRIES=5, KeyManager 429 120s-600s 退避,
-  ProbeWorker 15s, WaitQueue max 120s, nv_breaker mid-stream 软挂→OPEN。
-  deadline 链: 90s×5=450s buffer < 470s cc4101 < 600s API < 900s idle。ms_gw fallback 保持不禁用。
