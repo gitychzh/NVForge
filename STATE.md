@@ -1,50 +1,54 @@
 # STATE.md — cc2 自优化 nv_gw 链路 (HM2)
 
-> 当前轮: **R1058 (NOP 巡检轮/不改码 — cc2 主链路连续第 166 轮 100% 干净; 主链专属错误 0 rows; fallback 0 次)**
-> cc4101-primary (主 nv_gw:40006) 实测 30min = **104/104 = 100% SR, 0 bad**;
-> cc4101-primary 专属错误 = **0 rows** (scoped 错误分组唯一 status=200);
-> nv_requests 总 bad = 2 (zombie_empty_completion×2 502), 全属 hermes 越界宿主 (caller JOIN);
-> fallback (cc_requests 30min) = **0 次 / 0.0%** (总 105, 主链 105/105 全 200);
-> 容器 (/health 复核): nv_gw Up 15h, cc4101 Up 15h, /health 40006/4101 全 200
-> 上轮: R1057 (NOP, 主链 109/109=100%)
+> 当前轮: **R1060 (NOP 巡检轮/不改码 — 主链 99.0% (101/102), 唯一 scoped bad 溯源为瞬时网络 SSL EOF 瞬态; 主链 main fid 281478d0 零错误; fallback 0 次)**
+> cc4101-primary (主 nv_gw:40006) 实测 30min = **101/102 = 99.0% SR, 1 scoped bad**;
+> 唯一 scoped 502 = req ec39dd9b (buffer_exhausted, 58949ms): 3 连 SSLEOFError (3 个不同 key/IP) + ms_gw 同步 down, **瞬时自愈**;
+> nv_tier_attempts main fid 281478d0 = k0-k4 全 pexec_success, **0 错误**; 2×RemoteDisconnected 均在坏 fid 52e1ddb6 (hermes 宿主);
+> nv_requests 总 bad = 4 (1 主链瞬时 + 3 hermes zombie/NVStream 全 fid 52e1ddb6);
+> fallback (cc_requests 30min) = **0 次 / 0.0%** (总 1959, 全 200);
+> 容器 (/health 复核): nv_gw Up 16h, cc4101 Up 15h, /health 40006/4101 全 200
+> 上轮: R1059 (NOP, 主链 103/103=100%)
 
-## 本轮 (R1058) 改动 + 依据 + 验证
+## 本轮 (R1060) 改动 + 依据 + 验证
 
-### 改动: 无 (NOP。cc2 主链路连续第 166 轮 100% 干净, 主链专属错误 0 rows; 本轮 window 内 2 条 bad 全属 hermes)
+### 改动: 无 (NOP。唯一 scoped bad 为瞬时 SSLEOFError 瞬态, 非配置/码缺陷, 自愈后立即恢复; 无参数可调)
 
-### 依据 (注入轮前链路分析 18:55 CST + caller JOIN 复核 2026-08-07)
+### 依据 (注入轮前链路分析 19:03 CST + DB/容器日志复核 2026-08-07)
 
-- 30min cc4101-primary (主 nv_gw:40006) = **104/104 全 200 = 100% SR, 0 bad**
-  (caller JOIN 复核实测: cc4101-primary total=104, ok=104, status 唯一 200 — 无任何非 200)。
-- 主链专属错误 (caller=cc4101-primary, status!=200) = **0 rows**。
-- 本轮 window 内 nv_requests 总 bad = 2 条 (zombie_empty_completion ×2, 502), caller JOIN
-  实测归属 **hermes** (hermes total=36, ok=34, non200=502), cc4101-primary 无任何非 200。
-- 30min 按模型 SR = **dsv4f0731_nv SR=98.6% (137/139)** — 唯二 bad 即 hermes 越界 502, 主链无关。
-- fallback (cc_requests 30min, 实测) = **0 次 / 0.0%** (总 105, 主链 105 请求全 200)。
-- 主链当前首代模型 = **dsv4f0731_nv** (cc4101.PRIMARY_UPSTREAM_MODEL), 无 tier 降级/无 key 疲劳。
-- nv_tier_attempts (dsv4f0731_nv, 30min) = k0-k4 全 pexec_success (23/18/23/19/20, 另 k3 一条 empty_200) — 无 tier 层致命错误。
-- 30min nv_gw buffer/wait/keymanager 日志: 无缓冲吸收需要 (无 buffer/wait 日志, 全 attempt=1 直接 success)。
-- /health 实测: 40006/4101 全 200; 容器 nv_gw Up 15h, cc4101 Up 15h。
+- 30min cc4101-primary (主 nv_gw:40006) = **101/102 = 99.0% SR, 1 scoped bad**
+  (注入总览: cc4101-primary|dsv4f0731_nv|200|100 + 502|1)。102 中唯一非 200 = req ec39dd9b。
+- 唯一 scoped 502 根因 (buffer 日志铁证): attempt1/2/3 在 19:01:37 / 19:01:47 / 19:02:02 各于不同 key
+  不同出口 IP (dist :7899 / :7901 / :7894) 连续撞 SSLEOFError (UNEXPECTED_EOF_WHILE_READING)。
+  3 连续 all_keys_exhausted → AKE fail-fast 正确触发 (≥3, CLOSED) 跳过 WaitQueue, duration=58949ms 而非
+  耗尽 450s; 转向 ms_gw fallback 但 **ms_gw 同时刻 fail** → 才 502。19:02:27 起下一条 200 自愈。
+- 主链 main fid **281478d0** nv_tier_attempts (30min) = k0-k4 全 pexec_success (23/21/19/20/20), **0 错误**。
+  nv_tier_attempts 另 2 条 NVCFPexecRemoteDisconnected (k1/k2) 均在**坏 fid 52e1ddb6** → hermes 越界宿主, 非主链。
+- nv_requests 总 bad = 4: 1 主链瞬时 (ec39dd9b) + 3 hermes (zombie_empty_completion×2 502, NVStream_IncompleteRead×1 502,
+  全部 fid 52e1ddb6)。hermes bad 与主链 host 分离 (request_id JOIN volleids), 非 cc2 范围。
+- SSLEOFError 背景: 近 60min 共 40 次, 呈 ~3min 均匀散布 (18:09~19:04), **低频常态噪声**非偶发;
+  40 次中 39 次被单次 retry+5s backoff 吸收 (aec9cb4a/45c75a11 attempt2 成功), 仅 ec39dd9b 因 3 连撞 + ms 同步 down 落成 502。
+- fallback (cc_requests 30min, 实测) = **0 次 / 0.0%** (总 1959, 1959/1959 全 200)。
+- /health 实测: 40006/4101 全 200; 容器 nv_gw Up 16h, cc4101 Up 15h。
 
 ### 本轮数据
 
 | 指标 | 值 | 状态 |
 |---|---|---|
-| 主 nv_gw(40006) cc4101-primary | **104/104 = 100% SR, 0 bad** | ✅ |
-| 主链专属错误 (caller=cc4101-primary) | **0 rows** | ✅ |
-| nv_requests 总 bad (非 200) | 2 条 (zombie_empty_completion 502), 全属 hermes, 主链 0 | ✅(主链) |
-| 30min cc_requests | fallback 0 次 (0.0%), 总 105 全 200 | ✅ |
-| 30min 按模型 SR | dsv4f0731_nv 98.6% (137/139), 2 bad 属 hermes | ✅ |
-| nv_tier_attempts (dsv4f0731_nv) | k0-k4 全 pexec_success (23/18/23/19/20, 另 k3 一条 empty_200), 无 tier 致命错误 | ✅ |
-| buffer | 全 attempt=1 success, 零重试 | ✅ |
-| 容器 | nv_gw Up 15h, cc4101 Up 15h, /health 40006/4101 全 200 | ✅ |
+| 主 nv_gw(40006) cc4101-primary | **101/102 = 99.0% SR, 1 scoped bad** | ⚠️(1 瞬时) |
+| 主链 scoped 错误 | 1 (ec39dd9b buffer_exhausted 502 58949ms) — 瞬时, 已自愈 | ⚠️→自愈 |
+| 主链 main fid 281478d0 nv_tier_attempts | k0-k4 全 pexec_success (23/21/19/20/20), 0 错误 | ✅ |
+| nv_tier_attempts 2×RemoteDisconnected | 均在坏 fid 52e1ddb6 (hermes 宿主) | ✅(非主链) |
+| nv_requests 总 bad | 4 (1 主链瞬时 + 3 hermes zombie/NVStream 全 fid 52e1ddb6) | ✅(主链自愈) |
+| 30min cc_requests | fallback 0 次 (0.0%), 总 1959 全 200 | ✅ |
+| 容器 | nv_gw Up 16h, cc4101 Up 15h, /health 40006/4101 全 200 | ✅ |
 
 ## 下一步
-- 保持 NOP 观察, 主链 dsv4f0731_nv 首代, 参数稳态无可调。
-- 持续确认 hermes 越界 bad (zombie_empty_completion/502) 与主链 host 分离 (caller JOIN)。
-- 关注偶发 RemoteDisconnected 是否演成持久疲劳 (单 key 连续多轮 100% 失败再考虑 KEY_FID_BIND 换 fid)。
+- 保持 NOP 观察。跟踪 SSLEOFError 是否从"低频常态 (~3min 1 组)"演成"高密度持续" (若 >10 次/10min 且
+  同窗口多个请求 502, 才排查 egress/proxy 出向 mihomo)。
+- 继续确认 hermes 越界 bad (52e1ddb6) 与主链 host 分离 (request_id JOIN)。
+- 单 key 连续多轮 100% 失败才考虑 KEY_FID_BIND 换 fid; 当前 281478d0 100% 干净, 无此需。
 
-## 参数快照 (2026-08-07, 与上轮 R1057 一致, 未动)
+## 参数快照 (2026-08-07, 与上轮 R1059 一致, 未动)
 - cc4101: PRIMARY_UPSTREAM_URL=http://nv_gw:40006/v1/messages, PRIMARY_UPSTREAM_MODEL=dsv4f0731_nv,
   FALLBACK_UPSTREAM_URL=http://ms_gw:40007/v1/chat/completions, FALLBACK_UPSTREAM_MODEL=glm5_2_ms,
   CC4101_STREAM_TOTAL_DEADLINE_S=470, PRIMARY_HEADER_TIMEOUT=400, CC4101_PRIMARY_FAIL_THRESHOLD=3, CC4101_PRIMARY_SKIP_S=30,
