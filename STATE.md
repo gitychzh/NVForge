@@ -1,8 +1,8 @@
 # STATE.md — cc2 自优化 nv_gw 链路 (HM2)
 
 > 当前轮: **R939 (NOP 巡检轮/不改码 — cc2 主链路连续第 47 轮 100% 干净; 坏请求 all_tiers_exhausted ×2 (502) 全属 hermes 线, caller 列实拉铁证, 非 cc2 范围; fallback 0 次)**
-> cc4101-primary (主 nv_gw:40006) 实时 30min = **108/108 = 100% SR, 0 bad** (实拉);
-> cc4101-primary 专属错误 30min = **0 rows** (108 request 全 200);
+> cc4101-primary (主 nv_gw:40006) 实时 30min = **110/110 = 100% SR, 0 bad** (实拉);
+> cc4101-primary 专属错误 30min = **0 rows** (110 request 全 200);
 > 容器: nv_gw Up 7h, cc4101 Up 7h, nv_gw_stable Up 5d(并存)
 > 上轮: R937 (NOP, 主链 109/109=100%) — 注 R938 号被 hm1 optimize 文件占用
 
@@ -12,7 +12,7 @@
 
 ### 依据 (live DB 30min 实拉 ≈2026-08-07 CST)
 
-- 30min cc4101-primary (主 nv_gw:40006) = **108/108 全 200, 0 bad (100% SR)**。
+- 30min cc4101-primary (主 nv_gw:40006) = **110/110 全 200, 0 bad (100% SR)**。
 - 30min **cc4101-primary 专属错误 = 0 rows** (status != 200 AND caller='cc4101-primary' 全空)。
 - 30min 所有 bad (502) = `caller=hermes` ×2: `all_tiers_exhausted ×2`。
 - **caller 列实拉铁证**: 2 bad 全 caller=hermes, 0 个属于 cc2 主链 (host-separated)。
@@ -24,7 +24,7 @@
 
 | 指标 | 值 | 状态 |
 |---|---|---|
-| 主 nv_gw(40006) cc4101-primary | **108/108 = 100% SR, 0 bad** (实拉) | ✅ |
+| 主 nv_gw(40006) cc4101-primary | **110/110 = 100% SR, 0 bad** (实拉) | ✅ |
 | 主链专属错误 (caller=cc4101-primary) | **0 rows** | ✅ |
 | hermes 线 bad (502) | all_tiers_exhausted ×2 | ⚠️ 越界 |
 | bad caller 归属 | 2 req 全 caller=hermes; cc2 primary 0 条 | ✅ 隔离 |
@@ -34,7 +34,7 @@
 
 ### 验证
 - curl 4101/40006/40066 → 全 ok (200)。
-- 30min nv_requests cc4101-primary 实拉 = 108/108 (0 bad); 专属错误 0 rows。
+- 30min nv_requests cc4101-primary 实拉 = 110/110 (0 bad); 专属错误 0 rows。
 - 30min 所有 bad 分组 (caller 列铁证): 2 条全 hermes, cc2 主链 0 bad。
 - cc_requests fallback = 0 次。
 - nv_gw buffer 日志全 attempt=1 成功。
