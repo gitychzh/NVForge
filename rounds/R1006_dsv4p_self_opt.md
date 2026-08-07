@@ -1,58 +1,84 @@
-# R1006: 清空 dsv4p_nv integrate 路径 (NV_KEY_INTEGRATE_KEYS)
+# R1006: dsv4f0731_nv40666 NOP 轮 — 状态健康，无参数修改
 
-**日期**: 2026-08-03  
-**容器**: dsv4p_nv40066 (port 40066, DeepSeek V4 Pro via NVCF)  
-**主机**: HM2 (opc2sname)
+**日期**: 2026-08-07 13:40 (Asia/Shanghai)
+**容器**: dsvf0731_nv40666 (port 40666, DeepSeek V4 Pro via NVCF)
+**决策**: **NOP** — SR>95%, 无 fallback, 0 429, 错误分布均匀，不需要改参数
 
-## 修改
+## 数据依据
 
-| 参数 | 旧值 | 新值 | 生效方式 |
-|------|------|------|---------|
-| `NV_KEY_INTEGRATE_KEYS` | `dsv4p_nv:3` | `(空)` | docker compose up -d (recreate) |
+### 30min 窗口 (13:10-13:40)
+- **Total**: 123 | **Success**: 121 | **Failed**: 2 → **SR = 98.37%**
+- **Avg**: 17,638ms | **P50**: 9,593ms | **P95**: 44,025ms | **P99**: 161,739ms
+- **429 计数**: 0
+- **Finish reason**: tool_calls=99, stop=22 (81.8% tool calls — 编程/工具负载)
+- **upstream_type**: 全部 pexec (123/123)，无 integrate 流量
 
-## 依据
+### 错误分类 (30min)
+- `all_tiers_exhausted` × 1 (179,103ms)
+- `stream_absolute_cap` × 1 (168,353ms)
 
-### 30min 窗口 (采集时)
-- 总请求: 68, 成功: 59, SR=86.8% (请求级)
-- **tier_attempts 显示全部 28 次尝试均失败**:
-  - `nv_integrate` k2: 21 次, **0% SR**
-    - `IntegrateRemoteDisconnected`: 20 次 (avg 46,869ms)
-    - `429_integrate_rate_limit`: 1 次
-  - `nvcf_pexec`: 7 次, **0% SR**
-    - `NVCFPexecRemoteDisconnected`: 7 次 (avg 32,013ms)
-    - `429_nv_rate_limit`: 1 次
-    - `NVCFPexecTimeout`: 1 次 (90,455ms)
+### Per-key 延迟 (30min, 来自脚本)
+| Key | Req | Avg | P95 |
+|-----|-----|-----|-----|
+| k0 | 23 | 12,070ms | 31,445ms |
+| k1 | 25 | 13,413ms | 40,146ms |
+| k2 | 21 | 10,576ms | 19,832ms |
+| k3 | 26 | 12,660ms | 34,571ms |
+| k4 | 26 | **25,300ms** | **136,110ms** |
 
-### 6h 趋势 (integrate 路径)
-- `nv_integrate` 总计 42 次, **0% SR**
-  - `IntegrateRemoteDisconnected`: 27 次 (avg 48,585ms)
-  - `429_integrate_rate_limit`: 12 次
-- `nvcf_pexec` 总计 97 次, 0% SR (但请求级 SR=92.5% = 764/826, 说明 pexec tier_attempts 记录的是失败重试, 成功请求不在此表)
+k4 avg=25.3s 是其他 key 的 ~2x, P95=136s 显著偏高。但 k4 **无错误** (成功但慢)。
 
-### 根因分析
-- `NV_KEY_INTEGRATE_KEYS=dsv4p_nv:3` 指定 key3 (1-based = key_idx 2, 0-based) 走 integrate.api 路径
-- integrate 路径 6h 内 **0% 成功率** (42 次全失败), 原因:
-  1. `IntegrateRemoteDisconnected` (27次): integrate.api.nvidia.com 远程断连, avg 48s — 接近 UPSTREAM_TIMEOUT=90 但先被远端断开
-  2. `429_integrate_rate_limit` (12次): key3 上的 integrate 路径限流
-- key3 走 integrate 全部失败后回退到 pexec, 但此过程浪费 ~48s (integrate 超时) + key cooldown 时间
-- 5-key pool 实质只有 4 key 有效 (k3 的 integrate lane 完全失效)
+### Per-key 错误 (1h, nv_tier_attempts)
+```
+k0: pexec_success=45, RemoteDisconnected=4, Timeout=2
+k1: pexec_success=42, RemoteDisconnected=6
+k2: pexec_success=42, RemoteDisconnected=9, empty_200=1
+k3: pexec_success=49, RemoteDisconnected=9, empty_200=2
+k4: pexec_success=42, RemoteDisconnected=7
+```
+- 主要错误 `NVCFPexecRemoteDisconnected` (35/1h) 在各 key **均匀分布** (4/6/9/9/7) → NVCF 端普遍瞬时断连，非单 key 问题
+- 30min 内 2 个失败事件 (all_tiers_exhausted, stream_absolute_cap) 均在 k0
 
-### 与 nv_gw R2057 对齐
-nv_gw 容器在 R2057 (hermes2 R5) 已清空 `NV_KEY_INTEGRATE_KEYS` — 同样发现 dsv4p_nv integrate lane 每次 429, 浪费 3.2s+90s cooldown, 5-key pool 变 4-key. 本次变更使 dsv4p_nv40066 与 nv_gw 保持一致策略: dsv4p_nv **全走 pexec DIRECT**.
+### 趋势
+- **6h**: 1657 total, 1613 success → SR=97.34%, 44 fallback (2.66%)
+- **3h 逐小时**: 每时 SR≥97.5%, fallback=0
+- **24h all_tiers_exhausted**: 371 (~1.5%) — 但 30min 仅 1 次，分布不均匀
+- **tier_attempts**: 30min 空 — 所有请求首轮 key 循环即成功，无 tier-level 重试
 
-## 预期效果
-1. 消除 integrate 路径的 0% SR 浪费 (6h 内 42 次全失败的无效尝试)
-2. k3 回归 pexec RR 轮转, 5-key pool 恢复完整
-3. 减少 `IntegrateRemoteDisconnected` 错误 (当前 30min 占 33% 错误)
-4. 减少 `all_tiers_exhausted` (由 integrate 浪费 budget 引起的 tier 耗尽)
-5. 请求级 SR 从 86.8% → 预期 >95% (消除 integrate 失败的拖累)
+### Fallback
+- hm4104 最近 5min **无 fallback**
+- 30min nv_requests: 126 total, 0 fallback
+
+## 诊断结论
+1. **SR 优秀 (98.37%)** — 无需调超时/冷却
+2. **0 429** — 429 管理正常
+3. **全部 pexec** (NV_KEY_INTEGRATE_KEYS=空) — 无 integrate 流量，无需调 integrate 参数
+4. **NVCFPexecRemoteDisconnected 均匀分布** — 是 NVCF 端瞬时断连，不是单 key 代理问题，非本机可控
+5. **k4 延迟偏高但无错误** — 值得下一轮观察，但不足以触发参数修改（可能为 NVCF 端/负载因素）
+
+## 参数状态 (未修改，保持当前)
+```
+KEY_COOLDOWN_S=30
+TIER_COOLDOWN_S=90
+TIER_TIMEOUT_BUDGET_S=180
+UPSTREAM_TIMEOUT=90
+MIN_OUTBOUND_INTERVAL_S=5
+NVU_KEYMGR_429_BASE_COOLDOWN=120
+NVU_KEYMGR_429_MAX_COOLDOWN=120
+NVU_KEYMGR_CONN_BASE_COOLDOWN=30
+NVU_KEYMGR_CONN_MAX_COOLDOWN=60
+NVU_KEYMGR_CONN_FAIL_THRESHOLD=3
+NVU_KEYMGR_CONN_LONG_COOLDOWN=120
+NVU_PEXEC_TIMEOUT_FASTBREAK=3
+NVU_EMPTY_200_FASTBREAK=3
+NVU_TIER_BUDGET_DSV4F0731_NV=180
+NV_KEY_INTEGRATE_KEYS=(空)
+```
 
 ## 验证
-- `/health`: OK (status=ok, nv_num_keys=5, port=40066)
-- `NV_KEY_INTEGRATE_KEYS=` 确认已清空
-- 容器状态: Up, recreate 成功
+- /health: status=ok, nv_num_keys=5, nvcf_pexec_models 5 个
+- 容器 Up 20 hours
 
-## 下一步
-- 下轮验证: 确认 integrate 错误归零, pexec SR 是否提升
-- 关注: `NVCFPexecRemoteDisconnected` 是否仍存在 (可能是 NVCF 端问题)
-- 若 pexec SR 恢复正常, 考虑降低 `UPSTREAM_TIMEOUT` (当前 90s 过高, NVCFPexecTimeout 的 90,455ms 说明有死连接)
+## 下一步建议
+1. 持续观察 k4 延迟 — 若 k4 avg 持续 >2x 且 P95>130s 保持多窗口，考虑将 k4 移出 pexec 轮转或调整其代理 mihomo 7895
+2. 观察 NVCFPexecRemoteDisconnected 是否持续升高 — 若单 key 集中于某 key，则指向该 key 代理问题
