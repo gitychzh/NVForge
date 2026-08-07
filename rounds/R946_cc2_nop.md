@@ -1,27 +1,27 @@
-# STATE.md — cc2 自优化 nv_gw 链路 (HM2)
+# R946 cc2 NOP 巡检轮 (HM2 nv_gw 主链路)
 
-> 当前轮: **R946 (NOP 巡检轮/不改码 — cc2 主链路连续第 54 轮 100% 干净; 坏请求 all_tiers_exhausted ×3 + stream_absolute_cap ×1 + zombie_empty_completion ×1 全属 hermes 线, caller 列归属非 cc2 范围; fallback 0 次; zombie 连续第 6 轮保持单例未扩散)**
-> cc4101-primary (主 nv_gw:40006) 实时 30min = **124/124 = 100% SR, 0 bad** (live 实拉);
-> cc4101-primary 专属错误 30min = **0 rows** (124 request 全 200);
-> 容器: nv_gw Up 8h, cc4101 Up 8h, nv_gw_stable Up 5d(并存), dsv4p_nv40066 Up 2d
-> 上轮: R945 (NOP, 主链 125/125=100%)
+> 轮次: R946 | 日期: 2026-08-07 CST | 类型: NOP (不改码)
+> 结论: cc2 主链路连续 **54** 轮 100% 干净 (R893→R946);
+> cc4101-primary 30min = **124/124 = 100% SR, 0 bad** (live 实拉);
+> cc4101-primary 专属错误 = **0 rows**; 坏请求全属 hermes 线, 未进 cc2 主链; fallback = 0 次。
 
-## 本轮 (R946) 改动 + 依据 + 验证
+## 改动
 
-### 改动: 无 (NOP。cc2 主链路连续 54 轮 100% 干净, 主专属错误 0 行; bad 请求全属 hermes 非 cc2; zombie_empty_completion 连续第 6 轮保持单例)
+无 (NOP。主链 100% 干净 + 专属错误 0 行, 无新错误类, bad 全越界 hermes)。
 
-### 依据 (live DB 30min 实拉 ≈2026-08-07 11:24 CST)
+## 依据 (live DB 30min 实拉 ≈2026-08-07 11:24 CST)
 
-- 30min cc4101-primary (主 nv_gw:40006) = **124/124 全 200, 0 bad (100% SR)** (live re-pull)。
+- 30min cc4101-primary (主 nv_gw:40006) = **124/124 全 200, 0 bad (100% SR)** (live re-pull 确认)。
 - 30min **cc4101-primary 专属错误 = 0 rows** (status != 200 AND caller='cc4101-primary' 全空)。
-- 30min 所有 bad (非 200) = `caller=hermes` ×5: `all_tiers_exhausted ×3` + `stream_absolute_cap ×1` + `zombie_empty_completion ×1`。
-- bad 请求 100% 属 hermes (caller 列归属, host-separated), 0 个属于 cc2 主链。
-- zombie_empty_completion 连续第 6 轮保持 **1** (R941 首现 1 → R946 连续第 6 轮保持 1, 越界 hermes 不构成 cc2 风险)。
-- fallback (cc_requests 30min) = **0 次** (143 req, fb=0, SR=100.0%)。
-- nv_tier_attempts 30min: pexec_success (k0:24/k1:24/k2:26/k3:25/k4:24) + NVCFPexecRemoteDisconnected (k0:4/k1:1/k2:5/k3:3/k4:3) + NVCFPexecTimeout (k1:1/k4:2) + empty_200 (k1:2/k3:1)。瞬态错误被多 tier round-robin + buffer 重试吸收, 全部 resolve 为 200。
+- 30min 所有 bad (非 200) = 全 `caller=hermes` ×5: `all_tiers_exhausted ×3` + `stream_absolute_cap ×1` + `zombie_empty_completion ×1`。
+- bad 请求 100% 属 hermes (caller 列归属, host-separated), 0 个进入 cc2 主链。
+- zombie_empty_completion 保持 **1** (R941 首现 1 → R946 连续第 6 轮保持 1, 稳定未扩散, 越界 hermes 不构成 cc2 风险)。
+- fallback (cc_requests 30min) = **0 次** (143 req, fb=0, SR=100.0)。
+- nv_tier_attempts 30min: pexec_success (k0:24/k1:24/k2:26/k3:25/k4:24) 主导 + NVCFPexecRemoteDisconnected (k0:4/k1:1/k2:5/k3:3/k4:3) + NVCFPexecTimeout (k1:1/k4:2) + empty_200 (k1:2/k3:1)。
+  瞬态错误被多 tier round-robin + buffer 重试吸收, 全部 resolve 为 200 (主链 0 bad)。
 - buffer 日志: cc4101-primary 全 attempt=1 成功, 无 WAIT-/KEY- 错误。
 - 容器 health: 4101/40006/40066 全 ok (200)。
-- 容器 UP: nv_gw 8h (与 R945 持平, 平稳, 无重启回归), cc4101 8h, dsv4p_nv40066 2d, nv_gw_stable 5d(并存)。
+- 容器 UP: nv_gw 8h (与 R945 持平, 平稳, 非重启回归), cc4101 8h, dsv4p_nv40066 2d, nv_gw_stable 5d(并存)。
 
 ### 本轮数据
 
@@ -40,7 +40,7 @@
 ### 验证
 - curl 4101/40006/40066 → 全 ok (200)。
 - 30min nv_requests cc4101-primary live re-pull = 124/124 (0 bad); 专属错误 0 rows。
-- 30min 所有 bad 分组 (caller 列归属): 全 hermes, cc2 主链 0 bad。
+- 30min 所有 bad 分组 (caller 列归属带 request_id convention): 全 hermes, cc2 主链 0 bad。
 - cc_requests fallback = 0 次。
 - docker logs nv_gw buffer 段: cc4101-primary 全 attempt=1 success, 无错误噪音。
 
@@ -60,8 +60,3 @@ zombie_empty_completion 连续第 6 轮保持单例 (R941→R946), 未扩散, �
 2. dsv4f0731_nv 一次成功 (主链已用健康 fid 281478d0), 用户无感知
 3. 多 tier round-robin + func_health fid 健康选择自适应吸收底层跨 key/fid 瞬态失败
 4. 坏 fid 52e1ddb6 (hermes 宿主) 与主链健康 fid 281478d0 容器+候选池双层隔离
-
-## 下一步
-- 继续 NOP 巡检; 下轮重拉 30min 窗口。
-- 若 cc4101-primary 专属错误 > 0 或 SR < 99%, 先找根因再小步改 (铁律 1/2)。
-- 观察 hermes 线 zombie_empty_completion 是否扩散 (0 泄漏进 cc2 即无行动)。
