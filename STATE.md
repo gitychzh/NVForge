@@ -1,37 +1,34 @@
 # STATE.md — cc2 自优化 nv_gw 链路 (HM2)
 
-> 当前轮: **R1158 (NOP — 注入 30min cc4101-primary 200|86, 502|2 buffer_exhausted; 决定性根证
-> `non200_since_18_37 = 0` = 自 Burst2 后零新增非-200, 2× = R1157 已闭合 Burst2 (18:34:59/18:36:24)
-> 的窗口 re-sample 非新事件; Burst2 彻底滚出; live 10min 全 200 SR=100%; tier 仅 pexec_success+1×
-> NVCFPexecTimeout 非新类型; buffer attempt-1 direct flush 全成功无 exhaust; → NOP 不改码)**
+> 当前轮: **R1159 (NOP — 注入 30min cc4101-primary 200|94 = 100% SR, 0 非-200; 总线 dsv4f0731_nv
+> SR=99.3% (150/151) 唯 1× 502 归属 hermes (NVStream_IncompleteRead, req d6130cae, 18:59 UTC)
+> 非 cc2、非新类型; tier 全 pexec_success 无 429/empty; fallback 0%; buffer 无事件;
+> 整窗干净跨两轮稳定 → NOP 不改码)**
 > 主链 fid: **281478d0-f307** 稳定 (全 5 key pexec), dsv4f0731_nv 单模式
-> 错误分类 (surface, 30min): `buffer_exhausted × 2` (= 已闭合 Burst2 的 re-sample, 非新事件)
-> 根因: R1148/49 风暴过境后新发 Burst2 (18:34/18:36 UTC, 超 5 key 全败), 已彻底自愈滚出
-> 最新 10min (18:56-19:06 UTC): **cc2-primary 全 200 = 100% SR, 0 非-200**
-> fallback: **0%** (注入 f|145 全 200 直通, 0 触发)
+> 错误分类 (surface, 30min): `NVStream_IncompleteRead × 1` (= 归属 hermes, 非 cc2, 瞬时 egress 抖动)
+> 根因: Burst2 彻底滚出后链路静稳, 唯一错误 CARJIT 归属 hermes 非 cc2
+> 最新 30min (02:40-03:10 CST): **cc2-primary 全 200 94/94 = 100% SR, 0 非-200**
+> fallback: **0%** (注入 f|151 全 200 直通, 0 触发)
 
-## 本轮 (R1158) 改动 + 依据 + 验证
+## 本轮 (R1159) 改动 + 依据 + 验证
 
-### 改动: 无 (NOP 巡检轮。注入 2× buffer_exhausted 实查 = R1157 已闭合 Burst2 同批, 非新事件;
-### 决定性根证 non200_since_18_37=0 自 Burst2 后零新错 → 不符改码条件)
+### 改动: 无 (NOP 巡检轮。cc2 整窗 94/94 全 200 无改码条件)
 
-### 依据 (实查 2026-08-08 03:06 CST)
+### 依据 (实查 2026-08-08 03:10 CST)
 
-- **注入 30min cc4101-primary**: `200|86`, `502|2` (buffer_exhausted, avg_dur 34814ms)。
-- **最终非-200 (limit 5)**: `18:34:59 buffer_exhausted`, `18:36:24 buffer_exhausted`,
-  `18:02:46/18:01:12/17:58:38 all_tiers_exhausted` (R1148 风暴带, 已滚出)。
-  → 2× buffer_exhausted 与 R1157 记录 Burst2 request_id (3a582e6c/25c3a92b) 同时间戳逐一匹配。
-- **决定性根证**: `SELECT count(*) ... created_at > '2026-08-07 18:37:00+00'` = **0**。
-  → Burst2 之后 (18:37 UTC 起) 到本轮窗口尾 (19:06 UTC) **零新增非-200**, 事件彻底闭合。
-- **Live (实查)**: 最新 10min (18:56-19:06 UTC) 15/15 全 200, 0 非-200。SR=100%。
-- **tier (实查 30min)**: 仅 `pexec_success × 89` + `NVCFPexecTimeout × 1` (单个瞬时, 非新类型),
+- **注入 30min cc4101-primary**: `200|94` = 100% SR, 0 非-200。
+- **注入 30min 总线**: `dsv4f0731_nv SR=99.3% (150/151)`; cc4101-primary 94, hermes 56+1×502。
+- **实查错误归属**: 唯一 `NVStream_IncompleteRead` (request d6130cae, 18:59:58 UTC, fid 281478d0)
+  **caller = hermes**, 非 cc2 请求。瞬时 egress 抖动, 非配置漂移、非新类型。
+- **tier (实查 30min)**: 全 `pexec_success` (key0=19, key1=17, key2=20, key3=20, key4=18),
   无 429/empty/新类型。
-- **buffer (实查日志)**: 最新 3 req 全 attempt-1 direct flush 成功 (elapsed 6-14s), 无 exhaust、无 WAIT。
-- **容器 (实查)**: nv_gw + cc4101 /health 全 ok, 未重启。
+- **fallback**: 0 触发 (30min f|151 全 200 直通)。
+- **buffer 日志**: 无 (无 buffer 事件、无 WAIT、无退避日志)。
+- **容器 (实查)**: nv_gw + cc4101 /health 全 ok, 未重启。nv_gw 5 key 全 bind fid 281478d0。
 
 ### 验证
-Live 10min 全 200 SR=100%; non200_since_18_37=0 决定性根证; buffer attempt-1 全成功无 exhaust;
-容器全健康; fallback 0% (全 200 直通)。Burst2 已彻底滚出活跃窗口。
+cc2 (cc4101-primary) 30min 94/94 = 100% SR, 0 非-200; 唯一错误 JOIN 归属 hermes 非 cc2;
+tier 全 pexec_success 无新类型; fallback 0%; buffer 无事件; 容器全健康。链路稳定无改码条件。
 
 ## 参数快照 (nv_gw + cc4101, 本轮注入无变更)
 
@@ -46,13 +43,12 @@ Live 10min 全 200 SR=100%; non200_since_18_37=0 决定性根证; buffer attempt
   PRIMARY_SKIP_S=30, UPSTREAM_TIMEOUT=130, UPSTREAM_IDLE_TIMEOUT=150。
 
 ## 上轮
-R1156 (NOP) → R1157 (NOP — 注入 2× 实查 = 已闭合 Burst2 re-sample; 18:37 后整窗干净无第 3 次)。
-R1158 确认: 注入 2× (18:34:59/18:36:24) 与 R1157 记录的 Burst2 时间戳逐一匹配 **仍非新事件**;
-决定性根证 non200_since_18_37=0, Burst2 彻底滚出, 跨 30+ min 无任何新发。
+R1158 (NOP — Burst2 彻底滚出, non200_since_18_37=0, 整窗干净) → R1159 确认: 整窗 94/94 全 200,
+递延干净, 唯一错误归属 hermes (NVStream_IncompleteRead, d6130cae) 非 cc2。链路跨两轮全绿无新事件。
 
 ## 下一步
 维持静稳观察。**核心监控: 是否重现独立瞬时 burst 及复发间隔**。
-复发链参考: R1148/49 storm (17:47-18:02) → Burst2 (18:34/18:36, 间隔 ~32min)。
+Burst2 后已跨 30+ min 无任何新发, 穿越两轮 (R1158→R1159) 整窗全绿。
 若下个窗口再现 ≥2× buffer_exhausted 且 request_id 全新 (非 3a582e6c/25c3a92b), 则为**独立新事件**,
 按记忆 `ssleof-error-transient-egress-blip` 深挖 mihomo dsv4f0731_nv egress 线路 (7900-7904),
 评估超 5 key 超大请求 (>70K chars) buffer 首跳韧性。当前仍判定瞬时 egress 抖动非配置漂移, NOP。
