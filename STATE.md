@@ -1,52 +1,53 @@
 # STATE.md — cc2 自优化 nv_gw 链路 (HM2)
 
-> 当前轮: **R896 (NOP 巡检轮/不改码 — cc2 主链路连续第 5 轮 100% 干净; 本轮 JOIN 铁证坏 fid 52e1ddb6 仍 100% 归属 hermes 线, 非 cc2 范围; 40666 越界容器已不在 docker ps)**
-> cc4101-primary (主 nv_gw:40006) 实时 30min = **134/134 = 100% SR, 0 bad**;
-> nv_tier_attempts JOIN nv_requests 裁决: cc4101-primary 134× pexec_success 全 fid=281478d0,
-> 坏 fid 52e1ddb6 27 条失败 (RemoteDisconnected/Timeout/504/529/empty_200) **100% 归属 hermes caller**;
-> 主 nv_gw pexec 全程 fid=281478d0 (健康), buffer 全程 attempt=1/5 即 success_tool_call (7-12s)。
-> live DB now()≈2026-08-07 00:20 UTC (08:20 CST)
-> 上轮: R895 (NOP, 主链 137/137=100%)
+> 当前轮: **R897 (NOP 巡检轮/不改码 — cc2 主链路连续第 6 轮 100% 干净; JOIN 铁证坏 fid 52e1ddb6 仍 100% 归属 hermes 线, 非 cc2 范围)**
+> cc4101-primary (主 nv_gw:40006) 实时 30min = **126/126 = 100% SR, 0 bad**;
+> nv_tier_attempts JOIN nv_requests 裁决: cc4101-primary 126× pexec_success 全 fid=281478d0,
+> 坏 fid 52e1ddb6 21 条失败 (RemoteDisconnected 16/Timeout 3/504 2) **100% 归属 hermes caller**;
+> 主 nv_gw pexec 全程 fid=281478d0 (健康), buffer 全程 attempt=1/5 即 success_tool_call (7-10s)。
+> 上轮: R896 (NOP, 主链 134/134=100%)
 
-## 本轮 (R896) 改动 + 依据 + 验证
+## 本轮 (R897) 改动 + 依据 + 验证
 
-### 改动: 无 (NOP。cc2 主链路连续 5 轮 100% 干净, 无新错误类; 本轮起用 request_id JOIN 铁证确认坏 fid 归属)
+### 改动: 无 (NOP。cc2 主链路连续 6 轮 100% 干净, 无新错误类; JOIN 铁证持续确认坏 fid 归属 hermes 非 cc2)
 
-### 依据 (live DB now()≈2026-08-07 00:20 UTC)
+### 依据 (live DB 30min, ≈2026-08-07 08:30 CST)
 
-- 30min cc4101-primary (主 nv_gw:40006) = **134/134 全 200, 0 bad (100% SR)**。
-  实拉 `WHERE status!=200 AND caller='cc4101-primary'` → 0 条。
-- 【本轮核心铁证】`nv_tier_attempts JOIN nv_requests ON request_id` (tier_attempts 无 caller 列):
-  - cc4101-primary | dsv4f0731_nv | **281478d0 | pexec_success ×134** → 主链 100% 成功, 0×52e1ddb6。
-  - hermes | dsv4f0731_nv | **52e1ddb6 | 失败 ×27** (RemoteDisconnected 21, Timeout 3, 504 1, 529 1, empty_200 1)。
-- buffer 日志 (07:50→08:19 CST): 全 caller=cc4101-primary attempt=1/5 即 success_tool_call, elapsed 7~12s,
-  done=True, closed=False, 0 重试 / 0 cooldown / 0 429。
+- 30min cc4101-primary (主 nv_gw:40006) = **126/126 全 200, 0 bad (100% SR)**。
+- 【核心铁证】`nv_tier_attempts JOIN nv_requests ON request_id`:
+  - cc4101-primary | dsv4f0731_nv | **281478d0 | pexec_success ×126** (k0~k4 各 23~27) → 主链 100% 成功, 0×52e1ddb6。
+  - hermes | dsv4f0731_nv | **52e1ddb6 | 失败 ×21** (RemoteDisconnected 16, Timeout 3, 504 2)。
+- buffer 日志: cc4101-primary 全 attempt=1/5 `success_tool_call`, elapsed 7~10s, done=True closed=False,
+  0 重试 / 0 cooldown / 0 429。
 - 30min nv_requests bad (6): hermes|502|all_tiers_exhausted ×6 (全带 52e1ddb6)。cc4101-primary 0 bad。
-- **新观察**: `docker ps` 已无 dsvf0731_nv40666 容器 (越界坏-fid 源疑似停止; 30min 内 hermes bad 为窗口前半段残留)。
-  不影响 cc2 主链 SR (host 分离 + join 铁证 0×52e1ddb6)。
+- **⚠️ 新观察 (vs R896)**: R896 时 dsvf0731_nv40666 已不在 docker ps (疑似停)。本轮 `docker ps`
+  显示 **dsvf0731_nv40666 Up 15 hours** (又回来) → R896 "泄漏源疑似自愈" 判断不成立, 40666 仍活动。
+  hermes 线 bad 持续与 40666 归来吻合。**但 40666 越界 (非 40006/40066), 泄漏 100% host 分离,
+  join 铁证 0×52e1ddb6 进 cc2 主链, 不改码。**
 
 ### 本轮数据
 
 | 指标 | 值 | 状态 |
 |---|---|---|
-| 主 nv_gw(40006) cc4101-primary | **134/134 = 100% SR, 0 bad** | ✅ |
-| 主 nv_gw pexec 成功 fid | 134/134 全 281478d0, 0×52e1ddb6 (join 铁证) | ✅ |
-| buffer (cc4101-primary) | 全 attempt=1/5 success_tool_call, 7-12s, 0 重试 | ✅ |
-| hermes 线 bad (52e1ddb6) | 失败 ×27 (含 all_tiers_exhausted ×6) | ⚠️ 越界 |
+| 主 nv_gw(40006) cc4101-primary | **126/126 = 100% SR, 0 bad** | ✅ |
+| 主 nv_gw pexec 成功 fid | 126/126 全 281478d0, 0×52e1ddb6 (join 铁证) | ✅ |
+| buffer (cc4101-primary) | 全 attempt=1/5 success_tool_call, 7-10s, 0 重试 | ✅ |
+| hermes 线 bad (52e1ddb6) | 失败 ×21 (all_tiers_exhausted ×6) | ⚠️ 越界 |
 | 存留 scoped 容器 health | 4101/40006/40066 全 ok | ✅ |
-| dsvf0731_nv40666 | 已不在 docker ps (越界源疑似停) | 👀 观察 |
+| dsvf0731_nv40666 | **Up 15 hours (归来, R896 判断自愈不成立)** | 👀 观察 |
 | fallback (cc2 线) | 0 次 | ✅ |
 
 ### 验证
 - curl 4101/40006/40066 → 全 ok; cc4101 primary=dsv4f0731_nv。
-- 30min nv_requests cc4101-primary 实拉 = 134/134 (0 bad)。
+- 30min nv_requests cc4101-primary 实拉 = 126/126 (0 bad)。
 - 30min nv_tier_attempts + JOIN nv_requests = 主链 281478d0 全成功, 52e1ddb6 全属 hermes。
 
 ### 关键判断
-cc2 主链路连续 5 轮 (R892 139/139, R893 153/153, R894 143/143, R895 137/137, R896 134/134) 100% SR 干净。
-本轮新增 JOIN 铁证: 坏 fid 52e1ddb6 的 27 条失败全属 hermes caller (越界 40666 泄漏), 未进 cc2 主链候选池。
-**不改码**: ①主链 SR 100% 无优化需求; ②52e1ddb6 越 cc2 范围 (40666 非 40006/40066); ③40666 容器已停,
-hermes 线泄漏疑似自愈。下轮验证 hermes bad 是否归零。
+cc2 主链路连续 6 轮 (R892 139/139, R893 153/153, R894 143/143, R895 137/137, R896 134/134,
+**R897 126/126**) 100% SR 干净。坏 fid 52e1ddb6 失败持续 100% 属 hermes caller (越界 40666 泄漏),
+未进 cc2 主链候选池。
+**不改码**: ①主链 SR 100% 无优化需求; ②52e1ddb6 越 cc2 范围 (40666 非 40006/40066);
+③容器级分离持续奏效, cc2 主链不受污染。
 
 ## 修复链 (沿用, R827+R828+R829+R833+R813 + R869+R876+R891)
 1. glm5_2_nv 全 key 疲劳 → R829/R833 fail-fast + cc4101 动态 primary → dsv4f0731_nv
@@ -57,7 +58,7 @@ hermes 线泄漏疑似自愈。下轮验证 hermes bad 是否归零。
 - `curl localhost:4101/health` → ok ✅ (cc4101, primary=dsv4f0731_nv)
 - `curl localhost:40006/health` → ok ✅ (nv_gw, passthrough, 5 keys)
 - `curl localhost:40066/health` → ok ✅ (dsv4p_nv40066)
-- `docker ps` → cc4101 / nv_gw / dsv4p_nv40066 / nv_gw_stable 全 Up (40666 已不在)
+- `docker ps` → cc4101 / nv_gw / dsv4p_nv40066 / nv_gw_stable / **dsvf0731_nv40666 (Up 15h)** 全 Up
 
 ## 参数快照 (env, 本轮未改)
 - nv_gw(40006): NVU_DISABLE_MS_FALLBACK=0, UPSTREAM_TIMEOUT=90, NVU_FORCE_STREAM_UPGRADE=0,
@@ -73,6 +74,6 @@ hermes 线泄漏疑似自愈。下轮验证 hermes bad 是否归零。
 - deadline 链: 90s×5=450s buffer < 470s cc4101 < 600s API < 900s idle
 
 ## 下一步
-- 主链 cc2 连续 5 轮 100% 干净, 下轮预期维持 NOP。
-- **优先监控**: ①主链 dsv4f0731 rotation 持续只出 281478d0 (0 bad 保持); ②40666 容器是否确已停,
-  hermes 线 52e1ddb6 泄漏是否归零 (下轮 hermes bad 若清零 → 泄漏根治确认)。
+- 主链 cc2 连续 6 轮 100% 干净, 下轮预期维持 NOP。
+- **优先监控**: ①主链 dsv4f0731 rotation 持续只出 281478d0 (0 bad 保持); ②40666 容器持续存活 →
+  hermes 线 52e1ddb6 泄漏持续 (不属 cc2; 若污染进 40006/40066 候选池再介入, 目前 join 铁证 0 泄漏)。
