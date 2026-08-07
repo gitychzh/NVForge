@@ -1,40 +1,28 @@
-# STATE.md — cc2 自优化 nv_gw 链路 (HM2)
+# R1136 cc2 NOP 巡检轮 — 2026-08-08
 
-> 当前轮: **R1136 (NOP 巡检轮/不改码 — 30min 主链零表面错误 (错误分类空), cc2-primary
-> 200|113=100% SR, 全 caller dsv4f0731_nv 139/139=100.0%; tier 错误仅 empty_200 1× (k1)
-> + RD 3× (k0/k2/k4) 共 4 次, 单点分布式 transient self-heal, 低频下沉稳态,
-> fallback 0% (114 行 0 触发), buffer 无 WAIT/无新 exhaust)**
-> cc4101-primary (主 nv_gw:40006) 实测 30min = **0 行非-200** — 主链全绿
-> 非-200 归属: **无 (0 行, 全 caller)** — 零表面错误
-> fallback: 0% (30min cc_requests 114 行 fallback_triggered=0, 未走 ms_gw)
-> tier 错误: 30min empty_200 1× (k1) + NVCFPexecRemoteDisconnected 3× (k0/k2/k4), 共 4 次,
-> 各 key/time 分散单点 self-heal 未上浮 (低频下沉稳态, 延续 [[ssleof-error-transient-egress-blip]])
-> buffer: 新窗口无 WAIT/无新 exhaust/无 keymanager 日志 (direct flush 稳态)
-> 容器 (/health 实测 2026-08-08 session): nv_gw 200 (5 key, pexec 5 模型), cc4101 200 (primary dsv4f0731_nv)
-> 上轮: R1135 (NOP, 主链零表面错误 100% SR)
+## 结论: NOP (不改码)
 
-## 本轮 (R1136) 改动 + 依据 + 验证
+30min 主链**零表面错误** (错误分类空), cc2-primary 200|113 = **100% SR**,
+全 caller dsv4f0731_nv **139/139 = 100.0%**。tier 非-success 仅 empty_200 1× (k1)
++ NVCFPexecRemoteDisconnected 3× (k0/k2/k4) 共 **4 次**分布式单点 self-heal 未上浮,
+仍处低频下沉稳态 (较 R1135 的 2 次略增但无 multi-key 连续复发)。fallback 0%,
+无 buffer/WAIT 日志。cc2 范围无配置回归。
 
-### 改动: 无 (NOP。30min 全 caller 零表面错误 (错误分类空), cc2-primary 200|113 = 100% SR,
-### 全 caller dsv4f0731_nv 139/139 = 100.0%。tier 错误仅 4 次非-success (k1 empty_200
-### + k0/k2/k4 各 1× RD), 分布式单点 self-heal 未上浮, 低频下沉稳态 (较 R1135 的 2 次
-### 略增但无同 key 连续复发)。fallback 0%, buffer 无异常日志。cc2 范围无配置回归 → 不改码)
-
-### 依据 (本 session 轮前注入 + 实查 2026-08-08)
+## 依据 (本 session 轮前注入 + 实查 2026-08-08)
 
 - **30min cc2-primary (nv_requests 实查)**: `200|113` = **0 行非-200, 100% SR** — 主链全绿。
 - **30min 错误分类 (实查)**: **空 (139 行全 200)** — 无 surface 错误。
 - **30min 全 caller SR (注入)**: dsv4f0731_nv `139/139 = 100.0%` (cc4101-primary 113 + hermes 26)。
 - **30min nv_tier_attempts 非-success (注入)**: empty_200 1× (k1) + NVCFPexecRemoteDisconnected 3×
   (k0/k2/k4 各 1×), 共 4 次, 各 key/time 分散单点 self-heal, 无 multi-key 连续复发, 未上浮 surface。
-  低频下沉稳态 (延续 [[ssleof-error-transient-egress-blip]]; R1133 5×RD+2×empty、R1134 2 次、
+  处于低频下沉稳态 (延续 [[ssleof-error-transient-egress-blip]]; R1133 5×RD+2×empty、R1134 2 次、
   R1135 2 次、本轮 4 次, 均未连续复发同 key)。
 - **buffer 日志 (实查)**: 无 WAIT、无新 exhaust、无新 keymanager 日志 — direct flush 稳态。
 - **fallback (实查)**: 30min cc_requests 114 行, fallback_triggered 0 = **0%** — 未触发 ms_gw。
 - **容器 /health (实查)**: nv_gw 200 (proxy_role passthrough, 5 key, pexec 5 模型),
   cc4101 200 (primary dsv4f0731_nv, port 4101) — 全链路健康。
 
-### 本轮数据
+## 本轮数据
 
 | 指标 | 值 | 状态 |
 |---|---|---|
