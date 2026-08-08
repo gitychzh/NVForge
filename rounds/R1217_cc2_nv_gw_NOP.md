@@ -1,37 +1,31 @@
-# STATE.md — cc2 自优化 nv_gw 链路 (HM2)
+# R1217 cc2 nv_gw — NOP 巡检轮 (SR 100%, 0 错误, fallback 0%)
 
-> 当前轮: **R1217 (NOP — SR 100%, 0 错误, fallback 0%, 防御链按设计工作)**
-> 主链 fid: **281478d0-f307** 稳定, dsv4f0731_nv 单模式 (active 流量)
-> 错误分类 (活查 30min, 08:xx CST): 空 (无 buffer_exhausted / stream_total_deadline / 其他)
-> 根因: 无新根因; k2 NVCFPexecRemoteDisconnected 为 attempt 级瞬时抖动, 重试自愈到 200
-> 最新窗口: 30min cc2-primary 200|95, cc_requests 全 200 fallback 0%, dsv4f0731_nv 全量 163/163 SR 100%
-> 容器: nv_gw /health ok (5 keys + dsv4f0731_nv fid 281478d0-f307), cc4101 ok, ms_gw ok
+> 轮: R1217  |  日期: 2026-08-08  |  容器: nv_gw /health ok (5 keys, dsv4f0731_nv 单模式)
+> 主链 fid: 281478d0-f307 稳定, dsv4f0731_nv 单模式 (active 流量)
+> 上一轮: R1216 (NOP — SR 100%, 0 错误, fallback 0%)
 
-## 本轮 (R1217) 改动 + 依据 + 验证
+## 判定: NOP — 无改码条件
 
-### 改动: 无 (NOP 巡检轮。SR 100% + 无请求级错误, mihomo 升级监控条件不触发, 不改码不查 mihomo)
+## 依据 (轮前注入链路分析 + 活查确认)
 
-### 依据 (轮前注入链路分析 + 活查确认, 2026-08-08 CST)
-
-- **30min cc2-primary (nv_requests)**: `200|95`, **无 502/4xx** → SR=**100% (95/95)**
-  (活查确认)。请求级 0 错误。
+- **30min cc2-primary (nv_requests)**: 活查 `200|95`, **无 502/4xx** → SR=**100% (95/95)**。
 - **30min 错误分类 (活查)**: 空 (0 rows) → 无 buffer_exhausted / stream_total_deadline / 其他。
-- **dsv4f0731_nv 全量 (含 hermes 68)**: 163/163 SR=**100%** (注入快照: 95+68, 活查 95 核实)。
+- **30min 注入全量 dsv4f0731_nv**: 163/163 SR=**100%** (含 hermes 68)。
 - **fallback**: 0% (注入 f|164 → 0 fallback_triggered)。
-- **per-key tier** (nv_tier_attempts 活查): k2 NVCFPexecRemoteDisconnected×1 → 其余全
-  pexec_success (k0 19/k1 20/k3 18/k4 20), 均为 attempt 级瞬时抖动, 被重试自愈到 status 200,
-  非净新增 (与 R1212-R1216 同签名链路单点瞬抖)。
+- **per-key tier** (nv_tier_attempts 活查): k2 NVCFPexecRemoteDisconnected×1, 其余全
+  pexec_success (k0 18/k1 20/k3 18/k4 19) → 均为 attempt 级瞬时抖动, 被重试自愈到 status 200,
+  非净新增 (与 R1212-R1216 同签名的链路单点瞬抖)。
 - **buffer 日志 (活查)**: 连续多请求 attempt=1 即 success_text/success_tool_call
   (如 e53d52b6 1s success_text, c5f6ca70 18s success_tool_call, 5e97ea7b 8s success_tool_call)。
   无 WAIT- 阻塞, 无 buffer_exhausted, 无 multi-attempt execute_failed 重试。
-- **mihomo 升级监控条件 (R1206/R1207 收紧) 判定**: 无真实新失败 (请求级 0 错) + SR=100% ≥ 99% →
-  条件不满足, mihomo 隧道检查继续延后。触发条件: **后续轮次出现真实新失败 (非上轮 request_id) + SR<99%**。
-- **容器健康**: nv_gw /health ok (5 keys + pexec_models 含 dsv4f0731_nv, fid 281478d0-f307),
-  cc4101 ok, ms_gw ok, logs_db ok。参数与 R1216 一致 → 非配置回归。
+- **mihomo 升级监控条件 (R1206/R1207 收紧) 判定**: 无真实新失败 (请求级 0 错) + SR=100% ≥ 99%
+  → 条件不满足, mihomo 隧道检查继续延后。触发条件: **后续轮次出现真实新失败 (非上轮 request_id) + SR<99%**。
+- **容器健康 (活查)**: nv_gw /health ok (5 keys + pexec_models 含 dsv4f0731_nv), cc4101 ok,
+  ms_gw ok。参数与 R1216 一致 (见参数快照), 无重配置迹象 → 非配置回归。
 
-### 验证
+## 验证
 活查 30min cc2-primary 95/95 (0 错误), dsv4f0731_nv 全量 163/163 SR 100%、fallback 0%;
-容器 health ok、参数无漂移。k2 1 次 attempt 级 RemoteDisconnected 为瞬时抖动被重试自愈到 200,
+容器 health ok、参数无漂移。k2 1 次 RemoteDisconnected 为 attempt 级瞬时抖动被重试自愈到 200,
 无任何净新增。
 → 无改码条件, NOP。
 
