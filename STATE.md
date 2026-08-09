@@ -1,19 +1,15 @@
 # STATE.md — cc2 自优化 nv_gw 链路 (HM2)
 
-> 当前轮: **R1240 (NOP 巡检轮 — cc2-primary 100% (60/60), 0 失败; 唯一失败聚类 = hermes 线 3 条 (NVStream_IncompleteRead / all_tiers_exhausted / zombie_empty_completion, 全 out-of-scope), 不改码)**
-> 主链 fid: **281478d0-f307** 稳定, dsv4f0731_nv 单模式 (active 流量)
-> 全 caller (30min): `200|83`+`502|3` → dsv4f0731_nv SR=97.6% (83/86)。
-> **cc4101-primary (cc2 主链) = 200|60 → SR=100%, 本轮 0 失败**。
-> 连 6 窗 cc2-primary 100% 健康延续 (R1235-R1240 NOP)。唯一 3 条错误全属 hermes 线:
-> 1) all_tiers_exhausted×1 (~179s, req 937fe7b2 同 R1238/R1239 画像, 同一 hermes 请求 5key 瞬挂)
-> 2) zombie_empty_completion×1 (44s, hermes dsv4f0731_nv 线已知特症, 新出现 error type)
-> 3) NVStream_IncompleteRead×1 (35s, hermes transient R1154 容忍带内)
-> 全非共享 NVCF jitter (cc2 同窗 60 次全成功), out-of-scope, NOP 自愈即可。
-> per-key k0~k4 全 bind fid 281478d0-f307, tier transient 全属 hermes 请求, cc2 请求无 tier error。
-> fallback 0%。buffer 正常 (cc2 全 attempt-1 success, 唯一 986af010 k2 execute_failed attempt-2 自愈, 无 exhausted)。
-> 容器 health ok (nv_gw 5 keys, cc4101 primary=dsv4f0731_nv)。
+> 当前轮: **R1245 (内容改动 — 用户指定重设链路: primary=dsv4f0731_nv@40666, fallback=glm5_2_nv@40006; 端到端两链路实测 200 OK 生效)**
+> 主链 fid: **281478d0-f307** (dsv4f0731_nv), 现经 **dsvf0731_nv40666 容器** (40666) 而非 nv_gw(40006)
+> **链路 (R1245)**: cc → cc4101 (4101) → primary `dsvf0731_nv40666:40666/v1/messages` (dsv4f0731_nv, fid 281478d0) ✅ 200 (1.4-2.6s)
+> fallback → `nv_gw:40006/v1/messages` (glm5_2_nv) ✅ 200 (73.5s 慢但兜底)
+> 原 primary (nv_gw:40006 dsv4f0731) → 降为 fallback; 原 fallback (ms_gw:40007 glm5_2_ms) → 移除。
+> **改前数据锚点**: 40666 dsv4f0731 0.7-3.1s / 40006 glm5.2 78-104s; dsv4p_nv 已 EOL (NVCF 410 Gone 2026-08-07)。
+> 端到端验证: 停 40666 触发 conn fail → 自动 fallback 40006 glm5_2 200; 恢复后 primary 回 40666 200。
+> fallback 触发率待观察 (40666 健康时应 <5%)。容器 health ok (4101 / 40006 / 40666 全 ok)。
 
-## 本轮 (R1240) 改动 + 依据 + 验证
+## 本轮 (R1245) 改动 + 依据 + 验证
 
 ### 改动: 无 (NOP)。cc2-primary SR=100% (60/60), 0 失败; 唯一错误聚类 = hermes 线 3 条
 ### (NVStream_IncompleteRead / all_tiers_exhausted / zombie_empty_completion, 全 out-of-scope),
