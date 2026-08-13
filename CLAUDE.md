@@ -36,13 +36,13 @@ names kept for the rest):**
 
 | Port | Container | Role |
 |---|---|---|
-| 40006 | `nv_gw` | NV gateway (optimization target) — NVCF pexec/integrate, per-key SOCKS5/直连; default model `glm5_2_nv` |
+| 40006 | `nv_gw` | NV gateway (optimization target) — NVCF pexec/integrate, per-key SOCKS5/直连; default model `dsv4f0731_nv` |
 | 40666 | `dsvf0731_nv40666` | **live primary** dsv4f0731 dedicated container (R-dsv4f-0731) — integrate path, 1M context |
 | 40066 | `dsv4p_nv40066` | dsv4p dedicated container (HM2) |
 | 40005 | `nv_gw_stable` | HM2 stable nv_gw fallback (R40005) — independent KeyManager, takes over when 40006 all-key cooldown |
 | 40007 | `ms_gw` | MS gateway (backup) — ModelScope, 2D key×variant rotation |
 | 5432  | `logs_db` | postgres `hermes_logs` DB (nv_requests, ms_requests, nv_tier_attempts, cc_requests) |
-| 4101  | `cc4101` | CC's own adapter — anthropic→openai, primary `nv_gw`/`dsv4f0731_nv`, fallback `ms_gw`/`glm5_2_ms` (R805; primary model R-dsv4f-0731) |
+| 4101  | `cc4101` | CC's own adapter — anthropic→openai. **Per-host primary**: HM1 `glm5_2_nv` (intentional, R1249), HM2 `dsv4f0731_nv` (R-dsv4f-0731). Fallback both `ms_gw`/`glm5_2_ms` (R580) |
 | 4102  | `cx4102` | opencode adapter (same `cc-adapter` image) |
 | 4103  | `opclaw4103` | openclaw adapter — does primary→ms_gw fallback on nv_gw 502 |
 | 4104  | `hm4104` | hermes adapter |
@@ -51,8 +51,10 @@ names kept for the rest):**
 `nv_gw`/`ms_gw` are the shared upstreams for all four adapters. Each adapter (`cc-adapter`
 image) converts anthropic-format requests to openai-format and points at `nv_gw` (primary) +
 `ms_gw` (fallback). CC's own config (`~/.claude/settings.json`) sets
-`ANTHROPIC_BASE_URL=http://127.0.0.1:4101` — i.e. CC runs the **same `dsv4f0731_nv`/`glm5_2_ms`**
-chain as the agents, not a separate glm5.1 chain.
+`ANTHROPIC_BASE_URL=http://127.0.0.1:4101` (env block, overrides the stale `40001` in
+`~/.bashrc`/`~/.profile` — see Gotchas). CC runs the **same `nv_gw`/`ms_gw`** chain as the
+agents: on HM1 the primary model is `glm5_2_nv` (user-confirmed, R1249), on HM2 it is
+`dsv4f0731_nv` (R-dsv4f-0731). Fallback on both hosts is `ms_gw`/`glm5_2_ms`.
 
 ## Repo layout & round naming standard (2026-08-09 normalization)
 
@@ -144,15 +146,17 @@ agent → 127.0.0.1:40006 (container nv_gw) → NVCF pexec/integrate
   ENTRYPOINT `gateway_main.py`). **No litellm dependency** anywhere (R681 removed it fully).
 - Per-model NVCF `function_id`s + `strip_params` live in `gateway/config.py` (env-overridable):
   glm5.1/glm5.2 strip `thinking_budget` (NVCF 400s otherwise); deepseek/kimi pass all params.
-- **Live active model (2026-08-09)**: `dsv4f0731_nv` (deepseek-v4-flash 0731, FID
-  `281478d0-f307`) is the **primary** for all adapters via `cc4101` → `nv_gw:40006` (R-dsv4f-0731).
-  Fallback `ms_gw` `glm5_2_ms` (R580). Registered tiers (env `HM_NV_MODEL_TIERS`):
-  `kimi_nv`, `dsv4p_nv`, `dsv4f_nv`, `dsv4f0731_nv`, `glm5_2_nv`. `glm5_2_nv` remains nv_gw's
-  `DEFAULT_NV_MODEL` (the catch-all default), but the active caller chain is pinned to
-  `dsv4f0731_nv`. `kimi_nv` is unusable (k2.6 INACTIVE, k3 all-404, R-kimi-k3).
+- **Live active model (2026-08-13, per-host)**: nv_gw `DEFAULT_NV_MODEL=dsv4f0731_nv`
+  (catch-all default, FID `281478d0-f307`). The actual primary model sent by cc4101 is
+  **per-host**: HM1 pins `glm5_2_nv` (FID `3b9748d8`, z-ai/glm-5.2; user-confirmed intentional,
+  R1249), HM2 pins `dsv4f0731_nv` (R-dsv4f-0731). Fallback both `ms_gw`/`glm5_2_ms` (R580).
+  Registered tiers (env `HM_NV_MODEL_TIERS`): `kimi_nv`, `dsv4p_nv`, `dsv4f_nv`,
+  `dsv4f0731_nv`, `glm5_2_nv`, `minimax_m3_nv`. `kimi_nv` is unusable (k2.6 INACTIVE, k3
+  all-404, R-kimi-k3).
 - 5 NV API keys (`HM_NV_KEY1..5`) shared across models, each routed through its own mihomo
   port (`HM_NV_PROXY_URL1..5`) on HM2 to avoid same-IP rate limits; HM1 is direct (Japan IP).
-  Per-key `function_id` binding: all 5 keys bound to FID `281478d0-f307` (dsv4f0731_nv).
+  On HM1 all 5 keys serve `glm5_2_nv` pexec (FID `3b9748d8`); on HM2 all 5 keys serve
+  `dsv4f0731_nv` (FID `281478d0-f307`).
 - Gateway auth: `NVU_GATEWAY_API_KEY` (default `nv-gw-token` in config.py, also set in compose
   env). Agents send `Authorization: Bearer nv-gw-token`. `/health` is exempt.
 - Tunable knobs: `UPSTREAM_TIMEOUT`, `TIER_TIMEOUT_BUDGET_S`, `MIN_OUTBOUND_INTERVAL_S`,
@@ -229,7 +233,9 @@ local gateway; the agent-side model picks are the agents' own (and have drifted 
 e.g. hermes `model.default: dsv4f_nv` on HM2 vs the doc's older `dsv4p_nv`; opencode
 `opencode/deepseek-v4-flash-free`). The **canonical, CC-owned chain** is:
 
-- cc4101 (CC's own): `PRIMARY_UPSTREAM_MODEL=dsv4f0731_nv`, `PRIMARY_UPSTREAM_URL=http://nv_gw:40006/v1/messages`,
+- cc4101 (CC's own): **per-host primary** — HM1 `PRIMARY_UPSTREAM_MODEL=glm5_2_nv` (R1249,
+  user-confirmed intentional), HM2 `PRIMARY_UPSTREAM_MODEL=dsv4f0731_nv` (R-dsv4f-0731).
+  Both: `PRIMARY_UPSTREAM_URL=http://nv_gw:40006/v1/chat/completions`,
   `FALLBACK_UPSTREAM_MODEL=glm5_2_ms`, `FALLBACK_UPSTREAM_URL=http://ms_gw:40007/v1/chat/completions`.
 - The three agents route through the adapters (hm4104/opclaw4103/cx4102)/local gateways, all
   ultimately topping out at `nv_gw` (40006) with fallback `ms_gw` (40007).
@@ -242,7 +248,9 @@ CC's own config (`~/.claude/settings.json`) points `ANTHROPIC_BASE_URL` at
 `http://127.0.0.1:4101` (`cc4101`, token `cc4101-token`, frontend model `cc-glm5-2`) — the
 **same** `nv_gw`/`ms_gw` chain as the agents, via the `cc4101` adapter. R827 retired the old
 legacy 40001 glm5.1 chain; the three `settings.json.bak.*` that still pointed at 40001 were
-removed in R1245.
+removed in R1245. Note: `~/.bashrc` and `~/.profile` still export `ANTHROPIC_BASE_URL=40001`
+(stale legacy pointer); the `settings.json` env block correctly overrides it to `4101` so CC
+routes through `cc4101` in practice (DB confirms). See Gotchas for cleanup note.
 
 ## Gotchas
 
@@ -261,3 +269,11 @@ removed in R1245.
   If a base image pull hangs, check the daemon proxy first.
 - A `config.yaml.corrupt.*.bak` next to an agent config means a prior write was recovered —
   diff before trusting the current file.
+- **HM1 `.bashrc`/`.profile` stale `ANTHROPIC_BASE_URL=40001`**: `~/.bashrc:9` and
+  `~/.profile:13` still export `ANTHROPIC_BASE_URL=http://127.0.0.1:40001` (legacy_cc_1
+  container). CC's `settings.json` env block overrides to `4101` so the actual route is
+  correct, but these shell-level exports are a latent footgun — if the settings.json override
+  ever fails to apply, CC would fall back to the legacy 40001 chain. Should be cleaned up to
+  point at `4101` (or removed, since settings.json handles it). The `legacy_cc_1` container
+  on 40001 is still running on HM1 (stale mirror artifact) but is not part of the canonical
+  chain and should not be relied upon.
