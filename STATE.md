@@ -1,6 +1,6 @@
-# STATE.md — cc2 自优化 nv_gw 链路 (R1255, 2026-08-13)
+# STATE.md — cc2 自优化 nv_gw 链路 (R1256b, 2026-08-13)
 
-## 当前架构 (R1255, 实测 2026-08-13 校正)
+## 当前架构 (R1256b, 实测 2026-08-13 校正)
 
 ```
 你(cc2, claude-opus-5) → cc4101 (127.0.0.1:4101)
@@ -22,19 +22,30 @@ ms_gw (40007) — glm5_2_ms (ModelScope 中国, 7 key, 10 variant):
   └─ DEFAULT_MODEL=glm5_2_ms, 同模型跨供应商真备用
 ```
 
+## R1256b 本轮改了什么 (cc2 修复 HM1 "Server error mid response")
+
+1. **HM1 nv_gw 源码全量同步** HM2→HM1: 5 新文件 (buffer_stream/key_manager/probe_worker/fid_discovery/stream_success_judge) + 8 过时覆写 + 3 文件 format/ 子目录创建
+2. **HM1 cc4101 源码全量同步** HM2→HM1: 3 新文件 (routing/http_client/timeout_strategy) + 6 过时覆写
+3. **HM1 ms_gw 源码同步**: handlers.py (加 /v1/messages 端点), upstream.py, config.py
+4. **HM1 docker-compose.yml env 全面更新**: 40 个 R1256 标签, 含 BUFFER/KEYMGR/WAIT_QUEUE/MS_FALLBACK 全部新增, proxy URLs 全转 socks5h://
+5. **nv_gw 启动 crash 修复**: 首次 up 后 ModuleNotFoundError 'gateway.format' → 创建 format/ 目录并传输 3 个 .py 文件 → restart 后 healthy
+
+## R1256b 验证
+
+- 端到端 3/3 200 OK via primary glm5_2_nv (12-69s)
+- DB: nv_requests 5min 3×200, per-key k0/k1/k2/k4 多 key 轮转 + 2 fid (3b9748d8+bfcf495b) + integrate
+- 三容器全 Up healthy: nv_gw, cc4101, ms_gw
+- FID discovery 启动: 182 functions, 2 ACTIVE glm-5.2 candidates, bfcf495b probe OK
+- 修复前 30min 窗口: SR 63.8% (zombie_empty_completion 67, upstream_error 37) — 全部来自修复前旧数据
+
 ## R1255 本轮改了什么
 
 1. **config.py glm5_2_nv function_ids 精简**: 5 候选 → 2 候选 (删 3 个 INACTIVE 死 fid b6029a96/b1b22d03/5532e90c).
 2. **cc4101 compose env 切链**: primary dsv4f0731_nv@40666 → glm5_2_nv@40006; fallback dsv4f0731_ms → glm5_2_ms (同模型跨供应商).
 
-## R1255 验证
-
-- 端到端冒烟 cc→4101→40006: 3/3=200, model=glm5_2_nv, text=OK, 4.8-25.4s
-- DB 5min: 7×200 host_machine=opc2sname mapped_model=glm5_2_nv
-- 三容器全 Up
-
 ## 前序
 
+- R1255: config.py 死fid精简 + cc4101 链路切 glm5_2_nv primary + glm5_2_ms fallback
 - R1254: NVU_ACTIVE_TIERS 白名单 (40006=glm5_2_nv, 40666=dsv4f0731_nv, 40066=dsv4p_nv)
 - R1253: KEY_FID_BIND 清空 + func_health 动态切换 + fid_discovery probe 修复
 
@@ -59,8 +70,16 @@ ms_gw (40007) — glm5_2_ms (ModelScope 中国, 7 key, 10 variant):
 | `b1b22d03` | ❌ INACTIVE | 同上, 已删 |
 | `5532e90c` | ❌ INACTIVE | 同上, 已删 |
 
+## HM1 状态 (R1256b 后)
+
+- HM1 nv_gw/cc4101/ms_gw 源码已与 HM2 对齐 (2026-08-13)
+- HM1 docker-compose env 已补齐 (40 个 R1256 标签)
+- HM1 备份: /tmp/hm1_{nv_gw,cc4101,ms_gw}_backup_R1256/
+- HM1 SSH: `ssh -p 222 opc_uname@100.109.153.83`
+- HM1 特有配置保留: mihomo 5端口(7894/5/6/7/9, 无7901), 独立 US IPs, host.docker.internal proxy
+
 ## 下一步
 
-- 下窗口观察新链路 SR + fallback 触发率 + glm5_2_nv 延迟分布.
-- 关注 3b9748d8 429 是否持续, 若持续考虑只保留 bfcf495b 单 fid.
-- dsv4f0731_nv@40666 容器保留运行作为应急备用.
+- 等 HM1 cc 产生新流量, 观察 30min 窗口 SR + "Server error mid response" 是否消失
+- HM2 本地下窗口 NOP 巡检 (R1255 链路 glm5_2_nv primary + glm5_2_ms fallback)
+- 关注 3b9748d8 429 是否持续, 若持续考虑只保留 bfcf495b 单 fid
