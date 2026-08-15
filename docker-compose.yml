@@ -1,0 +1,851 @@
+services:
+  logs_db:
+    image: postgres:16-alpine
+    container_name: logs_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: litellm_pg_pass
+      POSTGRES_USER: litellm
+      POSTGRES_DB: litellm
+      POSTGRES_MULTIPLE_DATABASES: litellm_nv_hm hermes_logs
+      TZ: Asia/Shanghai
+    volumes:
+    - cc_pgdata:/var/lib/postgresql/data
+    - ./postgres/init-db.sh:/docker-entrypoint-initdb.sh:ro
+    - ./postgres/hermes-logs-schema.sql:/docker-entrypoint-initdb.d/20-hermes-logs-schema.sql:ro
+    - /etc/localtime:/etc/localtime:ro
+    networks:
+    - cc-net
+    mem_limit: 1g
+  nv_gw:
+    build: ./proxy/nv-gw
+    image: cc-infra-nv_gw
+    container_name: nv_gw
+    restart: unless-stopped
+    ports:
+    - 40006:40006
+    environment:
+    - LISTEN_PORT=40006
+    - PROXY_ROLE=passthrough
+    - PROXY_TIMEOUT=300
+    - UPSTREAM_TIMEOUT=90    # R1: 66→90. hermes2 大 input(160k) 触发 NVU_STREAM_FB_200K_S 默认 45s+HTTP read 66s 太短, 提至 90s 给大 input 足够 prefill 时间
+    - TIER_TIMEOUT_BUDGET_S=180
+    - MIN_OUTBOUND_INTERVAL_S=10  # R37: 0→10. 30min SR=0%全5key 429, TIER_COOLDOWN=180已到天花板. 强制10s请求间隔降低NVCF并发压力, 给key配额恢复窗口. caller "other"占91%共享配额. 换思路: 不是调冷却而是限流降低频率.
+    - KEY_COOLDOWN_S=30             # R2338_hm2_oc2: 45→30. tier层0错误6窗确认(64 pexec_success), 429已消除. post-settle all_tiers~4/hr >3/hr触发, 499 6/hr above threshold. 降至30s加速key周转33%, 减少all-keys-cooldown同步+WaitQueue等时
+    - TIER_COOLDOWN_S=180            # R36: 60→180 回退. R35的60s激进重试加速NVCF 429耗尽(全5key 429, SR=0%), 回退保守值降低重试频率
+    - NVU_CONNECT_RESERVE_S=0
+    - NVU_FORCE_STREAM_UPGRADE=0
+    - NVU_FORCE_STREAM_UPGRADE_TIMEOUT=150
+    - NVU_EMPTY_200_FASTBREAK=3        # R824: 1→3. R798 的 1 是 dsv4p 全 key surge 期防 125s; 现 k1 单 key empty200(60s空) 而 k2-k5 秒回, threshold=1 让一坏 key 拖垮全 tier+60s 浪费. 3=连续3不同key空才真坏
+    - NVU_PEXEC_TIMEOUT_FASTBREAK=3
+    - NVU_SSLEOF_RETRY_DELAY_S=1.0
+    - NVU_PEER_FALLBACK_ENABLED=0  # R-glm52split: 关 peer fallback (由 cc4101 fallback 到 dsv4p_nv40066 代替)
+    - NVU_PEER_FALLBACK_URL=http://100.109.153.83:40006
+    - NVU_PEER_FALLBACK_TIMEOUT=25
+    # R1648c: nv_gw 5key/全NVCF坏→ms_gw(glm5_2_ms)兜底. 仅 glm5_2_nv. breaker 15连坏 OPEN 30s 直切 ms;
+    # ms 成功后 HALF_OPEN probe nv 成功→CLOSED. 默认关(ENABLED=0), R1648c 验证临时开.
+    # R-glm52split: ENABLED=0 关掉. glm5_2_nv 全败改由 cc4101 层 fallback 到 dsv4p_nv40066 (独立 dsv4p 容器).
+    - NVU_MS_FALLBACK_ENABLED=1  # R828: 5 consecutive NV failures -> breaker OPEN -> next req goes to ms_gw directly
+    - NVU_MS_FALLBACK_URL=http://ms_gw:40007/v1/chat/completions  # R-cc-crash-fix: revert to ms_gw (40666 dsv4f0731_nv overloaded)
+    - NVU_MS_FALLBACK_TOKEN=ms-gw-token  # R-cc-crash-fix: ms_gw uses ms-gw-token
+    - NVU_MS_FALLBACK_MODEL=glm5_2_ms  # R-cc-crash-fix: use glm5_2_ms (ms_gw healthy)
+    - NVU_MS_FALLBACK_TIMEOUT=120
+    - NVU_MS_FALLBACK_FAIL_THRESHOLD=5  # R1771: 15->5. R1771时间窗语义(W=300s)下, 旧连续N次被成功重置致0<->1振荡永OPEN不了; 改时间窗+5阈值, 5min内5次失败即OPEN切ms, 30s后HALF_OPEN probe
+    - NVU_MS_FALLBACK_SKIP_S=30
+    - NVU_MS_FALLBACK_MODELS=glm5_2_nv
+    # R1673: 超大 input big-input breaker (独立于 R1648c nv_breaker, 按 input 维度).
+    # NVCF glm5.2 对 ~250k+ input 系统性 200-then-hang ~115s/次, CC 死循环 1h+.
+    # 连续 3 次 hang 失败 → OPEN, cooldown 180s 内对 >250k input 直走 ms_gw 省 ~115s.
+    - NVU_BIG_INPUT_THRESHOLD=250000
+    - NVU_BIG_INPUT_FAIL_N=1
+    - NVU_BIG_INPUT_COOLDOWN_S=180
+    - NVU_BIG_INPUT_MODELS=glm5_2_nv
+    # R1675: 关闭 R1627 全量缓冲. NVCF glm5.2 大 input 失败模式=发部分内容后挂住不发[DONE],
+    # FULL_BUFFER 会把已生成的真实答案当卡死丢弃(90s idle deadline→content_filter→零内容).
+    # 关掉后边读边 flush, NVCF 挂住时 cc4101 已收到部分答案(R1674 recv-fallback 能收尾),
+    # 优于零内容死循环. 配合 R1673/R1674 breaker + 收件兜底.
+    - NVU_STREAM_FULL_BUFFER=0
+    # R1790: NVU_STREAM_ABSOLUTE_CAP_S 120→150. 30min 数据: 5 次 stream_absolute_cap 502 全是大
+    # input(67k-131k chars), ttfb 5.5-15s 正常出首字节, content_chars 1863/2246/0/496/285(4/5 已 emit
+    # 内容=慢流非纯hang). cap=120s(R1781/R1787 加, 原堵 no_content_gap 逃逸)对大 input prefill+completion
+    # 慢流太激进, 在上游仍出内容时 kill → R1719 soft-fail 记 nv_breaker + cc4101 探测 api_error 记
+    # breaker → cc4101 breaker 30min OPEN 1 次 → fallback 4 次(负向核心指标). 提到 150s 给慢流完成机会,
+    # 仍 < tier budget 180s 不冲突, per-gap 90/120s 兜底纯 gap. 降 cap 触发 → 降 fallback.
+    - NVU_STREAM_ABSOLUTE_CAP_S=150
+    # R1: 设 NVU_STREAM_FB_200K_S=90. 默认 45s 对 hermes2 160k input 太短 (50k-350k 档), 提至 90s 给 NVCF 大 context prefill 足够时间.
+    # 不设 FB_50K/350K — 小 input 60s 够用, 超大 input 350k+ 的 60s 也合理 (NVIDIA 推荐 pass all params).
+    - NVU_STREAM_FB_200K_S=90
+    - NVU_TIER_BUDGET_GLM5_2_NV=120       # R858: 70仅容1次attempt(UPSTREAM_TIMEOUT=66s), 提至120容2次mode切换; 旧70致1个timeout就abort chain, mode容错名存实亡
+    - NVU_TIER_BUDGET_DSV4P_NV=180       # R2: 120→180. 配 PRIMARY_HEADER_TIMEOUT=180, 容 2 次 key 重试 (NVU_STREAM_FB_200K_S=90 × 2), 大 input 185K+ 慢 prefill 不下牌桌
+    - NVU_PEER_FB_SKIP_MODELS=glm5_2_nv  # R1246: 移除 dsv4p_nv (EOL 2026-08-07, 无流量); 保留 glm5_2_nv
+    - NVU_HOST_MACHINE=opc2sname
+    - NVU_ACTIVE_TIERS=glm5_2_nv  # R1254: 只部署 glm5_2_nv (专职), dsv4f0731/dsv4p/dsv4f/kimi 移出 (dsv4f0731 只在 40666, 用户指定; 共用 config.py 白名单瘦身)
+    - NVCF_BASE_URL=api.nvcf.nvidia.com
+    # R-channel: NVCF_DEEPSEEK_FUNCTION_ID no longer used — config.py hardcodes 3 fids for channel mode
+    # - NVCF_DEEPSEEK_FUNCTION_ID=12acbc62-3a9e-461f-8139-142e914b6f16
+    - NVCF_GLM52_FUNCTION_ID=3b9748d8-1d85-40e8-8573-0eeaa63a4b63  # R1246 (2026-08-10): fid 换 3b9748d8 (ai-glm-5_2, ACTIVE). 原 b1b22d03 (mn-tp8-b200) 已 INACTIVE (catalog 404, 08-09 起 all_tiers_exhausted), 删除.
+    - NVCF_KIMI_FUNCTION_ID=f966661c-790d-4f71-b973-c525fb8eafd4
+    - NV_INTEGRATE_MODELS=glm5_2_nv  # R1246: glm5_2 走 integrate 通道 (实测必用 -0731 模型名, 旧名 410 EOL). dsv4p_nv 已 EOL 移除.
+    - NV_INTEGRATE_PROXY_URLS=socks5h://172.18.0.1:7894,socks5h://172.18.0.1:7895,socks5h://172.18.0.1:7896,socks5h://172.18.0.1:7897,socks5h://172.18.0.1:7899  # R838: 5美国出口轮换(多样性), 测速7897>7899>7896>7894>7895
+    - NV_INTEGRATE_EGRESS_IPS=134.195.101.193,134.195.101.193,134.195.101.195,134.195.101.193,134.195.101.180  # R838: 5端口egress标签(实际出口随mihomo漂移,标签仅DB记录用)
+    - NV_INTEGRATE_KEY_COOLDOWN_S=90  # R857: 0致429不冷却加速撞限流, 改回90s(config默认)
+    # R1246: dsv4p_nv (deepseek-v4-pro) 已 EOL 2026-08-07, 无流量; 其 per-key integrate 残留移除.
+    # kimi_nv 不参与(integrate端点对kimi-k2.6全key 404 Not-found-for-account, 只能pexec).
+    - NV_KEY_INTEGRATE_KEYS=                   # R1246: 清空 (dsv4p 已 EOL; glm5_2 走 NV_INTEGRATE_MODELS 全局路径)
+    - NV_KEY_INTEGRATE_PROXY_URLS=socks5h://172.18.0.1:7897  # 7897 综合测速最快(nvidia436ms+glm5.2 2.7s)
+    - NV_KEY_INTEGRATE_EGRESS_IPS=134.195.101.193
+    # R839: glm5_2_nv per-key-mode 动态切换链 (5 模式递进). mode 是持久化指针,
+    # 故障→递进+换key, 稳住→保持. 顺序=递进序: pexec+direct → pexec+5IP → integrate+5IP → pexec+单IP → integrate+单IP.
+    # 定时测速脚本(glm52_speedtest, 每天 02:00/14:00)会据此重排实现软重置. 空或不存在→走 R827/R572 原逻辑.
+    - NV_GLM52_MODE_CHAIN=pexec_us_rr,integrate_us_rr  # R1247: pexec 优先 (fid 3b9748d8), pexec 故障递进到 integrate 内部兜底 (复用 mode chain 机制)
+    - NV_GLM52_SINGLE_US_PROXY=socks5h://172.18.0.1:7901   # R-glm52-fb-fix: best single US IP 100% SR
+    - NV_GLM52_RR_US_PROXIES=socks5h://172.18.0.1:7901,socks5h://172.18.0.1:7894,socks5h://172.18.0.1:7897,socks5h://172.18.0.1:7896,socks5h://172.18.0.1:7899  # R-glm52-fb-fix: best 5 by SR
+    - KEY_MODE_BINDING=  # R-glm52split: 清空全局 KEY_MODE_BINDING (避免拐 dsv4p_nv). glm5_2_nv per-key mode 改用 NV_GLM52_KEY_MODE_BIND (独立 env, 仅 glm5_2_nv 读).
+    - NV_GLM52_KEY_MODE_BIND=  # R-glm52-fb-fix: cleared, all keys use mode_idx=pexec_us_rr
+    - NV_GLM52_KEY_FID_BIND=  # R1253: 清空硬绑定 (原 0:0;1:0;2:0;3:0;4:0 全钉 pos0, 让绑定 fid surge 时全链陪葬). 现交由 func_health.select_healthy_function 动态选健康 fid (源 upstream.py:1878 分支已加健康检查).
+    - NV_GLM52_FUNCTION_ID2=b6029a96-0ead-457b-a732-bbfb251486cb  # R1253: 候选 pos1=mn-tp8dp1
+    - NV_GLM52_FUNCTION_ID3=b1b22d03-1ac7-4204-be9b-84ebb009e1a2  # R1253: 候选 pos2=mn-tp8-b200 (08-12 回归 ACTIVE, 实测最快 1.6s)
+    - NV_GLM52_FUNCTION_ID4=5532e90c-cb90-49bd-b0d6-42729b667532  # R1253: 候选 pos3=mn-baseline-wb
+    - NV_GLM52_FUNCTION_ID5=bfcf495b-2faf-4ce7-ba4f-bdd4214ff0df  # R1253: 候选 pos4=mn-baseline (实测稳 2.8s)
+    - NVU_FID_DISCOVERY_ENABLED=1  # R1253: 开启 nv_gw 的 glm5_2_nv fid 自动发现 (原 40666 只跑 dsv4f0731)
+    - NVU_FID_DISCOVERY_INTERVAL_S=1800
+    - NVU_FID_DISCOVERY_MODEL=glm5_2_nv  # R1253: target model→glm5_2_nv
+    - NVU_FID_DISCOVERY_NAME_MATCH=glm  # name filter: ai-glm-5_2 / mn-*-glm-5_2
+    - NVU_CALLER_KEY_MAP=hermes:2;openclaw:3;opencode:4  # cc_s3: per-agent fixed key (cc=k2,hermes=k3,openclaw=k4,opencode=k5)
+    - NVU_CALLER_RETRY=0  # R-keyretry-post1 回滚: 部署后实测净负作用 (499爆发 8×/h, duration 95-180s 撞SDK131s墙), 真救回0. env=0 回退 max_attempts=1 (fixed key 单发, 失败直接走 buffer/cc4101 fallback). 注释留历史.
+    - NVU_CALLER_RETRY_INTERVALS=2,4,8  # (停用, NVU_CALLER_RETRY=0 时不读)
+    - NVU_CALLER_RETRY_KEY=4  # (停用)
+    - NVU_BUFFER_CALLERS=cc4101-primary,openclaw2  # R2317_hm2_oc2: +openclaw2 方向 D 429 错峰 (buffer 5-key retry + burst smoothing)
+    - NVU_BUFFER_MAX_RETRIES=5  # R-nvonly-post13: 8→5, 恢复设计值 5×90s=450s<470s cc4101. R2319 的 8retries 导致 buffer 600s>cc4101 470s deadline 断链, 最后2-3 retries 永不可达.
+    - NVU_BUFFER_TIMEOUT_STAIRS=90,90,90,90,90  # R-nvonly-post13: 恢复设计值 5×90s=450s. 旧 30,50,70,90x5 前3 key 时间过短(150s总), 恢复均匀 90s/key.
+    - NVU_BUFFER_PING_INTERVAL_S=30
+    - NVU_BUFFER_TOTAL_DEADLINE_S=450  # R-nvonly-post13: 600→450, 恢复设计值 5×90s=450s<470s cc4101. 600s 超出 cc4101 470s 导致 deadline 断链.
+    - NVU_KEYMGR_429_BASE_COOLDOWN=120  # R-rebuild: 429 首次冷却 120s (旧 60s 太短, streak 20-50min)
+    - NVU_KEYMGR_429_MAX_COOLDOWN=600  # R-bugfix-D: 120→600, 修复指数退避失效 (120=base 时 min(120*2^n,120)≡120, 退避无意义)
+    - NVU_KEYMGR_CONN_BASE_COOLDOWN=30  # R-rebuild: 连接异常首次冷却 30s
+    - NVU_KEYMGR_CONN_MAX_COOLDOWN=60  # R-rebuild: 连接异常最大冷却 60s
+    - NVU_KEYMGR_CONN_FAIL_THRESHOLD=3  # R-rebuild: 连续 3 次 conn-error → 长冷却 120s
+    - NVU_KEYMGR_CONN_LONG_COOLDOWN=120  # R-rebuild: 连续 conn-error 长冷却
+    - NVU_PROBE_ENABLED=1  # R-rebuild Phase 3: 后台探测线程
+    - NVU_PROBE_INTERVAL=15  # R-rebuild: 探测间隔 15s
+    - NVU_PROBE_TIMEOUT=10  # R-rebuild: 单 key 探测超时 10s
+    - NVU_WAIT_QUEUE_ENABLED=1  # R-rebuild Phase 4: 全挂后等 NVCF 恢复
+    - NVU_WAIT_QUEUE_MAX_WAIT=180  # R796: 120→180. R795 穿透事件 req=9ffbc98a 集中 RemoteDisc 7min 风暴让 5 attempt 全败, WaitQueue 120s 刚好擦边超时 (实际 NVCF 恢复仅再晚 ~30s). 180s 给集中瞬断多 60s 余量, 总 elapsed 仍 < 470s cc4101 deadline (5 attempt ~216s + 180s wait = 396s).
+    - NVU_DISABLE_MS_FALLBACK=0  # R828: enable nv_gw-internal ms_gw fallback (breaker-controlled)
+    - NV_GLM52_KEY_PROXY_BIND=0:socks5h://172.18.0.1:7901;1:socks5h://172.18.0.1:7894;2:socks5h://172.18.0.1:7897;3:socks5h://172.18.0.1:7896;4:socks5h://172.18.0.1:7899  # R-glm52-fb-fix: per-key best 5 US IP
+    - NVU_KEY1=${NVU_KEY1}
+    - NVU_KEY2=${NVU_KEY2}
+    - NVU_KEY3=${NVU_KEY3}
+    - NVU_KEY4=${NVU_KEY4}
+    - NVU_KEY5=${NVU_KEY5}
+    - NVU_PROXY_URL1=socks5h://172.18.0.1:7897  # R2082: dsv4p pexec 5独立美国IP(k1->7900->180)
+    - NVU_PROXY_URL2=socks5h://172.18.0.1:7904  # R2082: k2->7901->188
+    - NVU_PROXY_URL3=socks5h://172.18.0.1:7894  # R2082: k3->7902->139(203.10.96)
+    - NVU_PROXY_URL4=socks5h://172.18.0.1:7896  # R2082: k4->7903->194
+    # R793: K4 也改直连, 去掉 mihomo 7897. K4 出口 = HM2 直连 IP 218.93.250.242 (与 K2 同出口). 5 key 全直连, 与 HM1 对称. R_direct: 用户授权两机全直连.
+    - NVU_PROXY_URL5=socks5h://172.18.0.1:7895  # R2082: k5->7904->120
+    # R784: per-key egress IP (for DB nv_requests.egress_ip, long-term IP-diversity analysis)
+    # K1/K3/K5 = mihomo 美国 134.195.101.x | K2 = direct 电信 218.93.250.242 | K4 = mihomo 日本CMI 103.62.49.162
+    - NVU_EGRESS_IP1=134.195.101.197
+    - NVU_EGRESS_IP2=134.195.101.197
+    - NVU_EGRESS_IP3=134.195.101.193
+    - NVU_EGRESS_IP4=134.195.101.195
+    - NVU_EGRESS_IP5=134.195.101.180
+    - NVU_GATEWAY_API_KEY=nv-gw-token
+    - NVU_DB_ENABLED=1
+    - NVU_DB_HOST=logs_db
+    - NVU_DB_PORT=5432
+    - NVU_DB_USER=litellm
+    - NVU_DB_PASSWORD=litellm_pg_pass
+    - NVU_DB_NAME=hermes_logs
+    - CHARS_PER_TOKEN_ESTIMATE=3.0
+    - LOG_RETENTION_DAYS=7
+    - LOG_DIR=/app/logs
+    - TZ=Asia/Shanghai
+    - KEY_AUTHFAIL_COOLDOWN_S=60
+    volumes:
+    - ./proxy/nv-gw/gateway:/app/gateway
+    - ./logs/nv_gw:/app/logs
+    - /etc/localtime:/etc/localtime:ro
+    depends_on:
+    - logs_db
+    networks:
+    - cc-net
+    mem_limit: 1g
+  # R-glm52split: dsv4p_nv 独立容器 (port 40066), 作 cc4101 fallback 目标.
+  # glm5_2_nv 5key 全败 → cc4101 fallback 到此容器 (dsv4p_nv pexec-only, 5 US IP).
+  # 复用 cc-infra-nv_gw image + 同源码 bind-mount (per-key fid 绑定有 tier_model=='glm5_2_nv' 守卫, 不影响 dsv4p).
+  dsv4p_nv40066:
+    image: cc-infra-nv_gw
+    container_name: dsv4p_nv40066
+    restart: unless-stopped
+    ports:
+    - 40066:40066
+    environment:
+    - LISTEN_PORT=40066
+    - PROXY_ROLE=passthrough
+    - PROXY_TIMEOUT=300
+    - UPSTREAM_TIMEOUT=90
+    - TIER_TIMEOUT_BUDGET_S=180
+    - KEY_COOLDOWN_S=30
+    - TIER_COOLDOWN_S=90             # R1007: 180→90. post-R1006重启窗口188req 27×ATE, 双峰分布: 真实ATE×8(69-180s) + 瞬时ATE×19(2-9s). 瞬时ATE=NV-GLOBAL-COOLDOWN级联(全5key 429→冻180s→后续请求秒fail 2-9ms无pexec尝试). TIER_COOLDOWN=180s让级联持续3min, 降到90s减半恢复窗口, 仍>单key 429 base cooldown(120s)不致过度重试
+    - MIN_OUTBOUND_INTERVAL_S=5      # R1008: (new) 默认1.5→5. dsv4p_nv40066 无 MIN_OUTBOUND 限制, cc4101-fallback 突发(30req/min@16:54 UTC) → 全5key 429 → GLOBAL-COOLDOWN 90s → 10/27 ATE 为 <10ms 瞬时 fail. nv_gw 同参数=10s 验证有效防级联. 5s=3.3× default, 允许 avg 2.2req/min ×5.5× headroom, 12 req/min per-key → 60 total 仍远超当前需量
+    - NVU_CONNECT_RESERVE_S=0
+    - NVU_FORCE_STREAM_UPGRADE=0
+    - NVU_EMPTY_200_FASTBREAK=3
+    - NVU_PEXEC_TIMEOUT_FASTBREAK=3
+    - NVU_SSLEOF_RETRY_DELAY_S=1.0
+    - NVU_PEER_FALLBACK_ENABLED=0  # 独立 dsv4p, 无 peer fallback
+    - NVU_MS_FALLBACK_ENABLED=0  # 独立 dsv4p, 无 ms fallback
+    - NVU_DISABLE_MS_FALLBACK=1
+    - NVU_STREAM_FULL_BUFFER=0
+    - NVU_STREAM_ABSOLUTE_CAP_S=150
+    - NVU_STREAM_FB_200K_S=90
+    - NVU_TIER_BUDGET_DSV4P_NV=180
+    - NVU_PEER_FB_SKIP_MODELS=glm5_2_nv,dsv4p_nv
+    - NVU_HOST_MACHINE=opc2sname-dsv4p40066  # DB 区分用 (与 nv_gw 隔离)
+    - NVU_ACTIVE_TIERS=dsv4p_nv  # R1254: 专职 dsv4p_nv, 不部署其他模型 (与 40006/40666 共用 config.py 白名单瘦身)
+    - NVCF_BASE_URL=api.nvcf.nvidia.com
+    - NVCF_DEEPSEEK_FUNCTION_ID=12acbc62-3a9e-461f-8139-142e914b6f16
+    - NVCF_GLM52_FUNCTION_ID=3b9748d8-1d85-40e8-8573-0eeaa63a4b63  # R1246: fid 换 3b9748d8 (ACTIVE), 删 b1b22d03 (INACTIVE)
+    - NVCF_KIMI_FUNCTION_ID=f966661c-790d-4f71-b973-c525fb8eafd4
+    - NV_INTEGRATE_MODELS=dsv4p_nv  # R-cc4101-fix: pro integrate 实测 200 OK (08-04 14:25), pexec 全挂 → 改走 integrate
+    - NV_KEY_INTEGRATE_KEYS=  # R1006: 清空 — k3(1-based) integrate 路径 6h 0% SR (42次全失败: IntegrateRemoteDisconnected×27 + 429×12), 5-key pool 实质 4-key. 全走 pexec DIRECT (与 nv_gw R2057 一致).
+    - NV_INTEGRATE_PROXY_URLS=socks5h://172.18.0.1:7897,socks5h://172.18.0.1:7904,socks5h://172.18.0.1:7894,socks5h://172.18.0.1:7896,socks5h://172.18.0.1:7895  # 5-key per-proxy
+    - NV_INTEGRATE_EGRESS_IPS=134.195.101.197,134.195.101.197,134.195.101.193,134.195.101.195,134.195.101.180
+    - NVU_CALLER_KEY_MAP=  # free 5-key rotation, 无 caller binding
+    - NVU_BUFFER_CALLERS=cc4101-primary  # R-cc-slow-fix: enable buffer retry for IncompleteRead (08-04: integrate stream truncation caused 502, cc4101 has no own buffer)
+    - NVU_BUFFER_MAX_RETRIES=5  # R-cc-slow-fix: match nv_gw 40006 config
+    - NVU_BUFFER_TIMEOUT_STAIRS=90,90,90,90,90  # R-cc-slow-fix: 5×90s=450s
+    - NVU_BUFFER_PING_INTERVAL_S=30  # R-cc-slow-fix: reset SDK idle timer
+    - NVU_BUFFER_TOTAL_DEADLINE_S=450  # R-cc-slow-fix: <470s cc4101 deadline
+    - NVU_KEYMGR_429_BASE_COOLDOWN=120
+    - NVU_KEYMGR_429_MAX_COOLDOWN=120  # R1009: 300→120. R1008 数据: 全5key同时429后 count=5 → cooldown=300s → 5min全黑(17:44-17:51 26/38 instant ATE). TIER_COOLDOWN=90s后key仍在300s冷却→NV-TIER-SKIP秒fail. 降到120s: blackout=max(90,120)=120s vs 300s(60%↓). 120s仍>NVCF限流窗口~60s, MIN_OUTBOUND=5已限频防快速二次429
+    - NVU_KEYMGR_CONN_BASE_COOLDOWN=30
+    - NVU_KEYMGR_CONN_MAX_COOLDOWN=60
+    - NVU_KEYMGR_CONN_FAIL_THRESHOLD=3
+    - NVU_KEYMGR_CONN_LONG_COOLDOWN=120
+    - NVU_PROBE_ENABLED=1
+    - NVU_PROBE_INTERVAL=15
+    - NVU_PROBE_TIMEOUT=10
+    - NVU_WAIT_QUEUE_ENABLED=1
+    - NVU_WAIT_QUEUE_MAX_WAIT=120
+    - NV_GLM52_MODE_CHAIN=  # dsv4p 不用 glm52 mode chain
+    - KEY_MODE_BINDING=  # 空, 不拐
+    - NVU_KEY1=${NVU_KEY1}
+    - NVU_KEY2=${NVU_KEY2}
+    - NVU_KEY3=${NVU_KEY3}
+    - NVU_KEY4=${NVU_KEY4}
+    - NVU_KEY5=${NVU_KEY5}
+    - NVU_PROXY_URL1=socks5h://172.18.0.1:7897  # dsv4p pexec 5 US IPv4 (与 nv_gw 同套, 已验证)
+    - NVU_PROXY_URL2=socks5h://172.18.0.1:7904
+    - NVU_PROXY_URL3=socks5h://172.18.0.1:7894
+    - NVU_PROXY_URL4=socks5h://172.18.0.1:7896
+    - NVU_PROXY_URL5=socks5h://172.18.0.1:7895
+    - NVU_EGRESS_IP1=134.195.101.197
+    - NVU_EGRESS_IP2=134.195.101.197
+    - NVU_EGRESS_IP3=134.195.101.193
+    - NVU_EGRESS_IP4=134.195.101.195
+    - NVU_EGRESS_IP5=134.195.101.180
+    - NVU_GATEWAY_API_KEY=nv-gw-token
+    - NVU_DB_ENABLED=1
+    - NVU_DB_HOST=logs_db
+    - NVU_DB_PORT=5432
+    - NVU_DB_USER=litellm
+    - NVU_DB_PASSWORD=litellm_pg_pass
+    - NVU_DB_NAME=hermes_logs
+    - CHARS_PER_TOKEN_ESTIMATE=3.0
+    - LOG_RETENTION_DAYS=7
+    - LOG_DIR=/app/logs
+    - TZ=Asia/Shanghai
+    - KEY_AUTHFAIL_COOLDOWN_S=60
+    volumes:
+    - ./proxy/nv-gw/gateway:/app/gateway
+    - ./logs/dsv4p_nv40066:/app/logs
+    - /etc/localtime:/etc/localtime:ro
+    depends_on:
+    - logs_db
+    networks:
+    - cc-net
+    mem_limit: 1g
+  dsvf0731_nv40666:
+    # R-dsv4f-0731 (2026-08-04): deepseek-v4-flash 0731 (6166b605) 独立容器.
+    # pexec 全 key 超时/400; integrate 路径 1s 200 OK. 故 NV_INTEGRATE_MODELS=dsv4f_nv 强制走 integrate.
+    # hm4104 + opclaw4103 primary 指向此容器, 原 dsv4p_nv40066 保留不动.
+    image: cc-infra-nv_gw
+    container_name: dsvf0731_nv40666
+    restart: unless-stopped
+    ports:
+    - 40666:40666
+    environment:
+    - LISTEN_PORT=40666
+    - PROXY_ROLE=passthrough
+    - PROXY_TIMEOUT=300
+    - UPSTREAM_TIMEOUT=45    # R1006-self: 50→45. pexec_success p95=38.9s(24h), 50s ceiling 让 hung conn 烧满 43.5s×3≈129s≈180s budget→fast-break→all_tiers_exhausted. 45s 覆盖 p95 留 6s 余量, 每 hung 省 ~5s, 3 次省 15s=多一次 key 重试
+    - TIER_TIMEOUT_BUDGET_S=180
+    - KEY_COOLDOWN_S=30
+    - TIER_COOLDOWN_S=90
+    - MIN_OUTBOUND_INTERVAL_S=5
+    - NVU_CONNECT_RESERVE_S=0
+    - NVU_FORCE_STREAM_UPGRADE=0
+    - NVU_EMPTY_200_FASTBREAK=3
+    - NVU_PEXEC_TIMEOUT_FASTBREAK=3
+    - NVU_CONN_ERR_FAST_BREAK=5  # R1016: 76% NVCFPexecRemoteDisconnected, 2-consec fast-break 太激进, 全 5 key 循环再放弃
+    - NVU_SSLEOF_RETRY_DELAY_S=1.0
+    - NVU_PEER_FALLBACK_ENABLED=0
+    - NVU_MS_FALLBACK_ENABLED=0
+    - NVU_DISABLE_MS_FALLBACK=1
+    - NVU_FID_DISCOVERY_ENABLED=1  # R-dsv4f-dynamic: FID auto-discovery
+    - NVU_FID_DISCOVERY_INTERVAL_S=1800  # 30min cycle
+    - NVU_FID_DISCOVERY_MODEL=dsv4f0731_nv  # R-dsv4f0731: target model→dsv4f0731_nv
+    - NVU_FID_DISCOVERY_NAME_MATCH=deepseek-v4-flash  # name filter
+    - NVU_STREAM_FULL_BUFFER=0
+    - NVU_STREAM_ABSOLUTE_CAP_S=150
+    - NVU_STREAM_FB_200K_S=90
+    - NVU_TIER_BUDGET_DSV4F_NV=180
+    - NVU_TIER_BUDGET_DSV4F0731_NV=180  # R1070: 220→180 revert. budget 非绑定约束 (fast-break=5 先耗尽 key), SR 未改善. all_tiers_exhausted=6 全在~180s budget cap; 5 key 全有 200 成功; 5×43.5s=217s>180 第5key被cut. 预算放宽让 fast-break=5 遍历全 5 key
+    - NVU_PEER_FB_SKIP_MODELS=glm5_2_nv,dsv4p_nv,dsv4f_nv,dsv4f0731_nv  # R-dsv4f0731: 加 0731
+    - NVU_HOST_MACHINE=opc2sname-dsv4f40666
+    - NVU_ACTIVE_TIERS=dsv4f0731_nv  # R1254: 专职 dsv4f0731_nv, 不部署其他模型 (与 40006/40066 共用 config.py 白名单瘦身)
+    - NVCF_BASE_URL=api.nvcf.nvidia.com
+    # R1247: 清理多余 fid env (52e1ddb6 坏, 12acbc62 EOL, glm52/kimi 不属于此容器).
+    # dsv4f0731_nv 的实际 fid 281478d0 由 NVU_FID_DISCOVERY 自动发现, 无需显式 env.
+    - NV_INTEGRATE_MODELS=  # R-dsv4f-newfid: 新 FID 52e1ddb6 pexec 可用, 不再强制 integrate
+    - NV_KEY_INTEGRATE_KEYS=  # R1017: revert R1015 — k5 integrate 6h SR=50%(3/6) vs pexec 70.5%(134/190), 30min 100% fail(3/3), 529_integrate_overloaded=5/2h + NVStream_IncompleteRead=3. integrate 劣于 pexec, 全走 pexec DIRECT.
+    - NV_INTEGRATE_PROXY_URLS=socks5h://172.18.0.1:7897,socks5h://172.18.0.1:7904,socks5h://172.18.0.1:7894,socks5h://172.18.0.1:7896,socks5h://172.18.0.1:7895
+    - NV_INTEGRATE_EGRESS_IPS=134.195.101.197,134.195.101.197,134.195.101.193,134.195.101.195,134.195.101.180
+    - NVU_CALLER_KEY_MAP=
+    - NVU_BUFFER_CALLERS=cc4101-fallback  # R-cc-slow-fix: enable buffer for flash fallback retry
+    - NVU_BUFFER_MAX_RETRIES=5  # R-cc-slow-fix: match nv_gw 40006 config
+    - NVU_BUFFER_TIMEOUT_STAIRS=90,90,90,90,90  # R-cc-slow-fix: 5×90s=450s
+    - NVU_BUFFER_PING_INTERVAL_S=30  # R-cc-slow-fix: reset SDK idle timer
+    - NVU_BUFFER_TOTAL_DEADLINE_S=450  # R-cc-slow-fix: <470s cc4101 deadline
+    - NVU_KEYMGR_429_BASE_COOLDOWN=120
+    - NVU_KEYMGR_429_MAX_COOLDOWN=120
+    - NVU_KEYMGR_CONN_BASE_COOLDOWN=30
+    - NVU_KEYMGR_CONN_MAX_COOLDOWN=60
+    - NVU_KEYMGR_CONN_FAIL_THRESHOLD=3
+    - NVU_KEYMGR_CONN_LONG_COOLDOWN=120
+    - NVU_PROBE_ENABLED=1
+    - NVU_PROBE_INTERVAL=15
+    - NVU_PROBE_TIMEOUT=10
+    - NVU_WAIT_QUEUE_ENABLED=1
+    - NVU_WAIT_QUEUE_MAX_WAIT=120
+    - NV_GLM52_MODE_CHAIN=
+    - KEY_MODE_BINDING=
+    - NVU_KEY1=${NVU_KEY1}
+    - NVU_KEY2=${NVU_KEY2}
+    - NVU_KEY3=${NVU_KEY3}
+    - NVU_KEY4=${NVU_KEY4}
+    - NVU_KEY5=${NVU_KEY5}
+    - NVU_PROXY_URL1=socks5h://172.18.0.1:7897
+    - NVU_PROXY_URL2=socks5h://172.18.0.1:7904
+    - NVU_PROXY_URL3=socks5h://172.18.0.1:7894
+    - NVU_PROXY_URL4=socks5h://172.18.0.1:7896
+    - NVU_PROXY_URL5=socks5h://172.18.0.1:7895
+    - NVU_EGRESS_IP1=134.195.101.197
+    - NVU_EGRESS_IP2=134.195.101.197
+    - NVU_EGRESS_IP3=134.195.101.193
+    - NVU_EGRESS_IP4=134.195.101.195
+    - NVU_EGRESS_IP5=134.195.101.180
+    - NVU_GATEWAY_API_KEY=nv-gw-token
+    - NVU_DB_ENABLED=1
+    - NVU_DB_HOST=logs_db
+    - NVU_DB_PORT=5432
+    - NVU_DB_USER=litellm
+    - NVU_DB_PASSWORD=litellm_pg_pass
+    - NVU_DB_NAME=hermes_logs
+    - CHARS_PER_TOKEN_ESTIMATE=3.0
+    - LOG_RETENTION_DAYS=7
+    - LOG_DIR=/app/logs
+    - TZ=Asia/Shanghai
+    volumes:
+    - ./proxy/nv-gw/gateway:/app/gateway:rw
+    - ./logs/dsvf0731_nv40666:/app/logs:rw
+    - /etc/localtime:/etc/localtime:ro
+    depends_on:
+    - logs_db
+    networks:
+    - cc-net
+    mem_limit: 1g
+  nv_gw_stable:
+    build: ./proxy/nv-gw-stable
+    image: cc-infra-nv_gw_stable:latest
+    container_name: nv_gw_stable
+    restart: unless-stopped
+    ports:
+    - 40005:40005
+    environment:
+    - LISTEN_PORT=40005
+    - PROXY_ROLE=passthrough
+    - PROXY_TIMEOUT=300
+    - UPSTREAM_TIMEOUT=90
+    - TIER_TIMEOUT_BUDGET_S=180
+    - MIN_OUTBOUND_INTERVAL_S=10
+    - KEY_COOLDOWN_S=30
+    - TIER_COOLDOWN_S=180
+    - NVU_CONNECT_RESERVE_S=0
+    - NVU_FORCE_STREAM_UPGRADE=0
+    - NVU_FORCE_STREAM_UPGRADE_TIMEOUT=150
+    - NVU_EMPTY_200_FASTBREAK=3
+    - NVU_PEXEC_TIMEOUT_FASTBREAK=3
+    - NVU_SSLEOF_RETRY_DELAY_S=1.0
+    - NVU_PEER_FALLBACK_ENABLED=0  # 40005 is standalone, no peer fallback
+    - NVU_MS_FALLBACK_ENABLED=1
+    - NVU_MS_FALLBACK_URL=http://ms_gw:40007/v1/chat/completions
+    - NVU_MS_FALLBACK_TOKEN=ms-gw-token
+    - NVU_MS_FALLBACK_MODEL=glm5_2_ms
+    - NVU_MS_FALLBACK_TIMEOUT=120
+    - NVU_MS_FALLBACK_FAIL_THRESHOLD=5
+    - NVU_MS_FALLBACK_SKIP_S=30
+    - NVU_MS_FALLBACK_MODELS=glm5_2_nv
+    - NVU_BIG_INPUT_THRESHOLD=250000
+    - NVU_BIG_INPUT_FAIL_N=1
+    - NVU_BIG_INPUT_COOLDOWN_S=180
+    - NVU_BIG_INPUT_MODELS=glm5_2_nv
+    - NVU_STREAM_FULL_BUFFER=0
+    - NVU_STREAM_ABSOLUTE_CAP_S=150
+    - NVU_STREAM_FB_200K_S=90
+    - NVU_TIER_BUDGET_GLM5_2_NV=120
+    - NVU_TIER_BUDGET_DSV4P_NV=180
+    - NVU_PEER_FB_SKIP_MODELS=glm5_2_nv,dsv4p_nv
+    - NVU_HOST_MACHINE=opc2sname-stable
+    - NVCF_BASE_URL=api.nvcf.nvidia.com
+    - NVCF_DEEPSEEK_FUNCTION_ID=12acbc62-3a9e-461f-8139-142e914b6f16
+    - NVCF_GLM52_FUNCTION_ID=3b9748d8-1d85-40e8-8573-0eeaa63a4b63  # R1246: fid 换 3b9748d8 (ACTIVE), 删 b1b22d03 (INACTIVE)
+    - NVCF_KIMI_FUNCTION_ID=f966661c-790d-4f71-b973-c525fb8eafd4
+    - NV_INTEGRATE_MODELS=glm5_2_nv
+    - NV_INTEGRATE_PROXY_URLS=socks5h://172.18.0.1:7894,socks5h://172.18.0.1:7895,socks5h://172.18.0.1:7896,socks5h://172.18.0.1:7897,socks5h://172.18.0.1:7899
+    - NV_INTEGRATE_EGRESS_IPS=134.195.101.193,134.195.101.193,134.195.101.195,134.195.101.193,134.195.101.180
+    - NV_INTEGRATE_KEY_COOLDOWN_S=90
+    - NV_KEY_INTEGRATE_KEYS=
+    - NV_KEY_INTEGRATE_PROXY_URLS=socks5h://172.18.0.1:7897
+    - NV_KEY_INTEGRATE_EGRESS_IPS=134.195.101.193
+    - NV_GLM52_MODE_CHAIN=
+    - NV_GLM52_SINGLE_US_PROXY=socks5h://172.18.0.1:7897
+    - NV_GLM52_RR_US_PROXIES=socks5h://172.18.0.1:7894,socks5h://172.18.0.1:7895,socks5h://172.18.0.1:7896,socks5h://172.18.0.1:7897,socks5h://172.18.0.1:7899
+    - KEY_MODE_BINDING=0:pexec_us_rr;1:pexec_us_rr;2:pexec_us_rr;3:pexec_us_rr;4:pexec_us_rr
+    - NVU_CALLER_KEY_MAP=  # 40005 stable: free 5-key rotation, no caller binding
+    - NVU_CALLER_RETRY=0
+    - NVU_CALLER_RETRY_INTERVALS=2,4,8
+    - NVU_CALLER_RETRY_KEY=4
+    - NVU_BUFFER_CALLERS=  # 40005 stable: no buffer, pure passthrough fallback
+    - NVU_BUFFER_MAX_RETRIES=5
+    - NVU_BUFFER_TIMEOUT_STAIRS=90,90,90,90,90
+    - NVU_BUFFER_PING_INTERVAL_S=30
+    - NVU_BUFFER_TOTAL_DEADLINE_S=450
+    - NVU_KEYMGR_429_BASE_COOLDOWN=120
+    - NVU_KEYMGR_429_MAX_COOLDOWN=300  # R-hermes-fb-msgw: 600→300, 避免 429 全 key 长时间死锁
+    - NVU_KEYMGR_CONN_BASE_COOLDOWN=30
+    - NVU_KEYMGR_CONN_MAX_COOLDOWN=60
+    - NVU_KEYMGR_CONN_FAIL_THRESHOLD=3
+    - NVU_KEYMGR_CONN_LONG_COOLDOWN=120
+    - NVU_PROBE_ENABLED=1
+    - NVU_PROBE_INTERVAL=15
+    - NVU_PROBE_TIMEOUT=10
+    - NVU_WAIT_QUEUE_ENABLED=1
+    - NVU_WAIT_QUEUE_MAX_WAIT=120
+    - NVU_DISABLE_MS_FALLBACK=1  # 40005 stable: standalone, no ms fallback (pure NV)
+    - NV_GLM52_KEY_PROXY_BIND=0,2,4:socks5h://172.18.0.1:7894,socks5h://172.18.0.1:7896,socks5h://172.18.0.1:7899;1,3:socks5h://172.18.0.1:7895,socks5h://172.18.0.1:7897
+    - NVU_KEY1=${NVU_KEY1}
+    - NVU_KEY2=${NVU_KEY2}
+    - NVU_KEY3=${NVU_KEY3}
+    - NVU_KEY4=${NVU_KEY4}
+    - NVU_KEY5=${NVU_KEY5}
+    - NVU_PROXY_URL1=socks5h://172.18.0.1:7900
+    - NVU_PROXY_URL2=socks5h://172.18.0.1:7904
+    - NVU_PROXY_URL3=socks5h://172.18.0.1:7894
+    - NVU_PROXY_URL4=socks5h://172.18.0.1:7896
+    - NVU_PROXY_URL5=socks5h://172.18.0.1:7895
+    - NVU_EGRESS_IP1=134.195.101.197
+    - NVU_EGRESS_IP2=134.195.101.197
+    - NVU_EGRESS_IP3=134.195.101.193
+    - NVU_EGRESS_IP4=134.195.101.195
+    - NVU_EGRESS_IP5=134.195.101.180
+    - NVU_GATEWAY_API_KEY=nv-gw-token
+    - NVU_DB_ENABLED=1
+    - NVU_DB_HOST=logs_db
+    - NVU_DB_PORT=5432
+    - NVU_DB_USER=litellm
+    - NVU_DB_PASSWORD=litellm_pg_pass
+    - NVU_DB_NAME=hermes_logs
+    - CHARS_PER_TOKEN_ESTIMATE=3.0
+    - LOG_RETENTION_DAYS=7
+    - LOG_DIR=/app/logs
+    - TZ=Asia/Shanghai
+    - KEY_AUTHFAIL_COOLDOWN_S=60
+    volumes:
+    - ./proxy/nv-gw-stable/gateway:/app/gateway
+    - ./logs/nv_gw_stable:/app/logs
+    - /etc/localtime:/etc/localtime:ro
+    depends_on:
+    - logs_db
+    networks:
+    - cc-net
+    mem_limit: 1g
+  ms_gw:
+    build: ./proxy/ms-gw
+    image: cc-infra-ms_gw
+    container_name: ms_gw
+    restart: unless-stopped
+    ports:
+    - 40007:40007
+    environment:
+    - LISTEN_PORT=40007
+    - PROXY_ROLE=ms_uni
+    - PROXY_TIMEOUT=600
+    - UPSTREAM_TIMEOUT=300
+    - MIN_OUTBOUND_INTERVAL_S=2.0  # R806: was 1.0, raise to ease aliyun limit_burst_rate (ms_gw cycle root cause)
+    - KEY_COOLDOWN_S=60
+    - VARIANT_COOLDOWN_S=30
+    - EMPTY_200_FASTBREAK_THRESHOLD=3  # R900 (HM2→HM1): 5→3 (-2). ms_gw 日志 req 88027738 跨 2 variant 各 5 次 empty200 循环 → 10次空请求, 浪费 ~9s. 降至3节省 4次空循环(每 variant 40%), 更早切键/切variant. FASTBREAK floor=1, 3仍有保守余地. ms_gw 流量极低 (~1req/5h), 零风险. Single param per round; iron rule: only change HM1 never HM2.
+    - ALL_EXHAUSTED_COOLDOWN_S=30
+    - NUM_KEYS=7
+    - NUM_VARIANTS=10
+    - DEFAULT_MODEL=glm5_2_ms
+    - MS_BASEURL=https://api-inference.modelscope.cn/v1
+    - MS_KEY1=ms-bb4e5bee-ca0e-49be-8de3-2347a57752f5
+    - MS_KEY2=ms-b836c297-9cb3-45f7-86b3-a33e1b76f48f
+    - MS_KEY3=ms-202e8dc3-b2f0-4aa3-9b56-0fa6798ac5b9
+    - MS_KEY4=ms-ed773f9d-9ca1-4fd9-87e4-b6acd0e545ae
+    - MS_KEY5=ms-69d3fbc6-6938-4fb1-b403-dfa44a05fb0c
+    - MS_KEY6=ms-e392cb51-9637-4766-80aa-490a6044294c
+    - MS_KEY7=ms-20761627-ec32-497c-a11a-7ff580617f0b
+    - MSU_GATEWAY_API_KEY=ms-gw-token
+    - MSU_DB_ENABLED=1
+    - MSU_DB_HOST=logs_db
+    - MSU_DB_PORT=5432
+    - MSU_DB_USER=litellm
+    - MSU_DB_PASSWORD=litellm_pg_pass
+    - MSU_DB_NAME=hermes_logs
+    - MSU_HOST_MACHINE=opc2sname
+    - LOG_RETENTION_DAYS=7
+    - LOG_DIR=/app/logs
+    - TZ=Asia/Shanghai
+    volumes:
+    - ./proxy/ms-gw/gateway:/app/gateway
+    - ./logs/ms_gw:/app/logs
+    - /etc/localtime:/etc/localtime:ro
+    depends_on:
+    - logs_db
+    networks:
+    - cc-net
+    mem_limit: 1g
+  cc4101:
+    build: ./proxy/cc4101
+    image: cc-infra-cc4101
+    container_name: cc4101
+    restart: unless-stopped
+    ports:
+    - 0.0.0.0:4101:4101
+    environment:
+    - LISTEN_PORT=4101
+    - PROXY_ROLE=cc4101
+    - AUTH_ENABLED=1
+    - UPSTREAM_TIMEOUT=130  # R1602: 60->130. R1412的60s是 incomplete fix: nv_gw mode chain budget=120s (NVU_TIER_BUDGET_GLM5_2_NV), NVCF劣化时合法要120s跑完5key×mode才返回502, cc4101 header 60s就抢超时误判primary失败→累计5次OPEN→503死循环(2026-07-16 01:35 实锤, 与R1412记录的2026-07-15 17:58 同一故障复发). 130s=120s chain budget+10s余量, 让nv_gw有合法时间跑完chain. 配合R1602 upstream.py 删 min(header,timeout)封顶 + should_record分流, header可等到R1420缩放值(≤120s)且误判不计数.
+    - PRIMARY_HEADER_TIMEOUT=400  # R-glm52-pure: let buffer 450s manage timeout, cc4101 no pre-empt
+    - CC4101_PRIMARY_FAIL_THRESHOLD=3  # R1771: 8->3. R1771时间窗语义下旧连续N次被成功重置致0<->1振荡永OPEN不了(今日10次UPSTREAM-ERROR-SEEN+34次STALL仍_fail_count=0); 改时间窗+3阈值
+    - CC4101_PRIMARY_SKIP_S=30  # R1602: config默认60→30. OPEN了也更快HALF_OPEN probe, 减少卡死时长
+    - UPSTREAM_IDLE_TIMEOUT=150  # R830: body read idle超时(两次chunk间隔), 对齐nv_gw thinking 150s, 容纳长思考静默期
+    - CC4101_STREAM_TOTAL_DEADLINE_S=470  # R-glm52-pure: buffer 450s + 20s margin
+    - PYTHONUNBUFFERED=1  # R830: 消除stdout buffer迟滞, docker logs实时可见(对齐ms_gw/nv_gw虽未设但实测实时)
+    - PRIMARY_UPSTREAM_URL=http://dsvf0731_nv40666:40666/v1/messages  # R1244 (2026-08-10): primary=dsv4f0731_nv@dsvf0731_nv40666 (cc → 40666 专用容器, 实测 200 OK 0.7-3.1s fid 281478d0; 原 nv_gw:40006 改为 fallback)
+    - PRIMARY_UPSTREAM_TOKEN=nv-gw-token
+    - PRIMARY_UPSTREAM_MODEL=dsv4f0731_nv  # R1244: primary model 保持 dsv4f0731_nv, 40666 内部路由到 fid 281478d0
+    # R1244 (2026-08-10): fallback 由 ms_gw:40007(glm5_2_ms) 改为 nv_gw:40006(glm5_2_nv). 用户指定. 实测 40006 /v1/messages+glm5_2_nv = 200 (78s, integrate 通道).
+    - FALLBACK_UPSTREAM_URL=http://ms_gw:40007/v1/messages  # R1248: fallback 切到 ms_gw:40007 (dsv4f0731_ms), Anthropic /v1/messages 格式, 与 NVCF 账号解耦
+    - FALLBACK_UPSTREAM_TOKEN=ms-gw-token  # R1248: ms_gw 用 ms-gw-token 认证
+    - FALLBACK_UPSTREAM_MODEL=dsv4f0731_ms  # R1248: fallback model=dsv4f0731_ms (ms_gw, 7 key 10 variant, 实测 200)
+    - CC4101_GATEWAY_API_KEY=cc4101-token
+    - CC4101_DB_ENABLED=1
+    - CC4101_DB_HOST=logs_db
+    - CC4101_DB_PORT=5432
+    - CC4101_DB_USER=litellm
+    - CC4101_DB_PASSWORD=litellm_pg_pass
+    - CC4101_DB_NAME=hermes_logs
+    - CC4101_HOST_MACHINE=opc2sname
+    - LOG_RETENTION_DAYS=14
+    - LOG_DIR=/app/logs
+    - TZ=Asia/Shanghai
+    volumes:
+    - ./proxy/cc4101/gateway:/app/gateway
+    - ./logs/cc4101:/app/logs
+    - /etc/localtime:/etc/localtime:ro
+    depends_on:
+    - dsvf0731_nv40666  # R1244: primary target (dsv4f0731_nv)
+    - nv_gw  # R1244: fallback target (glm5_2_nv)
+    - logs_db
+    networks:
+    - cc-net
+    mem_limit: 1g
+  cx4102:
+    build: ./proxy/cx-gw
+    image: cc-infra-cx4102
+    container_name: cx4102
+    restart: unless-stopped
+    ports:
+    - 127.0.0.1:4102:4102
+    environment:
+    - LISTEN_PORT=4102
+    - AUTH_ENABLED=1
+    - PROXY_TIMEOUT=120
+    - PRIMARY_URL=http://nv_gw:40006/v1
+    - PRIMARY_MODEL=glm5_2_nv  # R-glm52-pure: unified glm5_2_nv
+    - FALLBACK_URL=none  # R-glm52-pure: disable ms fallback
+    - FALLBACK_MODEL=glm5_2_ms
+    - FALLBACK_TIMEOUT_S=120
+    - PRIMARY_STREAM_TIMEOUT_S=150
+    - CIRCUIT_FAILURE_THRESHOLD=3
+    - CIRCUIT_OPEN_S=60
+    - FALLBACK_RECOVER_S=30
+    - CC4101_TOTAL_BUDGET_S=360  # R_hm4104_fix: 80→360, 让 primary-retry-after-fallback 条件 remaining>=PRIMARY_HEADER_TIMEOUT(180) 能成立
+    - NV_GW_API_KEY=nv-gw-token
+    - MS_GW_API_KEY=ms-gw-token
+    - CX_GATEWAY_API_KEY=cx-gw-token
+    - LOG_DIR=/app/logs
+    - TZ=Asia/Shanghai
+    volumes:
+    - ./proxy/cx-gw/gateway:/app/gateway
+    - ./logs/cx4102:/app/logs
+    - /etc/localtime:/etc/localtime:ro
+    depends_on:
+    - nv_gw
+    - ms_gw
+    networks:
+    - cc-net
+    mem_limit: 512m
+  opclaw4103:
+    build: ./proxy/cc-adapter
+    image: cc-adapter:latest
+    container_name: opclaw4103
+    restart: unless-stopped
+    ports:
+    - 0.0.0.0:4103:4103
+    environment:
+    - LISTEN_PORT=4103
+    - ADAPTER_NAME=opclaw4103
+    - X_CALLER=openclaw  # R_hm4104_fix: 让 nv_gw CALLER_KEY_MAP 识别 caller=openclaw→绑定 key4
+    - ADAPTER_ROLE=cc-adapter
+    - AUTH_ENABLED=1
+    - PROXY_TIMEOUT=170  # Ropenclaw: 240→170. openclaw timeoutSeconds=180, PROXY_TIMEOUT must < 180 so adapter returns error before client disconnects. Was 240>180 causing "Agent couldn't generate a response". 回滚=240.
+    - PRIMARY_URL=http://dsvf0731_nv40666:40666/v1  # R1247: primary→dsv4f0731_nv@40666 (原 dsv4p_nv40066 EOL 退役)
+    - PRIMARY_MODEL=dsv4f0731_nv  # R1247: primary model=dsv4f0731_nv (40666, fid 281478d0)
+    - FALLBACK_URL=http://ms_gw:40007/v1  # R1248: fallback 切到 ms_gw:40007 (dsv4f0731_ms), 与 NVCF 账号解耦
+    - FALLBACK_MODEL=dsv4f0731_ms  # R1248: fallback model=dsv4f0731_ms (ms_gw, 7 key 10 variant, 实测 200)
+    - FALLBACK_ENABLED=1  # R1247: 开启 fallback (dsv4f0731 全败→glm5_2_nv@nv_gw)
+    - FALLBACK_TIMEOUT_S=170  # Ropenclaw: 240→170 align with PROXY_TIMEOUT. 回滚=240.
+    - PRIMARY_STREAM_TIMEOUT_S=90
+    - PRIMARY_HEADER_TIMEOUT=90  # Ropenclaw: 180→90. Was 180s, but primary+fallback 180+180=360 >> openclaw 180s timeout. 90s covers dsv4p_nv p90 TTFB(~15s) + thinking budget. 回滚=180.  # R2303: 新增. 代码默认25s 基于旧TTFB3-14s, glm5.2恢复后integrate TTFB avg73s/max160s(近30min caller=other实测), 25s必fail切fallback致"主备均不可用". 180s对齐cc4101 glm5_2_nv大请求档覆盖73-160sTTFB. 回滚=删此行.
+    - FALLBACK_HEADER_TIMEOUT=70  # Ropenclaw: 180→70. primary 90s + fallback 70s = 160s < 170s PROXY_TIMEOUT < 180s openclaw timeout. Was 180s causing total 360s chain. 回滚=180.  # R686: fallback→nv_gw(glm5_2_nv), 180s 覆盖 nv_gw tier budget 120s + 余量
+    - CC4101_TOTAL_BUDGET_S=170  # Ropenclaw: 400→170. Must fit within PROXY_TIMEOUT. Was 400s >> 170s. 回滚=400.  # R2305: 80→400. 默认80<PRIMARY_HEADER_TIMEOUT(180) 致non-stream路径retry-primary门控(forwarder.py:390 remaining>=180)永不满足, fallback失败直接503"均不可用". 400给non-stream路径fallback失败后retry primary一次的机会(primary常比storming fallback恢复快). stream路径无retry(流已发message_start不能回头)不受影响,靠FALLBACK_HEADER_TIMEOUT兜. 回滚=删此行.
+    - CIRCUIT_FAILURE_THRESHOLD=5  # R826: 2->5 放宽, 避免偶发empty200就OPEN全程跳primary
+    - CIRCUIT_OPEN_S=60  # R826: 300->60 熔断恢复更快
+    - FALLBACK_RECOVER_S=30  # Ropenclaw: 120→30. Was 120s, circuit OPEN + fallback_recover caused 2min skip-primary. If fallback also sick (double-zombie), all paths dead for 120s. 30s enough to avoid hammering sick primary. 回滚=120.
+    - NV_GW_API_KEY=nv-gw-token
+    - MS_GW_API_KEY=ms-gw-token  # R1248: fallback→ms_gw(40007), forwarder FALLBACK 路径用 MS_GW_API_KEY 认证, 需 ms-gw-token
+    - ADAPTER_API_KEY=opclaw-gw-token
+    - LOG_DIR=/app/logs
+    - TZ=Asia/Shanghai
+    - PROMPT_TOKEN_LIMIT=120000
+    - SUPPLEMENT_REASONING_AS_CONTENT=1
+    volumes:
+    - ./proxy/cc-adapter/gateway:/app/gateway
+    - ./logs/opclaw4103:/app/logs
+    - /etc/localtime:/etc/localtime:ro
+    depends_on:
+    - dsvf0731_nv40666  # R1247: primary 目标 (dsv4f0731_nv@40666)
+    - nv_gw  # R1247: fallback 目标 (glm5_2_nv@40006)
+    networks:
+    - cc-net
+    mem_limit: 512m
+  hm4104:
+    build: ./proxy/cc-adapter
+    image: cc-adapter:latest
+    container_name: hm4104
+    restart: unless-stopped
+    ports:
+    - 127.0.0.1:4104:4104
+    environment:
+    - LISTEN_PORT=4104
+    - ADAPTER_NAME=hm4104
+    - X_CALLER=hermes  # R_hm4104_fix: 让 nv_gw CALLER_KEY_MAP 识别 caller=hermes→绑定 key3
+    - ADAPTER_ROLE=cc-adapter
+    - AUTH_ENABLED=1
+    - PROXY_TIMEOUT=170  # Ropenclaw: 240→170. openclaw timeoutSeconds=180, PROXY_TIMEOUT must < 180 so adapter returns error before client disconnects. Was 240>180 causing "Agent couldn't generate a response". 回滚=240.
+    - PRIMARY_URL=http://dsvf0731_nv40666:40666/v1  # R-adapter-relink: primary 保持 dsv4f_nv@40666 (flash 0731)
+    - PRIMARY_MODEL=dsv4f0731_nv  # R-dsv4f0731 (2026-08-05): primary 模型从 dsv4f_nv 改为 dsv4f0731_nv, 与 fallback dsv4f0731_ms 版本对称统一 (40666 容器已新增该模型)
+    - FALLBACK_URL=http://ms_gw:40007/v1  # R1248: fallback 切到 ms_gw:40007 (dsv4f0731_ms), 与 NVCF 账号解耦
+    - FALLBACK_MODEL=dsv4f0731_ms  # R1248: fallback model=dsv4f0731_ms (ms_gw, 7 key 10 variant, 实测 200)
+    - FALLBACK_ENABLED=1  # R1247: 开启 fallback (dsv4f0731 全败→glm5_2_nv@nv_gw)
+    - FALLBACK_TIMEOUT_S=120
+    - PRIMARY_STREAM_TIMEOUT_S=90
+    - PRIMARY_HEADER_TIMEOUT=180    # R2: 120→180. 120s 对 185K+ input 仍不够 (07:02 满 120s fail), 提至 180s 给 nv_gw 完整 key 重试窗口 (NVU_STREAM_FB_200K_S=90 × 2 次 = 180s)
+    - FALLBACK_HEADER_TIMEOUT=70  # Ropenclaw: 180→70. primary 90s + fallback 70s = 160s < 170s PROXY_TIMEOUT < 180s openclaw timeout. Was 180s causing total 360s chain. 回滚=180.  # R686: fallback→nv_gw(glm5_2_nv), 180s 覆盖 nv_gw tier budget 120s + 余量
+    - CIRCUIT_FAILURE_THRESHOLD=8    # R1: 5→8. 大 input 慢流容易在 5 次内触 breaker OPEN, 提至 8 增加容错
+    - CIRCUIT_OPEN_S=60
+    - FALLBACK_RECOVER_S=30     # R2: 120→30. 死锁: 120s 冷却期内新请求持续跳 primary → 永无 primary 成功 → breaker 永不开锁. 30s 对齐 nv_gw KEY_COOLDOWN_S=25, 让 key 冷却后快速回归 primary
+    - CC4101_TOTAL_BUDGET_S=360  # R_hm4104_fix: 80→360, 让 primary-retry-after-fallback 条件 remaining>=PRIMARY_HEADER_TIMEOUT(180) 能成立
+    - NV_GW_API_KEY=nv-gw-token
+    - MS_GW_API_KEY=ms-gw-token  # R1248: fallback→ms_gw(40007), forwarder 的 FALLBACK 路径用 MS_GW_API_KEY 认证, 需 ms-gw-token
+    - ADAPTER_API_KEY=hm-gw-token
+    - LOG_DIR=/app/logs
+    - TZ=Asia/Shanghai
+    volumes:
+    - ./proxy/cc-adapter/gateway:/app/gateway
+    - ./logs/hm4104:/app/logs
+    - /etc/localtime:/etc/localtime:ro
+    depends_on:
+    - dsvf0731_nv40666  # R1247: primary 目标
+    - nv_gw  # R1247: fallback 目标 (glm5_2_nv@40006)
+    networks:
+    - cc-net
+    mem_limit: 512m
+  oc4105:
+    build: ./proxy/cc-adapter
+    image: cc-adapter:latest
+    container_name: oc4105
+    restart: unless-stopped
+    ports:
+    - 127.0.0.1:4105:4105
+    environment:
+    - LISTEN_PORT=4105
+    - ADAPTER_NAME=oc4105
+    - X_CALLER=opencode  # R_hm4104_fix: 让 nv_gw CALLER_KEY_MAP 识别 caller=opencode→绑定 key5
+    - PRIMARY_HEADER_TIMEOUT=6   # R-oc4105-opencode: primary 25s→6s, opencode 端 ~8s 隐式等待, primary 慢则快速切 fallback
+    - ADAPTER_ROLE=cc-adapter
+    - AUTH_ENABLED=1
+    - PROXY_TIMEOUT=300
+    - PRIMARY_URL=http://dsvf0731_nv40666:40666/v1  # R-fid0731 (2026-08-07): primary=dsv4f0731_nv40666 (dedicated 40666, FID 281478d0)
+    - PRIMARY_MODEL=dsv4f0731_nv  # R-fid0731: default dsv4f0731_nv
+    - FALLBACK_URL=http://ms_gw:40007/v1  # R1248: fallback 切到 ms_gw:40007 (dsv4f0731_ms), 与 NVCF 账号解耦
+    - FALLBACK_MODEL=dsv4f0731_ms
+    - FALLBACK_ENABLED=1
+    - FALLBACK_TIMEOUT_S=300
+    - PRIMARY_STREAM_TIMEOUT_S=150
+    - CIRCUIT_FAILURE_THRESHOLD=3
+    - CIRCUIT_OPEN_S=60
+    - FALLBACK_RECOVER_S=30
+    - CC4101_TOTAL_BUDGET_S=360  # R_hm4104_fix: 80→360, 让 primary-retry-after-fallback 条件 remaining>=PRIMARY_HEADER_TIMEOUT(180) 能成立
+    - NV_GW_API_KEY=nv-gw-token
+    - MS_GW_API_KEY=ms-gw-token
+    - FALLBACK_API_KEY=ms-gw-token  # R1248: fallback 目标是 ms_gw:40007, 用 ms-gw-token
+    - ADAPTER_API_KEY=oc-gw-token
+    - LOG_DIR=/app/logs
+    - TZ=Asia/Shanghai
+    volumes:
+    - ./proxy/cc-adapter/gateway:/app/gateway
+    - ./logs/oc4105:/app/logs
+    - /etc/localtime:/etc/localtime:ro
+    depends_on:
+    - dsvf0731_nv40666  # R-fid0731: primary target
+    - nv_gw
+    networks:
+    - cc-net
+    mem_limit: 512m
+  legacy_ms_litellm:
+    build:
+      context: ./proxy/legacy-ms-gateway
+      dockerfile: Dockerfile
+    container_name: legacy_ms_litellm
+    environment:
+      GATEWAY_KEY: sk-litellm-local
+      LISTEN_PORT: "4000"
+      LOG_DIR: /app/logs
+      MS_BASEURL: https://api-inference.modelscope.cn/v1
+      MS_KEY1: ms-bb4e5bee-ca0e-49be-8de3-2347a57752f5
+      MS_KEY2: ms-b836c297-9cb3-45f7-86b3-a33e1b76f48f
+      MS_KEY3: ms-202e8dc3-b2f0-4aa3-9b56-0fa6798ac5b9
+      MS_KEY4: ms-ed773f9d-9ca1-4fd9-87e4-b6acd0e545ae
+      MS_KEY5: ms-69d3fbc6-6938-4fb1-b403-dfa44a05fb0c
+      MS_KEY6: ms-e392cb51-9637-4766-80aa-490a6044294c
+      MS_KEY7: ms-20761627-ec32-497c-a11a-7ff580617f0b
+      PROXY_TIMEOUT: "300"
+      TZ: Asia/Shanghai
+      UPSTREAM_TIMEOUT: "120"
+    extra_hosts:
+    - host.docker.internal:host-gateway
+    - api-inference.modelscope.cn:47.92.141.220
+    healthcheck:
+      interval: 30s
+      retries: 3
+      start_period: 10s
+      test:
+      - CMD-SHELL
+      - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:4000/health')" || exit 1
+      timeout: 5s
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+        tag: container/{{.Name}}
+    networks:
+    - cc-net
+    ports:
+    - "41001:4000"
+    restart: unless-stopped
+    volumes:
+    - ./logs/legacy-ms-gateway:/app/logs
+    - /etc/localtime:/etc/localtime:ro
+  legacy_cc_1:
+    build:
+      context: ./proxy/legacy-cc
+      dockerfile: Dockerfile
+    container_name: legacy_cc_1
+    depends_on:
+    - legacy_ms_litellm
+    environment:
+      CHARS_PER_TOKEN_ESTIMATE: "3.0"
+      LISTEN_PORT: "40001"
+      LITELLM_KEY: sk-litellm-local
+      LITELLM_MODELS_URL_GLM51: http://legacy_ms_litellm:4000/v1/models
+      LITELLM_URL_GLM51: http://legacy_ms_litellm:4000/v1/chat/completions
+      LOG_DIR: /app/logs
+      LOG_RETENTION_DAYS: "7"
+      MAX_SCHEMA_DESC: "600"
+      MAX_TOOL_DESC: "2000"
+      MIN_OUTBOUND_INTERVAL_S: "1.5"
+      MODEL_INPUT_TOKEN_SAFETY_GLM51: "170000"
+      NUM_KEYS: "7"
+      NUM_VARIANTS_GLM51: "10"
+      NV_BASEURL: https://integrate.api.nvidia.com/v1
+      NV_KEY1: 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
+      NV_KEY2: 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
+      NV_NUM_KEYS: "0"
+      NV_PROXY_URL: http://host.docker.internal:7894
+      NV_TIMEOUT: "20"
+      PROXY_ROLE: cc
+      PROXY_TIMEOUT: "300"
+      TZ: Asia/Shanghai
+      UPSTREAM_TIMEOUT: "60"
+    extra_hosts:
+    - host.docker.internal:host-gateway
+    - api-inference.modelscope.cn:47.92.141.220
+    healthcheck:
+      interval: 30s
+      retries: 3
+      start_period: 15s
+      test:
+      - CMD-SHELL
+      - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:40001/health')" || exit 1
+      timeout: 5s
+    logging:
+      driver: json-file
+      options:
+        max-file: "5"
+        max-size: 50m
+        tag: container/{{.Name}}
+    networks:
+    - cc-net
+    ports:
+    - "40001:40001"
+    restart: unless-stopped
+    volumes:
+    - ./logs/legacy-40001:/app/logs
+    - /etc/localtime:/etc/localtime:ro
+
+networks:
+  cc-net:
+    driver: bridge
+volumes:
+  cc_pgdata: null
