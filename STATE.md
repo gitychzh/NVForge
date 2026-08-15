@@ -1,5 +1,30 @@
 # STATE.md — cc2 自优化 nv_gw 链路 (R1256b, 2026-08-13)
 
+## R2423 本轮 (2026-08-15, 诊断分析轮 NOP)
+
+### 本轮做了什么
+用户要求深挖 40666 dsv4f0731_nv empty_200 问题. 全面诊断:
+- **结论**: empty_200 = NVCF 后端时段性波动 (返回 200 + Content-Length:0 空响应), **非输入太大/非代码逻辑/非请求频率/非 key/非 IP 问题**
+- empty_200 成簇出现在 18:43-19:37 CST 时段 (25 次/12h), 之后逐渐恢复
+- 所有 5 key + 5 US IP 都均匀受影响 — NVCF 整体波动而非单线
+- 无更优 FID: 281478d0-f307-49f4-9e0f-080b63b16c47 是唯一 ACTIVE deepseek-v4-flash-0731
+- 代码逻辑正确: _check_empty_200() 准确识别 NVCF 空响应
+
+### 发现的优化空间 (未实施)
+- empty_200 触发 mark_429 cooldown=120s (mark_key_cooling 是 mark_429 wrapper) — 语义不精确, empty_200 非 rate limit
+- empty_200 后下一个 key 6-15s 内成功, 120s 冷却偏重
+- 可选优化: empty_200 独立 cooldown (30-60s) 或在 mark_key_cooling 增加自定义 duration
+
+### 验证
+- 直连 pexec 15 次: 14×200 OK + 1×529, 0 empty_200 (当前时段健康)
+- Gateway 非/流测试均 200 OK ✅
+- 三容器 SR: nv_gw 99.8% | dsv4f0731_nv 71.1% | dsv4p_nv 0% (全挂)
+
+### 下一步
+- 等 NVCF 下次波动观察 empty_200 模式
+- 若用户同意, 可优化 empty_200 cooldown 策略
+
+
 ## 当前架构 (R1256b, 实测 2026-08-13 校正)
 
 ```
