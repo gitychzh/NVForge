@@ -281,15 +281,16 @@ services:
     - LISTEN_PORT=40666
     - PROXY_ROLE=passthrough
     - PROXY_TIMEOUT=300
-    - UPSTREAM_TIMEOUT=45    # R1006-self: 50→45. pexec_success p95=38.9s(24h), 50s ceiling 让 hung conn 烧满 43.5s×3≈129s≈180s budget→fast-break→all_tiers_exhausted. 45s 覆盖 p95 留 6s 余量, 每 hung 省 ~5s, 3 次省 15s=多一次 key 重试
-    - TIER_TIMEOUT_BUDGET_S=180
+    - UPSTREAM_TIMEOUT=120    # R1260: 45→120. dsv4f0731 NVCF推理 8-47s + thinking budget 1024 + 大上下文 avg 62-116K chars → p95 超过 55s 被杀. 120s 覆盖 P99 推理时间
+    - TIER_TIMEOUT_BUDGET_S=600  # R1260: 180→600. 配合 UPSTREAM_TIMEOUT=120 × fastbreak=5
     - KEY_COOLDOWN_S=30
     - TIER_COOLDOWN_S=90
     - MIN_OUTBOUND_INTERVAL_S=5
     - NVU_CONNECT_RESERVE_S=0
-    - NVU_FORCE_STREAM_UPGRADE=0
+    - NVU_FORCE_STREAM_UPGRADE=1    # R1260: 0→1. 非流式请求升级为流式上游, SSE 累积后以非流式 JSON 返回. 避免 read 超时杀完整响应
+    - NVU_FORCE_STREAM_UPGRADE_TIMEOUT=120    # R1260: 新增. 默认55s 杀 >55s 的 thinking 请求. 120s 与 UPSTREAM_TIMEOUT 对齐, 给 dsv4f0731 thinking budget 1024 足够时间
     - NVU_EMPTY_200_FASTBREAK=3
-    - NVU_PEXEC_TIMEOUT_FASTBREAK=3
+    - NVU_PEXEC_TIMEOUT_FASTBREAK=5    # R1260: 3→5. 连续 3 次 timeout 太激进, 大上下文请求接近全部超. 5 次给更多 key 尝试机会
     - NVU_CONN_ERR_FAST_BREAK=5  # R1016: 76% NVCFPexecRemoteDisconnected, 2-consec fast-break 太激进, 全 5 key 循环再放弃
     - NVU_SSLEOF_RETRY_DELAY_S=1.0
     - NVU_PEER_FALLBACK_ENABLED=0
@@ -303,7 +304,7 @@ services:
     - NVU_STREAM_ABSOLUTE_CAP_S=150
     - NVU_STREAM_FB_200K_S=90
     - NVU_TIER_BUDGET_DSV4F_NV=180
-    - NVU_TIER_BUDGET_DSV4F0731_NV=180  # R1070: 220→180 revert. budget 非绑定约束 (fast-break=5 先耗尽 key), SR 未改善. all_tiers_exhausted=6 全在~180s budget cap; 5 key 全有 200 成功; 5×43.5s=217s>180 第5key被cut. 预算放宽让 fast-break=5 遍历全 5 key
+    - NVU_TIER_BUDGET_DSV4F0731_NV=600  # R1260: 180→600. UPSTREAM_TIMEOUT=120 × 5 fastbreak = 600s worst case. 原 180s 仅容 1.5 次 120s attempt → 必然 all_tiers_exhausted
     - NVU_PEER_FB_SKIP_MODELS=glm5_2_nv,dsv4p_nv,dsv4f_nv,dsv4f0731_nv  # R-dsv4f0731: 加 0731
     - NVU_HOST_MACHINE=opc2sname-dsv4f40666
     - NVU_ACTIVE_TIERS=dsv4f0731_nv  # R1254: 专职 dsv4f0731_nv, 不部署其他模型 (与 40006/40066 共用 config.py 白名单瘦身)
@@ -313,7 +314,7 @@ services:
     - NV_INTEGRATE_MODELS=  # R-dsv4f-newfid: 新 FID 52e1ddb6 pexec 可用, 不再强制 integrate
     - NV_KEY_INTEGRATE_KEYS=  # R1017: revert R1015 — k5 integrate 6h SR=50%(3/6) vs pexec 70.5%(134/190), 30min 100% fail(3/3), 529_integrate_overloaded=5/2h + NVStream_IncompleteRead=3. integrate 劣于 pexec, 全走 pexec DIRECT.
     - NV_INTEGRATE_PROXY_URLS=socks5h://172.18.0.1:7897,socks5h://172.18.0.1:7904,socks5h://172.18.0.1:7894,socks5h://172.18.0.1:7896,socks5h://172.18.0.1:7895
-    - NV_INTEGRATE_EGRESS_IPS=134.195.101.197,134.195.101.197,134.195.101.193,134.195.101.195,134.195.101.180
+    - NV_INTEGRATE_EGRESS_IPS=134.195.101.195,134.195.101.197,134.195.101.193,134.195.101.120,134.195.101.197  # 2026-08-15 校准: 40/40 实测 7897→195, 7904→197, 7894→193, 7896→120, 7895→197
     - NVU_CALLER_KEY_MAP=
     - NVU_BUFFER_CALLERS=cc4101-fallback  # R-cc-slow-fix: enable buffer for flash fallback retry
     - NVU_BUFFER_MAX_RETRIES=5  # R-cc-slow-fix: match nv_gw 40006 config
@@ -343,11 +344,11 @@ services:
     - NVU_PROXY_URL3=socks5h://172.18.0.1:7894
     - NVU_PROXY_URL4=socks5h://172.18.0.1:7896
     - NVU_PROXY_URL5=socks5h://172.18.0.1:7895
-    - NVU_EGRESS_IP1=134.195.101.197
-    - NVU_EGRESS_IP2=134.195.101.197
-    - NVU_EGRESS_IP3=134.195.101.193
-    - NVU_EGRESS_IP4=134.195.101.195
-    - NVU_EGRESS_IP5=134.195.101.180
+    - NVU_EGRESS_IP1=134.195.101.195  # 2026-08-15 校准: 7897 实测 40/40 = 195 (原197)
+    - NVU_EGRESS_IP2=134.195.101.197  # 2026-08-15 校准: 7904 实测 40/40 = 197 (原197 不变)
+    - NVU_EGRESS_IP3=134.195.101.193  # 2026-08-15 校准: 7894 实测 40/40 = 193 (原193 不变)
+    - NVU_EGRESS_IP4=134.195.101.120  # 2026-08-15 校准: 7896 实测 40/40 = 120 (原195)
+    - NVU_EGRESS_IP5=134.195.101.197  # 2026-08-15 校准: 7895 实测 40/40 = 197 (原180)
     - NVU_GATEWAY_API_KEY=nv-gw-token
     - NVU_DB_ENABLED=1
     - NVU_DB_HOST=logs_db
@@ -549,13 +550,13 @@ services:
     - UPSTREAM_IDLE_TIMEOUT=150  # R830: body read idle超时(两次chunk间隔), 对齐nv_gw thinking 150s, 容纳长思考静默期
     - CC4101_STREAM_TOTAL_DEADLINE_S=470  # R-glm52-pure: buffer 450s + 20s margin
     - PYTHONUNBUFFERED=1  # R830: 消除stdout buffer迟滞, docker logs实时可见(对齐ms_gw/nv_gw虽未设但实测实时)
-    - PRIMARY_UPSTREAM_URL=http://dsvf0731_nv40666:40666/v1/messages  # R1244 (2026-08-10): primary=dsv4f0731_nv@dsvf0731_nv40666 (cc → 40666 专用容器, 实测 200 OK 0.7-3.1s fid 281478d0; 原 nv_gw:40006 改为 fallback)
+    - PRIMARY_UPSTREAM_URL=http://nv_gw:40006/v1/messages  # R1255 (2026-08-13): primary=glm5_2_nv@nv_gw:40006 (死fid清理后实测 非流6/6+流式3/3 全200, 延迟3-16s; 原 dsv4f0731_nv@40666 SR81% p50 17.7s → fallback)
     - PRIMARY_UPSTREAM_TOKEN=nv-gw-token
-    - PRIMARY_UPSTREAM_MODEL=dsv4f0731_nv  # R1244: primary model 保持 dsv4f0731_nv, 40666 内部路由到 fid 281478d0
-    # R1244 (2026-08-10): fallback 由 ms_gw:40007(glm5_2_ms) 改为 nv_gw:40006(glm5_2_nv). 用户指定. 实测 40006 /v1/messages+glm5_2_nv = 200 (78s, integrate 通道).
-    - FALLBACK_UPSTREAM_URL=http://ms_gw:40007/v1/messages  # R1248: fallback 切到 ms_gw:40007 (dsv4f0731_ms), Anthropic /v1/messages 格式, 与 NVCF 账号解耦
-    - FALLBACK_UPSTREAM_TOKEN=ms-gw-token  # R1248: ms_gw 用 ms-gw-token 认证
-    - FALLBACK_UPSTREAM_MODEL=dsv4f0731_ms  # R1248: fallback model=dsv4f0731_ms (ms_gw, 7 key 10 variant, 实测 200)
+    - PRIMARY_UPSTREAM_MODEL=glm5_2_nv  # R1255: primary model=glm5_2_nv (40006 NVCF pexec, fid 3b9748d8/bfcf495b)
+    # R1255 (2026-08-13): fallback 保持 ms_gw:40007 → model 切 glm5_2_ms (同模型跨供应商, 实测 200~1.3s 7key10variant)
+    - FALLBACK_UPSTREAM_URL=http://ms_gw:40007/v1/messages  # R1255: fallback=glm5_2_ms@ms_gw:40007, 跨供应商真备用 (ModelScope, 7 key)
+    - FALLBACK_UPSTREAM_TOKEN=ms-gw-token  # R1255: ms_gw 用 ms-gw-token 认证
+    - FALLBACK_UPSTREAM_MODEL=glm5_2_ms  # R1255: fallback model=glm5_2_ms (同模型跨供应商, 实测 200 SR 100% ~1.3s)
     - CC4101_GATEWAY_API_KEY=cc4101-token
     - CC4101_DB_ENABLED=1
     - CC4101_DB_HOST=logs_db
@@ -628,21 +629,22 @@ services:
     - ADAPTER_ROLE=cc-adapter
     - AUTH_ENABLED=1
     - PROXY_TIMEOUT=170  # Ropenclaw: 240→170. openclaw timeoutSeconds=180, PROXY_TIMEOUT must < 180 so adapter returns error before client disconnects. Was 240>180 causing "Agent couldn't generate a response". 回滚=240.
-    - PRIMARY_URL=http://dsvf0731_nv40666:40666/v1  # R1247: primary→dsv4f0731_nv@40666 (原 dsv4p_nv40066 EOL 退役)
-    - PRIMARY_MODEL=dsv4f0731_nv  # R1247: primary model=dsv4f0731_nv (40666, fid 281478d0)
-    - FALLBACK_URL=http://ms_gw:40007/v1  # R1248: fallback 切到 ms_gw:40007 (dsv4f0731_ms), 与 NVCF 账号解耦
-    - FALLBACK_MODEL=dsv4f0731_ms  # R1248: fallback model=dsv4f0731_ms (ms_gw, 7 key 10 variant, 实测 200)
-    - FALLBACK_ENABLED=1  # R1247: 开启 fallback (dsv4f0731 全败→glm5_2_nv@nv_gw)
-    - FALLBACK_TIMEOUT_S=170  # Ropenclaw: 240→170 align with PROXY_TIMEOUT. 回滚=240.
-    - PRIMARY_STREAM_TIMEOUT_S=90
-    - PRIMARY_HEADER_TIMEOUT=90  # Ropenclaw: 180→90. Was 180s, but primary+fallback 180+180=360 >> openclaw 180s timeout. 90s covers dsv4p_nv p90 TTFB(~15s) + thinking budget. 回滚=180.  # R2303: 新增. 代码默认25s 基于旧TTFB3-14s, glm5.2恢复后integrate TTFB avg73s/max160s(近30min caller=other实测), 25s必fail切fallback致"主备均不可用". 180s对齐cc4101 glm5_2_nv大请求档覆盖73-160sTTFB. 回滚=删此行.
-    - FALLBACK_HEADER_TIMEOUT=70  # Ropenclaw: 180→70. primary 90s + fallback 70s = 160s < 170s PROXY_TIMEOUT < 180s openclaw timeout. Was 180s causing total 360s chain. 回滚=180.  # R686: fallback→nv_gw(glm5_2_nv), 180s 覆盖 nv_gw tier budget 120s + 余量
-    - CC4101_TOTAL_BUDGET_S=170  # Ropenclaw: 400→170. Must fit within PROXY_TIMEOUT. Was 400s >> 170s. 回滚=400.  # R2305: 80→400. 默认80<PRIMARY_HEADER_TIMEOUT(180) 致non-stream路径retry-primary门控(forwarder.py:390 remaining>=180)永不满足, fallback失败直接503"均不可用". 400给non-stream路径fallback失败后retry primary一次的机会(primary常比storming fallback恢复快). stream路径无retry(流已发message_start不能回头)不受影响,靠FALLBACK_HEADER_TIMEOUT兜. 回滚=删此行.
+    - PRIMARY_URL=http://oc45001:45001/v1  # R-oc45001: primary→远程 oc45001 容器(45001) big-pickle (opencode zen 免费模型), 2026-08-14 替换原 ms_gw glm5_2_ms
+    - PRIMARY_MODEL=big-pickle  # R-oc45001: opencode zen big-pickle (oc45001 网关)
+    - FALLBACK_URL=http://dsvf0731_nv40666:40666/v1  # R1265: fallback→dsv4f0731_nv40666 (NVCF), 与 hm4104 对齐. 原 nv_gw:40006 移除.
+    - FALLBACK_MODEL=dsv4f0731_nv  # R1265: fallback model=dsv4f0731_nv (dsv4f0731_nv40666, NVCF pexec)
+    - FALLBACK_ENABLED=1  # R1265: 开启 fallback (oc45001 全败→dsv4f0731_nv40666)
+    - FALLBACK_TIMEOUT_S=120  # R1265: 对齐 hm4104
+    - PRIMARY_STREAM_TIMEOUT_S=90  # oc45001 (big-pickle) primary, TTFB 1-20s, 90s 足够
+    - PRIMARY_HEADER_TIMEOUT=60  # R1266: 90→60. oc45001 MAX_CONCURRENCY=3后 pacer queue ≤10s + TTFB ≤30s = 40s, 60s余量充足. 为 fallback 腾出时间
+    - FALLBACK_HEADER_TIMEOUT=100  # R1266: 70→100. dsv4f0731 NVCF pexec 单key需90-120s (thinking budget 1024), 70s太短致timeout. 60+100=160<170
+    - CC4101_TOTAL_BUDGET_S=170  # Must fit within PROXY_TIMEOUT (170s). non-stream retry-primary 门控需 remaining>=PRIMARY_HEADER_TIMEOUT
     - CIRCUIT_FAILURE_THRESHOLD=5  # R826: 2->5 放宽, 避免偶发empty200就OPEN全程跳primary
     - CIRCUIT_OPEN_S=60  # R826: 300->60 熔断恢复更快
-    - FALLBACK_RECOVER_S=30  # Ropenclaw: 120→30. Was 120s, circuit OPEN + fallback_recover caused 2min skip-primary. If fallback also sick (double-zombie), all paths dead for 120s. 30s enough to avoid hammering sick primary. 回滚=120.
-    - NV_GW_API_KEY=nv-gw-token
-    - MS_GW_API_KEY=ms-gw-token  # R1248: fallback→ms_gw(40007), forwarder FALLBACK 路径用 MS_GW_API_KEY 认证, 需 ms-gw-token
+    - FALLBACK_RECOVER_S=30  # Ropenclaw: 120→30. 防止 double-zombie (primary+fallback 同时降级时 30s 后重试 primary)
+    - NV_GW_API_KEY=oc-proxy-token  # primary (oc45001) 入站 Bearer=OZ_GATEWAY_API_KEY
+    - MS_GW_API_KEY=ms-gw-token  # 保留 (历史兼容, 未使用)
+    - FALLBACK_API_KEY=nv-gw-token  # fallback=nv_gw(40006), 需要 nv-gw-token
     - ADAPTER_API_KEY=opclaw-gw-token
     - LOG_DIR=/app/logs
     - TZ=Asia/Shanghai
@@ -653,8 +655,7 @@ services:
     - ./logs/opclaw4103:/app/logs
     - /etc/localtime:/etc/localtime:ro
     depends_on:
-    - dsvf0731_nv40666  # R1247: primary 目标 (dsv4f0731_nv@40666)
-    - nv_gw  # R1247: fallback 目标 (glm5_2_nv@40006)
+    - dsvf0731_nv40666  # R1265: fallback 目标 (dsv4f0731_nv@40666). primary (oc45001) 在独立 compose 项目, 不在此声明
     networks:
     - cc-net
     mem_limit: 512m
@@ -664,7 +665,7 @@ services:
     container_name: hm4104
     restart: unless-stopped
     ports:
-    - 127.0.0.1:4104:4104
+    - 0.0.0.0:4104:4104
     environment:
     - LISTEN_PORT=4104
     - ADAPTER_NAME=hm4104
@@ -672,21 +673,22 @@ services:
     - ADAPTER_ROLE=cc-adapter
     - AUTH_ENABLED=1
     - PROXY_TIMEOUT=170  # Ropenclaw: 240→170. openclaw timeoutSeconds=180, PROXY_TIMEOUT must < 180 so adapter returns error before client disconnects. Was 240>180 causing "Agent couldn't generate a response". 回滚=240.
-    - PRIMARY_URL=http://dsvf0731_nv40666:40666/v1  # R-adapter-relink: primary 保持 dsv4f_nv@40666 (flash 0731)
-    - PRIMARY_MODEL=dsv4f0731_nv  # R-dsv4f0731 (2026-08-05): primary 模型从 dsv4f_nv 改为 dsv4f0731_nv, 与 fallback dsv4f0731_ms 版本对称统一 (40666 容器已新增该模型)
-    - FALLBACK_URL=http://ms_gw:40007/v1  # R1248: fallback 切到 ms_gw:40007 (dsv4f0731_ms), 与 NVCF 账号解耦
-    - FALLBACK_MODEL=dsv4f0731_ms  # R1248: fallback model=dsv4f0731_ms (ms_gw, 7 key 10 variant, 实测 200)
-    - FALLBACK_ENABLED=1  # R1247: 开启 fallback (dsv4f0731 全败→glm5_2_nv@nv_gw)
+    - PRIMARY_URL=http://oc45001:45001/v1  # R-oc45001: primary→远程 oc45001 容器(45001) big-pickle (opencode zen 免费模型), 2026-08-14 替换原 dsv4f0731_nv40666
+    - PRIMARY_MODEL=big-pickle  # R-oc45001: opencode zen big-pickle (oc45001 网关)
+    - FALLBACK_URL=http://dsvf0731_nv40666:40666/v1  # R1264: fallback→dsv4f0731_nv40666 (NVCF), 原ms_gw:40007移除
+    - FALLBACK_MODEL=dsv4f0731_nv  # R1264: fallback model=dsv4f0731_nv (dsv4f0731_nv40666, NVCF pexec)
+    - FALLBACK_ENABLED=1  # R1247: 开启 fallback (oc45001 全败→dsv4f0731_nv40666)
     - FALLBACK_TIMEOUT_S=120
     - PRIMARY_STREAM_TIMEOUT_S=90
     - PRIMARY_HEADER_TIMEOUT=180    # R2: 120→180. 120s 对 185K+ input 仍不够 (07:02 满 120s fail), 提至 180s 给 nv_gw 完整 key 重试窗口 (NVU_STREAM_FB_200K_S=90 × 2 次 = 180s)
-    - FALLBACK_HEADER_TIMEOUT=70  # Ropenclaw: 180→70. primary 90s + fallback 70s = 160s < 170s PROXY_TIMEOUT < 180s openclaw timeout. Was 180s causing total 360s chain. 回滚=180.  # R686: fallback→nv_gw(glm5_2_nv), 180s 覆盖 nv_gw tier budget 120s + 余量
+    - FALLBACK_HEADER_TIMEOUT=100  # R1266: 70→100. dsv4f0731 NVCF pexec 单key需90-120s, 70s太短致timeout. hm4104 PROXY_TIMEOUT=170, 180+100>170 但 CC4101_TOTAL_BUDGET=360 门控retry
     - CIRCUIT_FAILURE_THRESHOLD=8    # R1: 5→8. 大 input 慢流容易在 5 次内触 breaker OPEN, 提至 8 增加容错
     - CIRCUIT_OPEN_S=60
     - FALLBACK_RECOVER_S=30     # R2: 120→30. 死锁: 120s 冷却期内新请求持续跳 primary → 永无 primary 成功 → breaker 永不开锁. 30s 对齐 nv_gw KEY_COOLDOWN_S=25, 让 key 冷却后快速回归 primary
     - CC4101_TOTAL_BUDGET_S=360  # R_hm4104_fix: 80→360, 让 primary-retry-after-fallback 条件 remaining>=PRIMARY_HEADER_TIMEOUT(180) 能成立
-    - NV_GW_API_KEY=nv-gw-token
-    - MS_GW_API_KEY=ms-gw-token  # R1248: fallback→ms_gw(40007), forwarder 的 FALLBACK 路径用 MS_GW_API_KEY 认证, 需 ms-gw-token
+    - NV_GW_API_KEY=oc-proxy-token  # R-oc45001: primary (oc45001) 入站 Bearer=OZ_GATEWAY_API_KEY
+    - FALLBACK_API_KEY=nv-gw-token  # R1264: fallback (dsv4f0731_nv40666) 入站 Bearer=NVU_GATEWAY_API_KEY
+    - MS_GW_API_KEY=ms-gw-token  # 保留兼容 (ms_gw 不再作为 fallback 目标)
     - ADAPTER_API_KEY=hm-gw-token
     - LOG_DIR=/app/logs
     - TZ=Asia/Shanghai
@@ -695,8 +697,8 @@ services:
     - ./logs/hm4104:/app/logs
     - /etc/localtime:/etc/localtime:ro
     depends_on:
-    - dsvf0731_nv40666  # R1247: primary 目标
-    - nv_gw  # R1247: fallback 目标 (glm5_2_nv@40006)
+    - dsvf0731_nv40666  # R1264: fallback 目标 (dsv4f0731_nv40666, primary=oc45001 为独立 compose 不在此)
+    - nv_gw  # 保留 (历史依赖, nv_gw 不再直接参与 hm4104 链路)
     networks:
     - cc-net
     mem_limit: 512m
@@ -706,29 +708,30 @@ services:
     container_name: oc4105
     restart: unless-stopped
     ports:
-    - 127.0.0.1:4105:4105
+    - 0.0.0.0:4105:4105
     environment:
     - LISTEN_PORT=4105
     - ADAPTER_NAME=oc4105
-    - X_CALLER=opencode  # R_hm4104_fix: 让 nv_gw CALLER_KEY_MAP 识别 caller=opencode→绑定 key5
-    - PRIMARY_HEADER_TIMEOUT=6   # R-oc4105-opencode: primary 25s→6s, opencode 端 ~8s 隐式等待, primary 慢则快速切 fallback
+    - X_CALLER=opencode  # 40666 侧 CALLER_KEY_MAP: caller=opencode→绑定 key5 (fallback 上游)
+    - PRIMARY_HEADER_TIMEOUT=180   # 2026-08-15: primary 换 oc45001 (Zen 实测 ttfb 均值16s/p90 32s), 对齐 hm4104 参数
     - ADAPTER_ROLE=cc-adapter
     - AUTH_ENABLED=1
     - PROXY_TIMEOUT=300
-    - PRIMARY_URL=http://dsvf0731_nv40666:40666/v1  # R-fid0731 (2026-08-07): primary=dsv4f0731_nv40666 (dedicated 40666, FID 281478d0)
-    - PRIMARY_MODEL=dsv4f0731_nv  # R-fid0731: default dsv4f0731_nv
-    - FALLBACK_URL=http://ms_gw:40007/v1  # R1248: fallback 切到 ms_gw:40007 (dsv4f0731_ms), 与 NVCF 账号解耦
-    - FALLBACK_MODEL=dsv4f0731_ms
+    - PRIMARY_URL=http://oc45001:45001/v1  # 2026-08-15: primary=bp45001 (oc45001 big-pickle=DeepSeek V4 Pro via OpenCode Zen)
+    - PRIMARY_MODEL=big-pickle
+    - FALLBACK_URL=http://dsvf0731_nv40666:40666/v1  # 2026-08-15: fallback=dsv4f0731_nv40666 (NVCF), 原 ms_gw 链路移除
+    - FALLBACK_MODEL=dsv4f0731_nv
     - FALLBACK_ENABLED=1
     - FALLBACK_TIMEOUT_S=300
-    - PRIMARY_STREAM_TIMEOUT_S=150
+    - FALLBACK_HEADER_TIMEOUT=100  # R1266: 70→100. dsv4f0731 NVCF pexec 单key需90-120s, 70s太短致timeout
+    - PRIMARY_STREAM_TIMEOUT_S=90
     - CIRCUIT_FAILURE_THRESHOLD=3
     - CIRCUIT_OPEN_S=60
     - FALLBACK_RECOVER_S=30
-    - CC4101_TOTAL_BUDGET_S=360  # R_hm4104_fix: 80→360, 让 primary-retry-after-fallback 条件 remaining>=PRIMARY_HEADER_TIMEOUT(180) 能成立
-    - NV_GW_API_KEY=nv-gw-token
-    - MS_GW_API_KEY=ms-gw-token
-    - FALLBACK_API_KEY=ms-gw-token  # R1248: fallback 目标是 ms_gw:40007, 用 ms-gw-token
+    - CC4101_TOTAL_BUDGET_S=360  # primary-retry-after-fallback 需 remaining>=PRIMARY_HEADER_TIMEOUT(180)
+    - NV_GW_API_KEY=oc-proxy-token  # primary (oc45001) 入站 Bearer=OZ_GATEWAY_API_KEY
+    - MS_GW_API_KEY=ms-gw-token  # 保留未用 (兼容)
+    - FALLBACK_API_KEY=nv-gw-token  # fallback (dsvf0731_nv40666) 入站 Bearer=NVU_GATEWAY_API_KEY
     - ADAPTER_API_KEY=oc-gw-token
     - LOG_DIR=/app/logs
     - TZ=Asia/Shanghai
@@ -737,8 +740,7 @@ services:
     - ./logs/oc4105:/app/logs
     - /etc/localtime:/etc/localtime:ro
     depends_on:
-    - dsvf0731_nv40666  # R-fid0731: primary target
-    - nv_gw
+    - dsvf0731_nv40666  # fallback target; primary oc45001 为独立 compose 项目, 不在此 depends_on 内
     networks:
     - cc-net
     mem_limit: 512m
