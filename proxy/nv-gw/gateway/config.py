@@ -42,6 +42,9 @@ NVU_GATEWAY_API_KEY = os.environ.get("NVU_GATEWAY_API_KEY", "nv-gw-token")
 # "passthrough" — serves /v1/chat/completions (OpenAI format)
 PROXY_ROLE = os.environ.get("PROXY_ROLE", "passthrough")
 
+# ─── Host machine identity (设备标识, 每容器 env NVU_HOST_MACHINE 唯一) ───
+HOST_MACHINE = os.environ.get("NVU_HOST_MACHINE") or os.environ.get("HOSTNAME") or "unknown"
+
 # ─── Logging ──────────────────────────────────────────────────────────────
 LOG_DIR = os.environ.get("LOG_DIR", "/app/logs")
 
@@ -129,25 +132,13 @@ NVCF_PEXEC_MODELS = {
         #   裸请求无思考 (rc=None), 必须显式触发.
         #   触发后 finish=stop (非 length), 思考消耗 ~400-535 tokens, content 正常 — 健康.
         # strip 掉 reasoning_effort/thinking 防干扰, 由 inject 补 chat_template_kwargs.
-        # R-glm52split: per-key fid 绑定 (NV_GLM52_KEY_FID_BIND=0:0;2:1;4:2 → k1/3/5 各锁 fid1/2/3).
-        # 候选列表 3 个真实 fid (pos0=fid1 首选, pos1=fid2 小请求快, pos2=fid3 波动).
-        # R1246 (2026-08-10): b1b22d03 已 INACTIVE (catalog 404, 08-09 all_tiers_exhausted), 删除死链.
-        # 新首选 pos0 = 3b9748d8 (ai-glm-5_2, ACTIVE, 实测 pexec 200 ~7s). pos1=b6029a96 ACTIVE 备用.
-        # 实测: 3b9748d8 小请求最快; b6029a96 波动大. (b1b22d03 已删)
-        # R1253: 展开到 5 个 ACTIVE fid 候选 (08-12 实测: b1b22d03/bfcf495b 快稳, 3b9748d8/b6029a96 波动大).
-        # func_health.select_healthy_function 从全候选选健康者; KEY_FID_BIND 清空后全走路由该逻辑.
-        # pos0=3b9748d8(ai-glm-5_2), pos1=b6029a96(mn-tp8dp1), pos2=b1b22d03(mn-tp8-b200),
-        # pos3=5532e90c(mn-baseline-wb), pos4=bfcf495b(mn-baseline).
+        # R2428 (2026-08-18): NVCF 全量扫描, 仅 1 个 ACTIVE glm-5_2 fid: 3b9748d8 (ai-glm-5_2).
+        # bfcf495b/b1b22d03/b6029a96/5532e90c/73eccb72 全部 INACTIVE, pexec 404 "not found".
+        # 死 fid 留在候选列表 → func_health 选中后 404 浪费 attempt + 拖慢. 全部删除, 仅保留唯一 ACTIVE.
+        # NVU_FID_DISCOVERY_ENABLED=1 仍运行, 发现新 ACTIVE fid 时自动替换 pos0 (in-memory).
+        # 历史候选: pos1=bfcf495b(404), pos2=b6029a96(404), pos3=b1b22d03(404), pos4=5532e90c(404), pos5=73eccb72(404).
         "function_ids": [os.environ.get("NVCF_GLM52_FUNCTION_ID",
-                                        "3b9748d8-1d85-40e8-8573-0eeaa63a4b63"),  # pos0 首选 ai-glm-5_2
-                          os.environ.get("NVCF_GLM52_FUNCTION_ID2",
-                                         "b6029a96-0ead-457b-a732-bbfb251486cb"),  # pos1 mn-tp8dp1
-                          os.environ.get("NVCF_GLM52_FUNCTION_ID3",
-                                         "b1b22d03-1ac7-4204-be9b-84ebb009e1a2"),  # pos2 mn-tp8-b200 (08-12 回归 ACTIVE, 实测最快)
-                          os.environ.get("NVCF_GLM52_FUNCTION_ID4",
-                                         "5532e90c-cb90-49bd-b0d6-42729b667532"),  # pos3 mn-baseline-wb
-                          os.environ.get("NVCF_GLM52_FUNCTION_ID5",
-                                         "bfcf495b-2faf-4ce7-ba4f-bdd4214ff0df")],  # pos4 mn-baseline
+                                        "3b9748d8-1d85-40e8-8573-0eeaa63a4b63")],  # pos0 唯一 ACTIVE ai-glm-5_2
         "strip_params": ["thinking_budget", "reasoning_effort", "thinking"],
         # R797: NVCF 3b9748d8 thinking 路径 504 退化 (2026-07-07 直连实测 5/5 false=200, true=504).
         # 停 inject enable_thinking, 走普通模式 (同 dsv4p_nv 策略). 普通模式 5/5 200 <4s.
