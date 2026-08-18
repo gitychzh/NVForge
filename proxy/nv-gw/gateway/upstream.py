@@ -2334,6 +2334,15 @@ def _try_glm52_mode_chain(oai_body, tier_model, request_id, metrics, t_start,
                                 f"last_mode={modes[mode_idx][0]}")
     _glm52_eof_summary(all_attempts, request_id)  # R1730 失败路径 EOF 诊断摘要
     result.all_keys_exhausted = True
+    # R2429: all_keys_exhausted → trigger immediate fid discovery (background, non-blocking)
+    # Current request still goes to MS fallback; next request benefits from any newly
+    # discovered FIDs added to function_ids list.
+    try:
+        from . import fid_discovery
+        fid_discovery.trigger_immediate()
+        _log("NV-GLM52-CHAIN-FAIL", f"triggered on-demand fid_discovery for {tier_model}")
+    except Exception as e:
+        _log("NV-GLM52-CHAIN-FAIL", f"fid_discovery trigger failed (non-critical): {e}")
     result.final_error_json = {"error": {"type": "glm52_chain_all_keys_exhausted",
                                           "message": f"all keys + all modes failed for {tier_model}",
                                           "last_mode": modes[mode_idx][0]}}

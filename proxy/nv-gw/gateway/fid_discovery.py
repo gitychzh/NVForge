@@ -37,6 +37,8 @@ import re
 _discovery_thread = None
 _discovery_lock = threading.Lock()
 _stop_event = threading.Event()
+_last_trigger_ts = 0.0  # monotonic timestamp of last on-demand trigger
+_trigger_min_interval = 30.0  # minimum seconds between on-demand triggers (debounce)
 
 DISCOVERY_ENABLED = os.environ.get("NVU_FID_DISCOVERY_ENABLED", "0") == "1"
 DISCOVERY_INTERVAL_S = int(os.environ.get("NVU_FID_DISCOVERY_INTERVAL_S", "1800"))
@@ -76,10 +78,16 @@ def _get_current_fid():
         return None
 
 
-def _set_current_fid(new_fid):
-    """Replace the primary FID in the in-memory config (not on disk).
+def _set_current_fid(new_fid, replace=True):
+    """Replace or add a FID in the in-memory config (not on disk).
 
-    Only replaces function_ids[0]; preserves any secondary FIDs.
+    R2429: When replace=False (on-demand trigger mode), adds new_fid to the
+    front of function_ids if it's not already present, preserving existing
+    FIDs as fallback candidates. This lets the next request try the new FID
+    while keeping the old one as backup.
+
+    When replace=True (periodic discovery mode, default), replaces pos0 only.
+
     Thread-safe via the discovery lock.
     """
     with _discovery_lock:
@@ -87,6 +95,19 @@ def _set_current_fid(new_fid):
             from . import config
             model_cfg = config.NVCF_PEXEC_MODELS.get(DISCOVERY_MODEL, {})
             fids = model_cfg.get("function_ids", [])
+
+            if not replace and fids:
+                # R2429 on-demand add mode: insert at front if new
+                if new_fid in fids:
+                    return False  # already in list
+                fids.insert(0, new_fid)
+                model_cfg["function_id"] = new_fid
+                _log("NV-FID-DISCOVERY-ADD",
+                     f"Added FID {new_fid[:12]}... to front of {DISCOVERY_MODEL} "
+                     f"function_ids (list now {len(fids)} FIDs)")
+                return True
+
+            # Default replace mode (periodic discovery)
             if fids:
                 old = fids[0]
                 if old == new_fid:
@@ -306,6 +327,84 @@ def _discover_cycle():
     _log("NV-FID-DISCOVERY", "No replacement FID found (all candidates failed probe)")
 
 
+def _discover_cycle_on_demand():
+    """R2429: On-demand discovery cycle triggered by all_keys_exhausted.
+
+    Differs from periodic _discover_cycle:
+    - Adds new ACTIVE FIDs to the front of function_ids (replace=False)
+    - Does NOT require current FID to be INACTIVE
+    - Probes ALL ACTIVE candidates (not just new ones)
+    - Designed to find alternative FIDs when the current one is rate-limited (429)
+    - Debounced: won't run more than once per _trigger_min_interval seconds
+    """
+    global _last_trigger_ts
+    now = time.monotonic()
+    if now - _last_trigger_ts < _trigger_min_interval:
+        _log("NV-FID-DISCOVERY-TRIGGER", f"On-demand trigger debounced (last={now - _last_trigger_ts:.0f}s ago)")
+        return
+
+    _last_trigger_ts = now
+    keys = _get_keys()
+    if not keys:
+        _log("NV-FID-DISCOVERY-TRIGGER", "No keys available for on-demand discovery")
+        return
+
+    # Use first non-cooling key for probing; fallback to DISCOVERY_PROBE_KEY
+    probe_key = keys[DISCOVERY_PROBE_KEY] if DISCOVERY_PROBE_KEY < len(keys) else keys[0]
+    current_fid = _get_current_fid()
+
+    _log("NV-FID-DISCOVERY-TRIGGER",
+         f"On-demand discovery: model={DISCOVERY_MODEL} "
+         f"current_fid={current_fid[:12] if current_fid else 'none'}... "
+         f"match={DISCOVERY_NAME_MATCH}")
+
+    functions = _list_functions(probe_key)
+    if not functions:
+        _log("NV-FID-DISCOVERY-TRIGGER", "No functions returned (API error or empty)")
+        return
+
+    # Find ALL ACTIVE candidates matching the name filter
+    candidates = []
+    for f in functions:
+        name = f.get("name", "")
+        status = f.get("status", "")
+        fid = f.get("id", "")
+        if DISCOVERY_NAME_MATCH in name and status == "ACTIVE":
+            candidates.append((fid, name))
+
+    if not candidates:
+        _log("NV-FID-DISCOVERY-TRIGGER", f"No ACTIVE candidates matching '{DISCOVERY_NAME_MATCH}'")
+        return
+
+    _log("NV-FID-DISCOVERY-TRIGGER", f"Found {len(candidates)} ACTIVE candidates")
+
+    # Try to find a candidate not already in function_ids that probes successfully
+    try:
+        from . import config
+        model_cfg = config.NVCF_PEXEC_MODELS.get(DISCOVERY_MODEL, {})
+        existing_fids = set(model_cfg.get("function_ids", []))
+    except Exception:
+        existing_fids = set()
+
+    added = 0
+    for fid, name in candidates:
+        if fid in existing_fids:
+            continue  # skip FIDs already in the list
+        if _probe_fid(probe_key, fid):
+            _log("NV-FID-DISCOVERY-TRIGGER",
+                 f"On-demand: NEW healthy FID {fid[:12]}... (name={name}), adding to front")
+            _set_current_fid(fid, replace=False)  # add to front, not replace
+            added += 1
+            if added >= 2:
+                break  # limit to 2 new FIDs per trigger to avoid over-stuffing
+
+    if added == 0:
+        _log("NV-FID-DISCOVERY-TRIGGER",
+             f"No new healthy FIDs found ({len(candidates)} candidates, {len(existing_fids)} existing)")
+    else:
+        _log("NV-FID-DISCOVERY-TRIGGER", f"Added {added} new FID(s) to {DISCOVERY_MODEL} function_ids")
+
+
 def _discovery_loop():
     """Background discovery loop."""
     _log("NV-FID-DISCOVERY-START",
@@ -341,6 +440,28 @@ def stop():
     _stop_event.set()
     if _discovery_thread:
         _discovery_thread.join(timeout=5)
+
+
+def trigger_immediate():
+    """R2429: Trigger an immediate on-demand FID discovery cycle.
+
+    Called by upstream.py when all_keys_exhausted happens (all 5 keys 429'd).
+    Runs _discover_cycle_on_demand() in a background thread to avoid blocking
+    the request path. The current request still goes to MS fallback; the next
+    request will benefit from any newly discovered FIDs.
+
+    Debounced: won't run more than once per _trigger_min_interval seconds.
+    """
+    if not DISCOVERY_ENABLED:
+        return
+
+    # Check debounce without blocking
+    now = time.monotonic()
+    if now - _last_trigger_ts < _trigger_min_interval:
+        return
+
+    t = threading.Thread(target=_discover_cycle_on_demand, daemon=True, name="fid-discovery-trigger")
+    t.start()
 
 
 def snapshot():
